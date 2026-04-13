@@ -1,0 +1,48 @@
+import React from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+
+export default function Navbar() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  function handleLogout() {
+    logout();
+    navigate('/');
+  }
+
+  return (
+    <nav style={styles.nav}>
+      <div className="container" style={styles.inner}>
+        <Link to="/" style={styles.logo}>CrowdPay</Link>
+        <div style={styles.links}>
+          {user ? (
+            <>
+              <Link to="/campaigns/new" style={styles.link}>Start Campaign</Link>
+              <span style={styles.name}>{user.name}</span>
+              <button onClick={handleLogout} className="btn-secondary" style={{ padding: '0.4rem 0.9rem' }}>
+                Logout
+              </button>
+            </>
+          ) : (
+            <>
+              <Link to="/login" style={styles.link}>Log in</Link>
+              <Link to="/register">
+                <button className="btn-primary" style={{ padding: '0.4rem 0.9rem' }}>Sign up</button>
+              </Link>
+            </>
+          )}
+        </div>
+      </div>
+    </nav>
+  );
+}
+
+const styles = {
+  nav: { background: '#fff', borderBottom: '1px solid #e5e5e5', position: 'sticky', top: 0, zIndex: 10 },
+  inner: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '56px' },
+  logo: { fontWeight: 800, fontSize: '1.2rem', color: '#7c3aed' },
+  links: { display: 'flex', alignItems: 'center', gap: '1.2rem' },
+  link: { color: '#444', fontWeight: 500 },
+  name: { color: '#555', fontSize: '0.9rem' },
+};
