@@ -497,6 +497,10 @@ export const api = {
   getNotifications: () => request('GET', '/notifications'),
   markNotificationRead: (id) => request('PATCH', `/notifications/${id}/read`, {}),
   markAllNotificationsRead: () => request('PATCH', '/notifications/read-all', {}),
+  getNotificationPreferences: () => request('GET', '/notifications/preferences'),
+  updateNotificationPreference: (body) => request('PUT', '/notifications/preferences', body),
+  getChannelSettings: () => request('GET', '/notifications/channel-settings'),
+  updateChannelSettings: (body) => request('PUT', '/notifications/channel-settings', body),
 
   getReferralCode: (campaignId) => request('GET', `/campaigns/${campaignId}/referral`),
   getReferralLeaderboard: (campaignId) => request('GET', `/campaigns/${campaignId}/referrals`),

@@ -17,6 +17,7 @@ import Developer from './pages/Developer';
 import Dashboard from './pages/Dashboard';
 import MyContributions from './pages/MyContributions';
 import Profile from './pages/Profile';
+import NotificationSettings from './pages/NotificationSettings';
 import HowItWorks from './pages/HowItWorks';
 import Pricing from './pages/Pricing';
 import About from './pages/About';
@@ -100,6 +101,14 @@ export default function App() {
                 element={
                   <PrivateRoute>
                     <Profile />
+                  </PrivateRoute>
+                }
+              />
+              <Route
+                path="/settings/notifications"
+                element={
+                  <PrivateRoute>
+                    <NotificationSettings />
                   </PrivateRoute>
                 }
               />
