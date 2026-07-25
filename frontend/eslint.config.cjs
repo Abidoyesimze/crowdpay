@@ -76,4 +76,22 @@ module.exports = [
       'prefer-const': 'warn',
     },
   },
+
+  // Test files — add test globals
+  {
+    files: ['**/*.test.{js,jsx}', '**/*.spec.{js,jsx}'],
+    languageOptions: {
+      globals: {
+        describe: 'readonly',
+        it: 'readonly',
+        expect: 'readonly',
+        before: 'readonly',
+        beforeEach: 'readonly',
+        after: 'readonly',
+        afterEach: 'readonly',
+        vi: 'readonly',
+        jest: 'readonly',
+      },
+    },
+  },
 ];
