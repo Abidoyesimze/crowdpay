@@ -10,6 +10,7 @@ const logger = require('./config/logger');
 const { requestIdMiddleware } = require('./middleware/requestId');
 const { requestLogger } = require('./middleware/requestLogger');
 const { normalizeErrorResponse, errorHandler } = require('./middleware/errorHandler');
+const compressionMiddleware = require('./middleware/compression');
 const { startLedgerMonitor, getLedgerStreamHealth } = require('./services/ledgerMonitor');
 const { refreshActiveCampaignStatuses } = require('./services/campaignStatusService');
 const { sendAlert } = require('./services/alerting');
@@ -20,8 +21,14 @@ const rateLimit = require('express-rate-limit');
 
 const app = express();
 
+// Security headers — must be first
 app.use(helmet());
 app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173' }));
+
+// Compress all responses ≥ COMPRESSION_THRESHOLD bytes (default 1 KB).
+// SSE streams are excluded automatically. See middleware/compression.js.
+app.use(compressionMiddleware);
+
 app.use(express.json({ limit: '50kb' }));
 app.use(cookieParser());
 app.use(requestIdMiddleware);
