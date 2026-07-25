@@ -88,7 +88,7 @@ CREATE TABLE contributions (
   conversion_rate     NUMERIC(30, 15),
   path                JSONB,
   tx_hash             TEXT UNIQUE NOT NULL,  -- deduplicate by Stellar transaction hash
-  display_name        TEXT,
+  display_name        VARCHAR(50),
   refunded            BOOLEAN NOT NULL DEFAULT FALSE,
   platform_fee_amount NUMERIC(20, 7),
   ip_address          TEXT,
