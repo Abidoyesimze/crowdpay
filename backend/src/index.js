@@ -30,6 +30,9 @@ const {
   refreshActiveCampaignStatuses,
 } = require("./services/campaignStatusService");
 const {
+  retryFailedContractDeployments,
+} = require("./services/contractDeploymentRetryService");
+const {
   sendWeeklyContributorDigests,
 } = require("./services/weeklyDigestService");
 const { flushQuietHours } = require("./services/notifications");
@@ -394,6 +397,17 @@ function startNotificationDigestCron() {
   logger.info("Notification digest cron scheduled", { schedule });
 }
 
+function startContractDeploymentRetryCron() {
+  if (!ff.isEnabled("contract-deployment-retry-cron")) return;
+  const cron = require("node-cron");
+  cron.schedule("*/10 * * * *", () => {
+    retryFailedContractDeployments().catch((err) => {
+      logger.error("Contract deployment retry cron failed", { error: err.message });
+    });
+  });
+  logger.info("Contract deployment retry cron scheduled (every 10 minutes)");
+}
+
 async function bootstrap() {
   if (process.env.NODE_ENV === "production") {
     await assertNoLegacyPlaintextUserWalletSecrets();
@@ -410,6 +424,7 @@ async function bootstrap() {
     startReconciliationCron();
     startWeeklyDigestCron();
     startNotificationDigestCron();
+    startContractDeploymentRetryCron();
   });
 }
 

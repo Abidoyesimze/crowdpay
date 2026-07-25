@@ -9,6 +9,7 @@ const {
 } = require('../middleware/auth');
 const { reconcileSingleCampaign, getRecentReconciliationRuns } = require('../services/reconciliation');
 const { server } = require('../config/stellar');
+const { deployCampaignContracts } = require('../services/sorobanService');
 const {
   processDelivery,
   processCampaignWebhookDelivery,
@@ -161,7 +162,7 @@ router.get('/stats', async (req, res) => {
  */
 router.get('/campaigns', async (req, res) => {
   try {
-    const { status, include_deleted, flagged_only } = req.query;
+    const { status, include_deleted, flagged_only, contract_deployment_status } = req.query;
     const params = [];
     let where = 'WHERE 1=1';
 
@@ -178,9 +179,16 @@ router.get('/campaigns', async (req, res) => {
       where += ` AND c.status = $${params.length}`;
     }
 
+    if (contract_deployment_status) {
+      params.push(contract_deployment_status);
+      where += ` AND c.contract_deployment_status = $${params.length}`;
+    }
+
     const { rows } = await db.query(
       `SELECT c.id, c.title, c.status, c.raised_amount, c.target_amount, 
               c.asset_type, c.created_at, c.deleted_at, c.is_flagged_duplicate,
+              c.contract_deployment_status, c.contract_deployment_error,
+              c.escrow_contract_id,
               u.id as creator_id, u.name as creator_name, u.email as creator_email,
               (SELECT COUNT(*) FROM contributions WHERE campaign_id = c.id) as contribution_count
        FROM campaigns c 
@@ -1122,6 +1130,137 @@ router.get('/campaigns/:id/contributions', async (req, res) => {
   } catch (err) {
     logger.error('Error fetching campaign contributions for admin', { error: err.message });
     res.status(500).json({ error: 'Failed to fetch contributions' });
+  }
+});
+
+/**
+ * POST /api/admin/campaigns/:id/redeploy-contract
+ * Retry contract deployment for a campaign with a failed or missing contract.
+ * Accepts campaigns with contract_deployment_status = 'failed' or NULL (legacy).
+ */
+router.post('/campaigns/:id/redeploy-contract', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { rows: campaignRows } = await db.query(
+      `SELECT c.id, c.title, c.status, c.creator_id, c.escrow_contract_id,
+              c.contract_deployment_status, c.deadline, c.target_amount,
+              c.asset_type, c.platform_fee_bps, c.wallet_public_key,
+              u.wallet_public_key AS creator_public_key
+       FROM campaigns c
+       JOIN users u ON u.id = c.creator_id
+       WHERE c.id = $1 AND c.deleted_at IS NULL`,
+      [id]
+    );
+
+    if (!campaignRows.length) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    const campaign = campaignRows[0];
+
+    if (campaign.escrow_contract_id && campaign.contract_deployment_status === 'deployed') {
+      return res.status(400).json({ error: 'Campaign already has a deployed contract' });
+    }
+
+    if (!process.env.PLATFORM_SECRET_KEY) {
+      return res.status(500).json({ error: 'PLATFORM_SECRET_KEY not configured' });
+    }
+
+    const platformPublicKey = require('@stellar/stellar-sdk').Keypair.fromSecret(
+      process.env.PLATFORM_SECRET_KEY
+    ).publicKey();
+
+    const deadlineUnix = campaign.deadline
+      ? Math.floor(new Date(campaign.deadline).getTime() / 1000)
+      : 0;
+    const assetContractAddress = process.env.USDC_CONTRACT_ADDRESS || process.env.USDC_ISSUER;
+
+    // Mark as deploying
+    await db.query(
+      `UPDATE campaigns
+       SET contract_deployment_status = 'deploying',
+           contract_deployment_error = NULL,
+           last_deployment_attempt_at = NOW()
+       WHERE id = $1`,
+      [id]
+    );
+
+    let escrowContractId;
+    let milestonesContractId;
+    try {
+      ({ escrowContractId, milestonesContractId } = await deployCampaignContracts({
+        creatorPublicKey: campaign.creator_public_key,
+        platformPublicKey,
+        campaignId: campaign.title + Date.now(),
+        targetAmount: Math.floor(Number(campaign.target_amount) * 10_000_000),
+        deadlineUnix,
+        assetContractAddress,
+        platformFeeBps: campaign.platform_fee_bps || 0,
+        milestones: [],
+        signerSecret: process.env.PLATFORM_SECRET_KEY,
+      }));
+    } catch (err) {
+      logger.error('Contract redeploy failed', {
+        campaignId: id,
+        adminId: req.user.userId,
+        error: err.message,
+      });
+
+      await db.query(
+        `UPDATE campaigns
+         SET contract_deployment_status = 'failed',
+             contract_deployment_error = $1,
+             last_deployment_attempt_at = NOW()
+         WHERE id = $2`,
+        [err.message, id]
+      );
+
+      Sentry.withScope((scope) => {
+        scope.setLevel('error');
+        scope.setTag('admin_redeploy', 'contract_deployment');
+        scope.setContext('deployment', { campaignId: id, adminId: req.user.userId });
+        Sentry.captureMessage(`Admin contract redeploy failed for campaign ${id}: ${err.message}`);
+      });
+
+      return res.status(502).json({
+        error: 'Contract deployment failed',
+        detail: err.message,
+      });
+    }
+
+    await db.query(
+      `UPDATE campaigns
+       SET escrow_contract_id = $1,
+           milestones_contract_id = $2,
+           contract_address = $1,
+           contract_deployed_at = NOW(),
+           contract_deployment_status = 'deployed',
+           contract_deployment_error = NULL,
+           last_deployment_attempt_at = NOW()
+       WHERE id = $3`,
+      [escrowContractId, milestonesContractId, id]
+    );
+
+    await logAdminAction(req.user.userId, 'redeploy_contract', 'campaign', id, {
+      escrow_contract_id: escrowContractId,
+      milestones_contract_id: milestonesContractId,
+    });
+
+    logger.info('Contract redeployed', {
+      campaignId: id,
+      adminId: req.user.userId,
+      escrowContractId,
+    });
+
+    res.json({
+      message: 'Contract deployed successfully',
+      escrow_contract_id: escrowContractId,
+      milestones_contract_id: milestonesContractId,
+    });
+  } catch (err) {
+    logger.error('Error in redeploy-contract', { error: err.message, campaignId: req.params.id });
+    res.status(500).json({ error: 'Failed to redeploy contract' });
   }
 });
 
