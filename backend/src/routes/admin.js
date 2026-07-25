@@ -2,6 +2,15 @@ const router = require('express').Router();
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { TtlCache } = require('../utils/TtlCache');
+
+// 30-second cache for admin stats (invalidated on mutations)
+const adminStatsCache = new TtlCache(30_000);
+// 60-second cache for admin health checks
+const adminHealthCache = new TtlCache(60_000);
+
+const STATS_KEY = 'admin:stats';
+const HEALTH_KEY = 'admin:health';
 
 router.use(requireAuth);
 router.use(requireAdmin);
@@ -23,28 +32,94 @@ async function logAdminAction(adminUserId, actionType, targetType, targetId, det
 
 /**
  * GET /api/admin/stats
- * Get platform statistics
+ * Get platform statistics (cached 30 s, invalidated on mutations)
  */
 router.get('/stats', async (req, res) => {
   try {
-    const users = await db.query('SELECT COUNT(*) FROM users WHERE is_banned = false');
-    const bannedUsers = await db.query('SELECT COUNT(*) FROM users WHERE is_banned = true');
-    const campaigns = await db.query('SELECT status, COUNT(*) FROM campaigns WHERE deleted_at IS NULL GROUP BY status');
-    const deletedCampaigns = await db.query('SELECT COUNT(*) FROM campaigns WHERE deleted_at IS NOT NULL');
-    const raised = await db.query('SELECT SUM(raised_amount) as total FROM campaigns WHERE deleted_at IS NULL');
-    const contributions = await db.query('SELECT COUNT(*) FROM contributions');
+    const stats = await adminStatsCache.wrap(STATS_KEY, async () => {
+      // Run all 6 queries in parallel instead of sequentially
+      const [
+        users,
+        bannedUsers,
+        campaigns,
+        deletedCampaigns,
+        raised,
+        contributions,
+      ] = await Promise.all([
+        db.query('SELECT COUNT(*) FROM users WHERE is_banned = false'),
+        db.query('SELECT COUNT(*) FROM users WHERE is_banned = true'),
+        db.query('SELECT status, COUNT(*) FROM campaigns WHERE deleted_at IS NULL GROUP BY status'),
+        db.query('SELECT COUNT(*) FROM campaigns WHERE deleted_at IS NOT NULL'),
+        db.query('SELECT SUM(raised_amount) as total FROM campaigns WHERE deleted_at IS NULL'),
+        db.query('SELECT COUNT(*) FROM contributions'),
+      ]);
 
-    res.json({
-      total_users: parseInt(users.rows[0].count),
-      banned_users: parseInt(bannedUsers.rows[0].count),
-      campaign_status: campaigns.rows,
-      deleted_campaigns: parseInt(deletedCampaigns.rows[0].count),
-      total_raised: parseFloat(raised.rows[0]?.total || 0),
-      total_contributions: parseInt(contributions.rows[0].count),
+      return {
+        total_users: parseInt(users.rows[0].count),
+        banned_users: parseInt(bannedUsers.rows[0].count),
+        campaign_status: campaigns.rows,
+        deleted_campaigns: parseInt(deletedCampaigns.rows[0].count),
+        total_raised: parseFloat(raised.rows[0]?.total || 0),
+        total_contributions: parseInt(contributions.rows[0].count),
+      };
     });
+
+    res.set('Cache-Control', 'private, max-age=30');
+    res.json(stats);
   } catch (err) {
     logger.error('Error fetching admin stats', { error: err.message });
     res.status(500).json({ error: 'Failed to fetch statistics' });
+  }
+});
+
+/**
+ * GET /api/admin/health
+ * Deep health check for all platform subsystems (cached 60 s)
+ */
+router.get('/health', async (req, res) => {
+  try {
+    const health = await adminHealthCache.wrap(HEALTH_KEY, async () => {
+      const start = Date.now();
+
+      const [
+        dbCheck,
+        userCount,
+        activeCampaigns,
+        pendingWithdrawals,
+        openDisputes,
+        pendingMilestones,
+        recentContributions,
+      ] = await Promise.all([
+        db.query('SELECT 1 AS ok'),
+        db.query('SELECT COUNT(*) FROM users'),
+        db.query("SELECT COUNT(*) FROM campaigns WHERE status = 'active' AND deleted_at IS NULL"),
+        db.query("SELECT COUNT(*) FROM withdrawals WHERE status = 'pending'"),
+        db.query("SELECT COUNT(*) FROM disputes WHERE status IN ('open','under_review')"),
+        db.query("SELECT COUNT(*) FROM milestones WHERE status = 'pending'"),
+        db.query('SELECT COUNT(*) FROM contributions WHERE created_at > NOW() - INTERVAL \'1 hour\''),
+      ]);
+
+      return {
+        status: 'ok',
+        latency_ms: Date.now() - start,
+        database: dbCheck.rows[0].ok === 1 ? 'ok' : 'error',
+        platform: {
+          total_users: parseInt(userCount.rows[0].count),
+          active_campaigns: parseInt(activeCampaigns.rows[0].count),
+          pending_withdrawals: parseInt(pendingWithdrawals.rows[0].count),
+          open_disputes: parseInt(openDisputes.rows[0].count),
+          pending_milestones: parseInt(pendingMilestones.rows[0].count),
+          contributions_last_hour: parseInt(recentContributions.rows[0].count),
+        },
+        cached_at: new Date().toISOString(),
+      };
+    });
+
+    res.set('Cache-Control', 'private, max-age=60');
+    res.json(health);
+  } catch (err) {
+    logger.error('Error fetching admin health', { error: err.message });
+    res.status(500).json({ error: 'Health check failed', details: err.message });
   }
 });
 
@@ -115,6 +190,7 @@ router.patch('/campaigns/:id/suspend', async (req, res) => {
       previous_status: campaign.status 
     });
 
+    adminStatsCache.invalidate(STATS_KEY);
     logger.info('Campaign suspended', { campaignId: id, adminId: req.user.userId, reason });
     res.json({ message: 'Campaign suspended', campaign: updated[0] });
   } catch (err) {
@@ -155,6 +231,7 @@ router.patch('/campaigns/:id/restore', async (req, res) => {
       previous_status: campaign.status 
     });
 
+    adminStatsCache.invalidate(STATS_KEY);
     logger.info('Campaign restored', { campaignId: id, adminId: req.user.userId });
     res.json({ message: 'Campaign restored', campaign: updated[0] });
   } catch (err) {
@@ -190,6 +267,7 @@ router.delete('/campaigns/:id', async (req, res) => {
       reason: reason || null
     });
 
+    adminStatsCache.invalidate(STATS_KEY);
     logger.info('Campaign deleted', { campaignId: id, adminId: req.user.userId, reason });
     res.json({ message: 'Campaign deleted', campaign: updated[0] });
   } catch (err) {
@@ -264,6 +342,7 @@ router.patch('/users/:id/ban', async (req, res) => {
       reason: reason
     });
 
+    adminStatsCache.invalidate(STATS_KEY);
     logger.info('User banned', { userId: id, adminId: req.user.userId, reason });
     res.json({ message: 'User banned', user: updated[0] });
   } catch (err) {
@@ -302,6 +381,7 @@ router.patch('/users/:id/unban', async (req, res) => {
 
     await logAdminAction(req.user.userId, 'unban', 'user', id, {});
 
+    adminStatsCache.invalidate(STATS_KEY);
     logger.info('User unbanned', { userId: id, adminId: req.user.userId });
     res.json({ message: 'User unbanned', user: updated[0] });
   } catch (err) {
