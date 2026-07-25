@@ -1188,8 +1188,9 @@ router.post('/campaigns/:id/redeploy-contract', async (req, res) => {
 
     let escrowContractId;
     let milestonesContractId;
+    let deploymentTxHash;
     try {
-      ({ escrowContractId, milestonesContractId } = await deployCampaignContracts({
+      ({ escrowContractId, milestonesContractId, deploymentTxHash } = await deployCampaignContracts({
         creatorPublicKey: campaign.creator_public_key,
         platformPublicKey,
         campaignId: campaign.title + Date.now(),
@@ -1245,18 +1246,21 @@ router.post('/campaigns/:id/redeploy-contract', async (req, res) => {
     await logAdminAction(req.user.userId, 'redeploy_contract', 'campaign', id, {
       escrow_contract_id: escrowContractId,
       milestones_contract_id: milestonesContractId,
+      deployment_tx_hash: deploymentTxHash,
     });
 
     logger.info('Contract redeployed', {
       campaignId: id,
       adminId: req.user.userId,
       escrowContractId,
+      deploymentTxHash,
     });
 
     res.json({
       message: 'Contract deployed successfully',
       escrow_contract_id: escrowContractId,
       milestones_contract_id: milestonesContractId,
+      deployment_tx_hash: deploymentTxHash,
     });
   } catch (err) {
     logger.error('Error in redeploy-contract', { error: err.message, campaignId: req.params.id });
