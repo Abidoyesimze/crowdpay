@@ -199,6 +199,14 @@ export default function Campaign() {
   const [contributorRefundSuccess, setContributorRefundSuccess] = useState('');
   const refParam = new URLSearchParams(location.search).get('ref');
 
+  const currentUserId = user?.id || user?.userId;
+  const userRole =
+    campaign?.user_role ||
+    (currentUserId && campaign && String(campaign.creator_id) === String(currentUserId)
+      ? 'owner'
+      : null);
+  const isOwner = userRole === 'owner';
+
   useEffect(() => {
     if (!user || !id) return;
     api
@@ -729,10 +737,6 @@ export default function Campaign() {
   }
 
   const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
-  const currentUserId = user?.id || user?.userId;
-  const userRole =
-    campaign.user_role ||
-    (currentUserId && String(campaign.creator_id) === String(currentUserId) ? 'owner' : null);
   const canManageTeam = userRole === 'owner' || userRole === 'manager';
   const canChangeRoles = userRole === 'owner';
   const canPostUpdate = userRole === 'owner' || userRole === 'manager';
@@ -740,7 +744,6 @@ export default function Campaign() {
     (userRole === 'owner' || userRole === 'editor') &&
     ['active', 'funded'].includes(campaign.status);
   const canViewAnalytics = userRole === 'owner' || userRole === 'manager' || userRole === 'viewer';
-  const isOwner = userRole === 'owner';
   const acceptedMembers = members.filter((m) => m.accepted_at);
   const pendingInvites = members.filter((m) => !m.accepted_at);
   const campaignUrl = `${window.location.origin}/campaigns/${id}`;
