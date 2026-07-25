@@ -29,6 +29,7 @@ import { ToastProvider } from './context/ToastContext';
 import { NetworkStatusProvider } from './context/NetworkStatusContext';
 import { OfflineBanner } from './components/OfflineBanner';
 import ImpersonationBanner from './components/ImpersonationBanner';
+import AnnouncementBanner from './components/AnnouncementBanner';
 import { useAuth } from './context/AuthContext';
 
 export default function App() {
@@ -48,6 +49,7 @@ export default function App() {
           <NetworkStatusProvider>
             <OfflineBanner />
             {!hideNavbar && <ImpersonationBanner />}
+            {!hideNavbar && <AnnouncementBanner />}
             {!hideNavbar && <Navbar />}
             <Routes>
               <Route path="/" element={<Landing />} />

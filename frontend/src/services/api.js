@@ -305,6 +305,7 @@ async function logout() {
 
 export const api = {
   getPlatformConfig: () => request('GET', '/config'),
+  getActiveAnnouncements: () => request('GET', '/announcements/active'),
 
   register: (body) => request('POST', '/auth/register', body),
   login: (body) => request('POST', '/auth/login', body),
