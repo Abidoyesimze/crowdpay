@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { stellarExpertAccountUrl } from '../config/stellar';
 import VerificationBadge from '../components/VerificationBadge';
@@ -334,6 +334,32 @@ export default function Profile() {
           )}
         </div>
       )}
+
+      <div className="campaign-card" style={{ marginTop: '2rem' }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '0.75rem',
+            flexWrap: 'wrap',
+          }}
+        >
+          <div>
+            <h2 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '0.25rem' }}>
+              Notification Settings
+            </h2>
+            <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.9rem', margin: 0 }}>
+              Control how and when you receive email, push, and in-app notifications.
+            </p>
+          </div>
+          <Link to="/settings/notifications">
+            <button type="button" className="btn-secondary">
+              Manage →
+            </button>
+          </Link>
+        </div>
+      </div>
     </main>
   );
 }
