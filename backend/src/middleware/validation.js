@@ -260,7 +260,13 @@ const contributionValidation = [
     .withMessage(`send_asset must be one of: ${SUPPORTED_ASSETS.join(', ')}`),
   body('display_name')
     .optional({ nullable: true })
-    .customSanitizer(stripHtml)
+    .customSanitizer((val) => (typeof val === 'string' ? stripHtml(val).trim() : val))
+    .custom((value) => {
+      if (typeof value === 'string' && /[\u0000-\u001F\u007F-\u009F]/.test(value)) {
+        throw new Error('Display name contains invalid control characters or null bytes');
+      }
+      return true;
+    })
     .isLength({ max: 50 })
     .withMessage('Display name must be at most 50 characters'),
 ];
@@ -335,7 +341,14 @@ function validateRequest(req, res, next) {
     message: e.msg,
   }));
 
-  return res.status(400).json({
+  const isContributionsPath = Boolean(
+    (req.originalUrl && req.originalUrl.includes('/contributions')) ||
+    (req.baseUrl && req.baseUrl.includes('/contributions')) ||
+    (req.path && req.path.includes('/contributions'))
+  );
+  const statusCode = isContributionsPath ? 422 : 400;
+
+  return res.status(statusCode).json({
     error: {
       code: 'VALIDATION_ERROR',
       message: fields[0]?.message || 'Validation failed',

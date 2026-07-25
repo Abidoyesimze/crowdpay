@@ -18,9 +18,9 @@ async function runValidation(validations, body = {}, query = {}) {
   }
   const result = validationResult(req);
   if (!result.isEmpty()) {
-    return { ok: false, errors: result.array() };
+    return { ok: false, errors: result.array(), req };
   }
-  return { ok: true };
+  return { ok: true, req };
 }
 
 test('register validation rejects invalid email and short password', async () => {
@@ -188,4 +188,37 @@ test('createCampaign validation rejects milestone percentages with floating poin
   });
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((e) => e.msg === 'Milestone percentages must not exceed 100%'));
+});
+
+test('contribution validation rejects display_name longer than 50 characters', async () => {
+  const result = await runValidation(contributionValidation, {
+    campaign_id: '123e4567-e89b-12d3-a456-426614174000',
+    amount: '10',
+    send_asset: 'XLM',
+    display_name: 'a'.repeat(51),
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.msg === 'Display name must be at most 50 characters'));
+});
+
+test('contribution validation rejects display_name with null bytes or control characters', async () => {
+  const result = await runValidation(contributionValidation, {
+    campaign_id: '123e4567-e89b-12d3-a456-426614174000',
+    amount: '10',
+    send_asset: 'XLM',
+    display_name: 'Bad\0User',
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((e) => e.msg === 'Display name contains invalid control characters or null bytes'));
+});
+
+test('contribution validation trims whitespace on valid display_name', async () => {
+  const result = await runValidation(contributionValidation, {
+    campaign_id: '123e4567-e89b-12d3-a456-426614174000',
+    amount: '10',
+    send_asset: 'XLM',
+    display_name: '   Alice   ',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.req.body.display_name, 'Alice');
 });
