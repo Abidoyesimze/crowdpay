@@ -105,11 +105,11 @@ The database schema is applied automatically. Hot-reload is active for both proc
 ### Without Docker
 
 ```bash
-# Prerequisites: Node.js 20+, PostgreSQL 15+
+# Prerequisites: Node.js 20+, PostgreSQL 14+
 
 cd backend && npm install && cp .env.example .env
 # Fill in .env (see Environment Variables below)
-npm run migrate:fresh
+npm run migrate
 
 cd ../frontend && npm install
 
@@ -143,6 +143,12 @@ Fund it on testnet:
 ```bash
 curl "https://friendbot.stellar.org?addr=<PLATFORM_PUBLIC_KEY>"
 ```
+
+---
+
+## Production database
+
+Production Compose intentionally expects an external PostgreSQL service. See the **[Production PostgreSQL guide](docs/production-database.md)** for provisioning, TLS connection configuration, migrations, pooling, backups, recovery, monitoring, and tuning.
 
 ---
 
