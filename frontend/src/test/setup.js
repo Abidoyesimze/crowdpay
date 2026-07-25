@@ -10,6 +10,19 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   };
 }
 
+if (typeof window.matchMedia === 'undefined') {
+  window.matchMedia = function () {
+    return {
+      matches: false,
+      media: '',
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    };
+  };
+}
+
 function lookup(obj, path) {
   return path.split('.').reduce((o, k) => (o && o[k] !== null && o[k] !== undefined ? o[k] : undefined), obj);
 }

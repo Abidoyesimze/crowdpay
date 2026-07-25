@@ -216,7 +216,19 @@ export default function Developer() {
     setNewKeyScopes((cur) => (cur.includes(sc) ? cur.filter((x) => x !== sc) : [...cur, sc]));
   }
 
-  const selectedEndpoint = v1Endpoints.find((e) => e.id === explorerEndpoint) || v1Endpoints[0];
+  const selectedEndpoint =
+    v1Endpoints.find((e) => e.id === explorerEndpoint) ||
+    v1Endpoints[0] ||
+    {
+      id: '',
+      auth: false,
+      method: 'GET',
+      path: '',
+      pathFields: [],
+      queryFields: [],
+      bodyTemplate: null,
+      label: '',
+    };
 
   function buildExplorerUrl() {
     if (!selectedEndpoint) return '';
