@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Link, useParams, useLocation, useNavigate } from 'react-router-dom';
 import DOMPurify from 'dompurify';
 import { api } from '../services/api';
@@ -199,6 +199,9 @@ export default function Campaign() {
   const [contributorRefundBusy, setContributorRefundBusy] = useState(false);
   const [contributorRefundError, setContributorRefundError] = useState('');
   const [contributorRefundSuccess, setContributorRefundSuccess] = useState('');
+  const editModalRef = useRef(null);
+  const deleteModalRef = useRef(null);
+
   const refParam = new URLSearchParams(location.search).get('ref');
 
   const currentUserId = user?.id || user?.userId;
@@ -219,6 +222,60 @@ export default function Campaign() {
       })
       .catch(() => { });
   }, [user, id]);
+
+  useEffect(() => {
+    if (!isEditingCampaign) return;
+    const onKey = (e) => { if (e.key === 'Escape') handleCloseEditModal(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isEditingCampaign, handleCloseEditModal]);
+
+  useEffect(() => {
+    if (!isEditingCampaign) return;
+    const modal = editModalRef.current;
+    if (!modal) return;
+    const focusable = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    first?.focus();
+    function trapTab(e) {
+      if (e.key !== 'Tab') return;
+      if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last?.focus(); } }
+      else { if (document.activeElement === last) { e.preventDefault(); first?.focus(); } }
+    }
+    modal.addEventListener('keydown', trapTab);
+    return () => modal.removeEventListener('keydown', trapTab);
+  }, [isEditingCampaign]);
+
+  useEffect(() => {
+    if (!showDeleteDialog) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        setShowDeleteDialog(false);
+        setDeleteConfirmation('');
+        setDeleteError('');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showDeleteDialog]);
+
+  useEffect(() => {
+    if (!showDeleteDialog) return;
+    const modal = deleteModalRef.current;
+    if (!modal) return;
+    const focusable = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    first?.focus();
+    function trapTab(e) {
+      if (e.key !== 'Tab') return;
+      if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last?.focus(); } }
+      else { if (document.activeElement === last) { e.preventDefault(); first?.focus(); } }
+    }
+    modal.addEventListener('keydown', trapTab);
+    return () => modal.removeEventListener('keydown', trapTab);
+  }, [showDeleteDialog]);
 
   useEffect(() => {
     if (!isOwner || !id) return;
@@ -1307,6 +1364,7 @@ export default function Campaign() {
           type="button"
           className="btn-secondary"
           data-no-print
+          aria-expanded={showQR}
           onClick={() => setShowQR((v) => !v)}
         >
           {showQR ? 'Hide QR code' : 'Show QR code'}
@@ -1381,6 +1439,7 @@ export default function Campaign() {
             <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>Embed this campaign</h3>
             <button
               type="button"
+              aria-expanded={showEmbedSection}
               onClick={() => setShowEmbedSection(!showEmbedSection)}
               style={{
                 background: 'transparent',
@@ -1588,6 +1647,7 @@ export default function Campaign() {
       {canManageTeam && (
         <div style={{ marginBottom: '2rem' }} data-no-print>
           <div
+            role="tablist"
             style={{
               display: 'flex',
               gap: '0.5rem',
@@ -1598,6 +1658,8 @@ export default function Campaign() {
           >
             <button
               type="button"
+              role="tab"
+              aria-selected={activeTab === 'team'}
               onClick={() => setActiveTab('team')}
               style={{
                 background: activeTab === 'team' ? 'var(--color-accent)' : 'transparent',
@@ -1615,6 +1677,8 @@ export default function Campaign() {
             {canViewAnalytics && (
               <button
                 type="button"
+                role="tab"
+                aria-selected={activeTab === 'analytics'}
                 onClick={() => setActiveTab('analytics')}
                 style={{
                   background: activeTab === 'analytics' ? 'var(--color-accent)' : 'transparent',
@@ -1912,14 +1976,18 @@ export default function Campaign() {
           <strong style={{ marginBottom: '0.5rem', display: 'block' }}>
             {editingUpdateId ? 'Edit update' : 'Post update'}
           </strong>
+          <label htmlFor="update-title" className="sr-only">Update title</label>
           <input
+            id="update-title"
             placeholder="Update title"
             value={updateForm.title}
             onChange={(e) => setUpdateForm((s) => ({ ...s, title: e.target.value }))}
             required
             style={{ marginBottom: '0.5rem' }}
           />
+          <label htmlFor="update-body" className="sr-only">Update body</label>
           <textarea
+            id="update-body"
             placeholder="Write markdown update..."
             value={updateForm.body}
             onChange={(e) => setUpdateForm((s) => ({ ...s, body: e.target.value }))}
@@ -1996,6 +2064,7 @@ export default function Campaign() {
           <h2 style={styles.sectionTitle}>Analytics</h2>
 
           <div
+            role="tablist"
             style={{
               display: 'flex',
               gap: '0.5rem',
@@ -2006,6 +2075,8 @@ export default function Campaign() {
           >
             <button
               type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'overview'}
               onClick={() => setAnalyticsTab('overview')}
               style={{
                 background: analyticsTab === 'overview' ? 'var(--color-accent)' : 'transparent',
@@ -2023,6 +2094,8 @@ export default function Campaign() {
 
             <button
               type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'backers'}
               onClick={() => setAnalyticsTab('backers')}
               style={{
                 background: analyticsTab === 'backers' ? 'var(--color-accent)' : 'transparent',
@@ -2254,6 +2327,9 @@ export default function Campaign() {
       {/* Edit Campaign Modal */}
       {isEditingCampaign && campaign && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-campaign-title"
           style={{
             position: 'fixed',
             top: 0,
@@ -2269,6 +2345,7 @@ export default function Campaign() {
           onClick={handleCloseEditModal}
         >
           <div
+            ref={editModalRef}
             style={{
               background: '#fff',
               borderRadius: '12px',
@@ -2282,6 +2359,7 @@ export default function Campaign() {
             onClick={(e) => e.stopPropagation()}
           >
             <h2
+              id="edit-campaign-title"
               style={{
                 marginTop: 0,
                 marginBottom: '1.5rem',
@@ -2439,6 +2517,9 @@ export default function Campaign() {
       {/* Delete Campaign Confirmation Dialog */}
       {showDeleteDialog && campaign && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-campaign-title"
           style={{
             position: 'fixed',
             top: 0,
@@ -2453,6 +2534,7 @@ export default function Campaign() {
           }}
         >
           <div
+            ref={deleteModalRef}
             style={{
               background: 'var(--color-surface)',
               borderRadius: '8px',
@@ -2463,6 +2545,7 @@ export default function Campaign() {
             }}
           >
             <h2
+              id="delete-campaign-title"
               style={{
                 fontSize: '1.5rem',
                 fontWeight: 700,
