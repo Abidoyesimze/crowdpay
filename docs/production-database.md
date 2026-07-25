@@ -150,3 +150,4 @@ Performance guidance:
 - Start with PostgreSQL defaults on a managed service; adjust `shared_buffers`, `work_mem`, and `maintenance_work_mem` only after observing workload and with total concurrent memory in mind.
 - Review slow queries with `pg_stat_statements`/slow-query logs and use `EXPLAIN (ANALYZE, BUFFERS)` on a safe environment before adding indexes. Existing migrations provide indexes for common campaign, contribution, search, and analytics paths.
 - Keep PostgreSQL minor releases current and rehearse major-version upgrades using a restored copy.
+ 
