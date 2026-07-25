@@ -63,6 +63,14 @@ const FLAGS = {
     allowedRoles: null,
     allowedUserIds: null,
   },
+  'contract-deployment-retry-cron': {
+    description: 'Enable the cron that retries failed Soroban contract deployments',
+    envVar: 'ENABLE_CONTRACT_DEPLOYMENT_RETRY_CRON',
+    defaultValue: true,
+    rolloutPct: null,
+    allowedRoles: null,
+    allowedUserIds: null,
+  },
   'kyc-required-for-campaigns': {
     description: 'Require KYC verification before a user can create a campaign',
     envVar: 'KYC_REQUIRED_FOR_CAMPAIGNS',

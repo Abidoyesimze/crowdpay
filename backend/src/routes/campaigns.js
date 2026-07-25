@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const multer = require('multer');
+const Sentry = require('@sentry/node');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { requireAuth, requireRole } = require('../middleware/auth');
@@ -463,7 +464,8 @@ router.get('/categories', asyncHandler(async (req, res) => {
 router.get('/:id/contract-status', asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT id, contract_address, escrow_contract_id, milestones_contract_id,
-            target_amount, deadline, status
+            target_amount, deadline, status,
+            contract_deployment_status, contract_deployment_error
      FROM campaigns
      WHERE id = $1`,
     [req.params.id]
@@ -479,6 +481,8 @@ router.get('/:id/contract-status', asyncHandler(async (req, res) => {
   if (!escrowContractId && !campaign.milestones_contract_id) {
     return res.json({
       has_contract: false,
+      contract_deployment_status: campaign.contract_deployment_status,
+      contract_deployment_error: campaign.contract_deployment_error,
       status: campaign.status,
       totalRaised: 0,
       milestones: [],
@@ -503,6 +507,7 @@ router.get('/:id/contract-status', asyncHandler(async (req, res) => {
       contract_address: campaign.contract_address || escrowContractId,
       escrow_contract_id: escrowContractId,
       milestones_contract_id: campaign.milestones_contract_id,
+      contract_deployment_status: campaign.contract_deployment_status,
       ...onChain,
     });
   } catch (err) {
@@ -1013,6 +1018,8 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
 
   let escrowContractId;
   let milestonesContractId;
+  let contractDeploymentStatus;
+  let contractDeploymentError = null;
   try {
     ({ escrowContractId, milestonesContractId } = await deployCampaignContracts({
       creatorPublicKey,
@@ -1025,17 +1032,26 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
       milestones: normalizedMilestones,
       signerSecret: process.env.PLATFORM_SECRET_KEY,
     }));
+    contractDeploymentStatus = 'deployed';
   } catch (err) {
     logger.error('Soroban contract deployment failed during campaign creation', {
       error: err.message,
       creatorUserId: req.user.userId,
     });
-    return res.status(502).json({
-      error: 'Soroban contract deployment failed',
-      detail: err.message,
+    contractDeploymentStatus = 'failed';
+    contractDeploymentError = err.message;
+
+    Sentry.withScope((scope) => {
+      scope.setLevel('error');
+      scope.setTag('campaign_creation', 'contract_deployment');
+      scope.setContext('deployment', {
+        creatorUserId: req.user.userId,
+        error: err.message,
+      });
+      Sentry.captureMessage(`Contract deployment failed during campaign creation: ${err.message}`);
     });
   }
-  const contractAddress = escrowContractId;
+  const contractAddress = escrowContractId || null;
 
   const client = await db.connect();
   let campaign;
@@ -1045,12 +1061,15 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
       `INSERT INTO campaigns
          (title, description, target_amount, asset_type, wallet_public_key, creator_id, deadline, 
           min_contribution, max_contribution, escrow_contract_id, milestones_contract_id, platform_fee_bps,
-          contract_address, contract_deployed_at, content_fingerprint, is_flagged_duplicate)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), $14, $15)
+          contract_address, contract_deployed_at, content_fingerprint, is_flagged_duplicate,
+          contract_deployment_status, contract_deployment_error, last_deployment_attempt_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
        RETURNING *`,
       [title, description, target_amount, asset_type, wallet.publicKey, req.user.userId, deadline, 
        min_contribution || null, max_contribution || null, escrowContractId, milestonesContractId, platformFeeBps,
-       contractAddress, contentFingerprint, isFlaggedDuplicate]
+       contractAddress, contractDeploymentStatus === 'deployed' ? new Date() : null,
+       contentFingerprint, isFlaggedDuplicate,
+       contractDeploymentStatus, contractDeploymentError, new Date()]
     );
     campaign = rows[0];
 
