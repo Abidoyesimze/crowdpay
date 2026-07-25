@@ -40,16 +40,16 @@ jobs:
             git reset --hard origin/main
 
             cat > backend/.env <<EOF
-            NODE_ENV=production
-            DATABASE_URL=${DATABASE_URL}
-            JWT_SECRET=${JWT_SECRET}
-            API_KEY_PEPPER=${API_KEY_PEPPER}
-            PLATFORM_SECRET_KEY=${PLATFORM_SECRET_KEY}
-            USDC_ISSUER=${USDC_ISSUER}
-            STELLAR_NETWORK=${STELLAR_NETWORK}
-            STELLAR_HORIZON_URL=${STELLAR_HORIZON_URL}
-            FRONTEND_URL=${FRONTEND_URL}
-            EOF
+NODE_ENV=production
+DATABASE_URL=${DATABASE_URL}
+JWT_SECRET=${JWT_SECRET}
+API_KEY_PEPPER=${API_KEY_PEPPER}
+PLATFORM_SECRET_KEY=${PLATFORM_SECRET_KEY}
+USDC_ISSUER=${USDC_ISSUER}
+STELLAR_NETWORK=${STELLAR_NETWORK}
+STELLAR_HORIZON_URL=${STELLAR_HORIZON_URL}
+FRONTEND_URL=${FRONTEND_URL}
+EOF
 
             docker compose -f docker-compose.prod.yml up -d --build
             docker compose -f docker-compose.prod.yml exec -T backend node db/migrate.js

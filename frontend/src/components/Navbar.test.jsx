@@ -47,13 +47,13 @@ describe('Navbar', () => {
     expect(screen.getByRole('combobox', { name: /select language/i })).toBeInTheDocument();
   });
 
-  it('shows start campaign and logout when authenticated', () => {
+  it('shows create support space and logout when authenticated', () => {
     useAuth.mockReturnValue({
       user: { name: 'Bola', role: 'creator' },
       logout: mockLogout,
     });
     renderNavbar();
-    expect(screen.getByRole('link', { name: /start campaign/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /create support space/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /logout/i })).toBeInTheDocument();
     expect(screen.getByText('Bola')).toBeInTheDocument();
   });

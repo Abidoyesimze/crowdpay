@@ -89,6 +89,6 @@ describe('Register', () => {
         })
       );
     });
-    expect(mockNavigate).toHaveBeenCalledWith('/');
+    expect(mockNavigate).toHaveBeenCalledWith('/discover');
   });
 });

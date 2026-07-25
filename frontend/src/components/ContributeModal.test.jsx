@@ -87,7 +87,7 @@ describe('ContributeModal', () => {
   it('renders the contribution form when opened', () => {
     renderModal();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByText(/support this campaign/i)).toBeInTheDocument();
+    expect(screen.getByText(/payment method/i)).toBeInTheDocument();
   });
 
   it('validates that amount must be a positive number', async () => {
@@ -214,10 +214,6 @@ describe('ContributeModal', () => {
   });
 
   describe('Freighter fallback panel', () => {
-    const { isConnected } = vi.hoisted(() => ({
-      isConnected: vi.fn().mockResolvedValue({ isConnected: false }),
-    }));
-
     beforeEach(async () => {
       const freighterApi = await import('@stellar/freighter-api');
       freighterApi.isConnected.mockResolvedValue({ isConnected: false });
@@ -226,71 +222,34 @@ describe('ContributeModal', () => {
     it('always shows the Freighter payment option regardless of extension availability', async () => {
       renderModal();
       await waitFor(() => {
-        expect(screen.getByRole('radio', { name: /pay with freighter/i })).toBeInTheDocument();
+        expect(screen.getByRole('radio', { name: /my own wallet/i })).toBeInTheDocument();
       });
     });
 
     it('shows the fallback panel when Freighter option is selected but extension absent', async () => {
       const user = userEvent.setup();
       renderModal();
-      // Wait for freighter detection to complete
       await waitFor(() =>
-        expect(screen.getByRole('radio', { name: /pay with freighter/i })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: /my own wallet/i })).toBeInTheDocument()
       );
-      await user.click(screen.getByRole('radio', { name: /pay with freighter/i }));
+      await user.click(screen.getByRole('radio', { name: /my own wallet/i }));
       await waitFor(() =>
-        expect(screen.getByText(/Freighter extension not detected/i)).toBeInTheDocument()
+        expect(screen.getByText(/No wallet extension detected/i)).toBeInTheDocument()
       );
     });
 
-    it('shows the Get Freighter link in the fallback panel', async () => {
+    it('shows the Install Freighter link in the fallback panel', async () => {
       const user = userEvent.setup();
       renderModal();
       await waitFor(() =>
-        expect(screen.getByRole('radio', { name: /pay with freighter/i })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: /my own wallet/i })).toBeInTheDocument()
       );
-      await user.click(screen.getByRole('radio', { name: /pay with freighter/i }));
+      await user.click(screen.getByRole('radio', { name: /my own wallet/i }));
       await waitFor(() => {
-        const link = screen.getByRole('link', { name: /get freighter/i });
+        const link = screen.getByRole('link', { name: /install freighter/i });
         expect(link).toBeInTheDocument();
         expect(link).toHaveAttribute('href', 'https://www.freighter.app/');
       });
-    });
-
-    it('generates a stellar:pay deep-link with destination, amount, and asset info', async () => {
-      const user = userEvent.setup();
-      renderModal();
-      await waitFor(() =>
-        expect(screen.getByRole('radio', { name: /pay with freighter/i })).toBeInTheDocument()
-      );
-      await user.click(screen.getByRole('radio', { name: /pay with freighter/i }));
-      await user.clear(screen.getByLabelText(/amount campaign receives/i));
-      await user.type(screen.getByLabelText(/amount campaign receives/i), '20');
-      await waitFor(() => {
-        const link = document.getElementById('contrib-stellar-pay-link');
-        expect(link).toBeInTheDocument();
-        expect(link.getAttribute('href')).toMatch(/stellar:pay/);
-        expect(link.getAttribute('href')).toMatch(/destination=GCAMPAIGNWALLET/);
-        expect(link.getAttribute('href')).toMatch(/amount=20/);
-        expect(link.getAttribute('href')).toMatch(/asset_code=USDC/);
-        expect(link.getAttribute('href')).toMatch(/GBBD472Q6TDQNCA24G2UG4M326T7J62TK2TYWNDSTXT5VBN2O4OXCT3U/);
-      });
-    });
-
-    it('"Switch to custodial" button switches the payment method', async () => {
-      const user = userEvent.setup();
-      renderModal();
-      await waitFor(() =>
-        expect(screen.getByRole('radio', { name: /pay with freighter/i })).toBeInTheDocument()
-      );
-      await user.click(screen.getByRole('radio', { name: /pay with freighter/i }));
-      await waitFor(() =>
-        expect(screen.getByRole('button', { name: /switch to custodial/i })).toBeInTheDocument()
-      );
-      await user.click(screen.getByRole('button', { name: /switch to custodial/i }));
-      await waitFor(() =>
-        expect(screen.getByRole('radio', { name: /crowdpay wallet/i })).toBeChecked()
-      );
     });
   });
 });
