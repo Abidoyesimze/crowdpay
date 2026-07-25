@@ -166,7 +166,12 @@ const openApiSpec = swaggerJsdoc({
   },
   apis: ["./src/routes/*.js"],
 });
-app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
+app.get("/api/docs/openapi.json", (_req, res) => res.json(openApiSpec));
+app.use(
+  "/api/docs",
+  swaggerUi.serveFiles(openApiSpec),
+  swaggerUi.setup(openApiSpec),
+);
 
 const v1OpenApiSpec = swaggerJsdoc({
   definition: {
@@ -224,8 +229,16 @@ app.use("/api/v1/dev", require("./routes/dev"));
 app.use("/v1/dev", require("./routes/dev"));
 app.get("/api/v1/docs/openapi.json", (_req, res) => res.json(v1OpenApiSpec));
 app.get("/v1/docs/openapi.json", (_req, res) => res.json(v1OpenApiSpec));
-app.use("/api/v1/docs", swaggerUi.serve, swaggerUi.setup(v1OpenApiSpec));
-app.use("/v1/docs", swaggerUi.serve, swaggerUi.setup(v1OpenApiSpec));
+app.use(
+  "/api/v1/docs",
+  swaggerUi.serveFiles(v1OpenApiSpec),
+  swaggerUi.setup(v1OpenApiSpec),
+);
+app.use(
+  "/v1/docs",
+  swaggerUi.serveFiles(v1OpenApiSpec),
+  swaggerUi.setup(v1OpenApiSpec),
+);
 
 app.use("/api/auth", require("./routes/auth"));
 // Backwards/alternate compatibility for docs + clients expecting /api/users/register|login.
@@ -253,6 +266,7 @@ app.use("/api/notifications", require("./routes/notifications"));
 app.use("/api/emails", require("./routes/emails"));
 app.use("/api/campaigns", require("./routes/thankYou"));
 app.use("/api/contributions", require("./routes/thankYou"));
+app.use("/api", require("./routes/announcement"));
 
 app.get("/health", async (_, res) => {
   try {
