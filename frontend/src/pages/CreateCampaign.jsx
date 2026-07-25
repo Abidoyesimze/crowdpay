@@ -473,10 +473,10 @@ export default function CreateCampaign() {
                 onDragLeave={() => setIsDragOverCover(false)}
                 onDrop={handleCoverImageDrop}
                 style={{
-                  border: `2px dashed ${isDragOverCover ? '#7c3aed' : '#d4d4d8'}`,
+                  border: `2px dashed ${isDragOverCover ? 'var(--color-accent)' : 'var(--color-border-light)'}`,
                   borderRadius: '12px',
                   padding: '0.9rem',
-                  background: isDragOverCover ? '#f5f3ff' : '#fafafa',
+                  background: isDragOverCover ? 'var(--color-accent-lightest)' : 'var(--color-surface)',
                 }}
               >
                 <input
@@ -485,7 +485,7 @@ export default function CreateCampaign() {
                   accept="image/jpeg,image/png,image/webp"
                   onChange={handleCoverImageChange}
                 />
-                <p style={{ marginTop: '0.45rem', marginBottom: 0, color: '#666', fontSize: '0.8rem' }}>
+                <p style={{ marginTop: '0.45rem', marginBottom: 0, color: 'var(--color-text-hint)', fontSize: '0.8rem' }}>
                   Drag and drop a JPEG, PNG, or WEBP image (max 5MB), or browse files.
                 </p>
               </div>

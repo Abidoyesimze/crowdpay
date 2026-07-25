@@ -1257,7 +1257,7 @@ export default function Campaign() {
         >
           <div
             style={{
-              background: "#fff",
+              background: "var(--color-bg)",
               borderRadius: "12px",
               padding: "2rem",
               maxWidth: "500px",
@@ -1273,7 +1273,7 @@ export default function Campaign() {
             </h2>
 
             {editError && (
-              <p style={{ color: "#d32f2f", marginBottom: "1rem", padding: "0.75rem", background: "#ffebee", borderRadius: "6px" }}>
+              <p style={{ color: "var(--color-status-error)", marginBottom: "1rem", padding: "0.75rem", background: "var(--color-status-error-bg)", borderRadius: "6px" }}>
                 {editError}
               </p>
             )}
@@ -1290,13 +1290,13 @@ export default function Campaign() {
                 style={{
                   width: "100%",
                   padding: "0.75rem",
-                  border: "1px solid #ddd",
+                  border: "1px solid var(--color-border-lightest)",
                   borderRadius: "6px",
                   fontSize: "1rem",
                   boxSizing: "border-box",
                 }}
               />
-              <p style={{ fontSize: "0.85rem", color: "#888", margin: "0.25rem 0 0" }}>
+              <p style={{ fontSize: "0.85rem", color: "var(--color-text-muted)", margin: "0.25rem 0 0" }}>
                 {editFormData.title.length}/100
               </p>
             </div>
@@ -1313,14 +1313,14 @@ export default function Campaign() {
                 style={{
                   width: "100%",
                   padding: "0.75rem",
-                  border: "1px solid #ddd",
+                  border: "1px solid var(--color-border-lightest)",
                   borderRadius: "6px",
                   fontSize: "1rem",
                   fontFamily: "inherit",
                   boxSizing: "border-box",
                 }}
               />
-              <p style={{ fontSize: "0.85rem", color: "#888", margin: "0.25rem 0 0" }}>
+              <p style={{ fontSize: "0.85rem", color: "var(--color-text-muted)", margin: "0.25rem 0 0" }}>
                 {editFormData.description.length}/1000
               </p>
             </div>
@@ -1336,7 +1336,7 @@ export default function Campaign() {
                 style={{
                   width: "100%",
                   padding: "0.75rem",
-                  border: "1px solid #ddd",
+                  border: "1px solid var(--color-border-lightest)",
                   borderRadius: "6px",
                   fontSize: "1rem",
                   boxSizing: "border-box",
@@ -1374,42 +1374,42 @@ export default function Campaign() {
 const styles = {
   header: { marginBottom: '1.5rem' },
   badgeRow: { display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' },
-  asset: { background: '#ede9fe', color: '#7c3aed', fontSize: '0.75rem', fontWeight: 700, padding: '2px 8px', borderRadius: '99px' },
-  title: { fontSize: '1.8rem', fontWeight: 800, margin: '0.5rem 0', color: '#111' },
-  creator: { color: '#666', fontSize: '0.9rem', marginBottom: '0.5rem' },
-  desc: { color: '#555', fontSize: '1rem', lineHeight: 1.6 },
-  card: { background: '#fff', border: '1px solid #e5e5e5', borderRadius: '10px', padding: '1.5rem', marginBottom: '1rem' },
+  asset: { background: 'var(--color-accent-lighter)', color: 'var(--color-accent)', fontSize: '0.75rem', fontWeight: 700, padding: '2px 8px', borderRadius: '99px' },
+  title: { fontSize: '1.8rem', fontWeight: 800, margin: '0.5rem 0', color: 'var(--color-text-primary)' },
+  creator: { color: 'var(--color-text-hint)', fontSize: '0.9rem', marginBottom: '0.5rem' },
+  desc: { color: 'var(--color-text-secondary)', fontSize: '1rem', lineHeight: 1.6 },
+  card: { background: 'var(--color-bg)', border: '1px solid var(--color-border-light)', borderRadius: '10px', padding: '1.5rem', marginBottom: '1rem' },
   amounts: { display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' },
-  big: { fontSize: '1.5rem', fontWeight: 800, color: '#111' },
-  small: { fontSize: '0.85rem', color: '#888' },
-  bar: { background: '#f0f0f0', borderRadius: '99px', height: '8px', marginBottom: '1.25rem', overflow: 'hidden' },
-  fill: { background: '#7c3aed', height: '100%', borderRadius: '99px' },
+  big: { fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-text-primary)' },
+  small: { fontSize: '0.85rem', color: 'var(--color-text-muted)' },
+  bar: { background: 'var(--color-surface)', borderRadius: '99px', height: '8px', marginBottom: '1.25rem', overflow: 'hidden' },
+  fill: { background: 'var(--color-accent)', height: '100%', borderRadius: '99px' },
   cta: { width: '100%', padding: '0.85rem', fontSize: '1rem' },
-  walletInfo: { background: '#f8f8f8', borderRadius: '8px', padding: '0.75rem 1rem', marginBottom: '1.75rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' },
-  walletLabel: { fontSize: '0.75rem', fontWeight: 600, color: '#888', textTransform: 'uppercase' },
-  walletKey: { fontSize: '0.8rem', color: '#555', wordBreak: 'break-all' },
+  walletInfo: { background: 'var(--color-surface)', borderRadius: '8px', padding: '0.75rem 1rem', marginBottom: '1.75rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' },
+  walletLabel: { fontSize: '0.75rem', fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase' },
+  walletKey: { fontSize: '0.8rem', color: 'var(--color-text-secondary)', wordBreak: 'break-all' },
   detailCoverImage: { width: '100%', borderRadius: '14px', marginBottom: '1.5rem', objectFit: 'cover', maxHeight: '360px' },
   detailCoverPlaceholder: {
     width: '100%',
     borderRadius: '14px',
     marginBottom: '1.5rem',
     height: '260px',
-    background: 'linear-gradient(135deg, #ede9fe 0%, #e0e7ff 100%)',
-    border: '1px solid #ddd6fe',
+    background: 'linear-gradient(135deg, var(--color-accent-lighter) 0%, #e0e7ff 100%)',
+    border: '1px solid var(--color-purple-light)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  detailCoverPlaceholderText: { color: '#6d28d9', fontWeight: 700 },
+  detailCoverPlaceholderText: { color: 'var(--color-accent-hover)', fontWeight: 700 },
   sectionTitle: { fontSize: '1.1rem', fontWeight: 700, marginBottom: '0.75rem' },
   list: { display: 'flex', flexDirection: 'column', gap: '0.5rem' },
-  row: { display: 'flex', justifyContent: 'space-between', background: '#fff', border: '1px solid #eee', borderRadius: '6px', padding: '0.6rem 0.85rem' },
-  sender: { fontSize: '0.85rem', color: '#555', fontFamily: 'monospace' },
+  row: { display: 'flex', justifyContent: 'space-between', background: 'var(--color-bg)', border: '1px solid var(--color-border-lighter)', borderRadius: '6px', padding: '0.6rem 0.85rem' },
+  sender: { fontSize: '0.85rem', color: 'var(--color-text-secondary)', fontFamily: 'monospace' },
   amount: { fontSize: '0.85rem', fontWeight: 600, flexShrink: 0 },
-  convHint: { fontSize: '0.72rem', color: '#888', marginTop: '0.15rem' },
-  refundTag: { marginTop: '0.45rem', fontSize: '0.75rem', color: '#7c3aed', fontWeight: 700 },
-  liveIndicator: { display: 'inline-flex', alignItems: 'center', gap: '4px', marginLeft: '0.5rem', fontSize: '0.72rem', fontWeight: 600, color: '#16a34a', verticalAlign: 'middle' },
-  liveDot: { display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: '#16a34a', animation: 'pulse 1.5s ease-in-out infinite' },
+  convHint: { fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '0.15rem' },
+  refundTag: { marginTop: '0.45rem', fontSize: '0.75rem', color: 'var(--color-accent)', fontWeight: 700 },
+  liveIndicator: { display: 'inline-flex', alignItems: 'center', gap: '4px', marginLeft: '0.5rem', fontSize: '0.72rem', fontWeight: 600, color: 'var(--color-success)', verticalAlign: 'middle' },
+  liveDot: { display: 'inline-block', width: '7px', height: '7px', borderRadius: '50%', background: 'var(--color-success)', animation: 'pulse 1.5s ease-in-out infinite' },
   header: { marginBottom: "1.5rem" },
   badgeRow: {
     display: "flex",
