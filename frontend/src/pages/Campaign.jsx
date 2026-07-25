@@ -189,11 +189,13 @@ export default function Campaign() {
   const [referralCode, setReferralCode] = useState(null);
   const [referralUrl, setReferralUrl] = useState(null);
   const [referralLeaderboard, setReferralLeaderboard] = useState(null);
-  const [milestonesLoading, setMilestonesLoading] = useState(false);
-  const [contractStatus, setContractStatus] = useState(null);
-  const [contractStatusError, setContractStatusError] = useState('');
   const [tiers, setTiers] = useState([]);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [milestonesLoading, setMilestonesLoading] = useState(false);
+  const [contractStatus, setContractStatus] = useState(null);
+  const [contractStatusError, setContractStatusError] = useState(null);
+  const [contractAddress, setContractAddress] = useState(null);
+  const [embedCode, setEmbedCode] = useState('');
   const [contributorRefundBusy, setContributorRefundBusy] = useState(false);
   const [contributorRefundError, setContributorRefundError] = useState('');
   const [contributorRefundSuccess, setContributorRefundSuccess] = useState('');
@@ -215,7 +217,7 @@ export default function Campaign() {
         setReferralCode(data.referral_code);
         setReferralUrl(data.referral_url);
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [user, id]);
 
   useEffect(() => {
@@ -223,7 +225,7 @@ export default function Campaign() {
     api
       .getReferralLeaderboard(id)
       .then(setReferralLeaderboard)
-      .catch(() => {});
+      .catch(() => { });
   }, [isOwner, id]);
 
   useEffect(() => {
@@ -328,7 +330,7 @@ export default function Campaign() {
     api
       .getReferralLeaderboard(id)
       .then(setReferralLeaderboard)
-      .catch(() => {});
+      .catch(() => { });
   }, [campaign, id, user]);
 
   useEffect(() => {
@@ -656,7 +658,7 @@ export default function Campaign() {
           setContributions(data.contributions || []);
           setTotalContributions(data.total || 0);
         })
-        .catch(() => {});
+        .catch(() => { });
     } catch (err) {
       setContributorRefundError(err.message || 'On-chain refund failed.');
     } finally {
@@ -1018,8 +1020,8 @@ export default function Campaign() {
                     {tier.sold_out
                       ? "Sold out"
                       : tier.remaining === null || tier.remaining === undefined
-                      ? "Unlimited backers"
-                      : `${Number(tier.remaining).toLocaleString()} remaining`}
+                        ? "Unlimited backers"
+                        : `${Number(tier.remaining).toLocaleString()} remaining`}
                   </span>
                 </div>
               </div>
@@ -1567,11 +1569,11 @@ export default function Campaign() {
               api
                 .getCampaign(id)
                 .then(setCampaign)
-                .catch(() => {});
+                .catch(() => { });
               api
                 .getMilestones(id)
                 .then(setMilestones)
-                .catch(() => {});
+                .catch(() => { });
             }}
           />
         </div>
@@ -2049,75 +2051,75 @@ export default function Campaign() {
                     </strong>
 
 
-                <svg width="100%" height={150} viewBox={`0 0 600 150`} preserveAspectRatio="none">
-                  {analytics.dailyTotals.map((day, i) => {
-                    const maxAmount = Math.max(
-                      ...analytics.dailyTotals.map((d) => Number(d.total_amount) || 0),
-                      1
-                    );
-                    const barWidth = 600 / Math.max(analytics.dailyTotals.length, 1);
-                    const barHeight = Math.max(5, (Number(day.total_amount) / maxAmount) * 150);
-                    const y = 150 - barHeight;
-                    const x = i * barWidth;
-                    return (
-                      <g key={i}>
-                        <title>{`${new Date(day.day).toLocaleDateString()}: ${day.total_amount} ${day.asset}`}</title>
-                        <rect
-                          x={x}
-                          y={y}
-                          width={Math.max(barWidth - 2, 2)}
-                          height={barHeight}
-                          fill="var(--color-accent)"
-                          rx="2"
-                        />
-                      </g>
-                    );
-                  })}
-                </svg>
-              </div>
-
-              <div className="campaign-card">
-                <strong style={{ display: 'block', marginBottom: '1rem' }}>Asset Breakdown</strong>
-                {analytics.assetBreakdown.map((asset) => (
-                  <div
-                    key={asset.paid_with}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      marginBottom: '0.5rem',
-                    }}
-                  >
-                    <span>{asset.paid_with}</span>
-                    <strong>{asset.total_sent}</strong>
+                    <svg width="100%" height={150} viewBox={`0 0 600 150`} preserveAspectRatio="none">
+                      {analytics.dailyTotals.map((day, i) => {
+                        const maxAmount = Math.max(
+                          ...analytics.dailyTotals.map((d) => Number(d.total_amount) || 0),
+                          1
+                        );
+                        const barWidth = 600 / Math.max(analytics.dailyTotals.length, 1);
+                        const barHeight = Math.max(5, (Number(day.total_amount) / maxAmount) * 150);
+                        const y = 150 - barHeight;
+                        const x = i * barWidth;
+                        return (
+                          <g key={i}>
+                            <title>{`${new Date(day.day).toLocaleDateString()}: ${day.total_amount} ${day.asset}`}</title>
+                            <rect
+                              x={x}
+                              y={y}
+                              width={Math.max(barWidth - 2, 2)}
+                              height={barHeight}
+                              fill="var(--color-accent)"
+                              rx="2"
+                            />
+                          </g>
+                        );
+                      })}
+                    </svg>
                   </div>
-                ))}
-              </div>
 
-              <div className="campaign-card">
-                <strong style={{ display: 'block', marginBottom: '1rem' }}>Top Contributors</strong>
-                {analytics.topContributors.map((c, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      marginBottom: '0.5rem',
-                      fontFamily: 'monospace',
-                    }}
-                  >
-                    <span>
-                      {c.sender_public_key.slice(0, 4)}...
-                      {c.sender_public_key.slice(-4)}
-                    </span>
-                    <span>
-                      {c.total} ({c.times} contributions)
-                    </span>
+                  <div className="campaign-card">
+                    <strong style={{ display: 'block', marginBottom: '1rem' }}>Asset Breakdown</strong>
+                    {analytics.assetBreakdown.map((asset) => (
+                      <div
+                        key={asset.paid_with}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          marginBottom: '0.5rem',
+                        }}
+                      >
+                        <span>{asset.paid_with}</span>
+                        <strong>{asset.total_sent}</strong>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-          </>
+
+                  <div className="campaign-card">
+                    <strong style={{ display: 'block', marginBottom: '1rem' }}>Top Contributors</strong>
+                    {analytics.topContributors.map((c, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          marginBottom: '0.5rem',
+                          fontFamily: 'monospace',
+                        }}
+                      >
+                        <span>
+                          {c.sender_public_key.slice(0, 4)}...
+                          {c.sender_public_key.slice(-4)}
+                        </span>
+                        <span>
+                          {c.total} ({c.times} contributions)
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {analyticsTab === 'backers' && (
