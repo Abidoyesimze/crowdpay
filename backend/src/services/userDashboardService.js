@@ -224,7 +224,7 @@ async function getContributorDashboard(userId) {
 }
 
 function csvEscape(value) {
-  const str = value == null ? '' : String(value);
+  const str = (value === null || value === undefined) ? '' : String(value);
   if (/[",\n]/.test(str)) {
     return `"${str.replace(/"/g, '""')}"`;
   }

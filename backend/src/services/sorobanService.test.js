@@ -10,7 +10,7 @@
  *   NODE_ENV=test node --test src/services/sorobanService.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 // ---------------------------------------------------------------------------
