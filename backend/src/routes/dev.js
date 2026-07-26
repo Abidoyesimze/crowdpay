@@ -89,12 +89,15 @@ router.get('/email-preview', (req, res) => {
 });
 
 router.get('/email-preview/:templateName', (req, res) => {
-  const { templateName } = req.params;
+  const rawName = path.basename(req.params.templateName);
+  if (!/^[a-zA-Z0-9_-]+$/.test(rawName)) {
+    return res.status(400).send('Invalid template name.');
+  }
   const emailsDir = path.join(__dirname, '../emails');
-  const templatePath = path.join(emailsDir, `${templateName}.js`);
+  const templatePath = path.join(emailsDir, `${rawName}.js`);
 
   if (!fs.existsSync(templatePath)) {
-    return res.status(404).send(`Template "${templateName}" not found.`);
+    return res.status(404).send(`Template "${rawName}" not found.`);
   }
 
   try {
@@ -102,7 +105,7 @@ router.get('/email-preview/:templateName', (req, res) => {
     const method = req.query._method || 'build';
 
     if (typeof templateModule[method] !== 'function') {
-      return res.status(400).send(`Method "${method}" not found on template "${templateName}".`);
+      return res.status(400).send(`Method "${method}" not found on template "${rawName}".`);
     }
 
     // Pass all query params (except _method and queryString) to the build method
