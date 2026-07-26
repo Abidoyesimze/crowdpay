@@ -82,6 +82,19 @@ router.get('/me/contributions', requireAuth, asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+router.get('/me/favorites', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT c.id, c.title, c.description, c.target_amount, c.raised_amount,
+            c.asset_type, c.status, c.deadline, cf.created_at AS favorited_at
+     FROM contributor_favorites cf
+     JOIN campaigns c ON c.id = cf.campaign_id
+     WHERE cf.user_id = $1
+     ORDER BY cf.created_at DESC`,
+    [req.user.userId]
+  );
+  res.json(rows);
+}));
+
 router.get('/me/notification-preferences', requireAuth, asyncHandler(async (req, res) => {
   const { rows: users } = await db.query(
     'SELECT email FROM users WHERE id = $1',

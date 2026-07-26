@@ -4,7 +4,11 @@ const crypto = require('crypto');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { requireAuth } = require('../middleware/auth');
-const { ALL_WEBHOOK_EVENTS, processDelivery } = require('../services/webhookDispatcher');
+const {
+  ALL_WEBHOOK_EVENTS,
+  processDelivery,
+  isValidBackoffStrategy,
+} = require('../services/webhookDispatcher');
 const {
   processIncomingWebhook,
   verifyWebhookSignature,
@@ -100,7 +104,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 router.post('/', requireAuth, async (req, res) => {
-  const { url, events } = req.body || {};
+  const { url, events, backoff_strategy } = req.body || {};
   if (!url || !events) {
     return res.status(400).json({ error: 'url and events array are required' });
   }
@@ -111,13 +115,18 @@ router.post('/', requireAuth, async (req, res) => {
   if (!ev.length) {
     return res.status(400).json({ error: `events must include at least one of: ${ALL_WEBHOOK_EVENTS.join(', ')}` });
   }
+  if (backoff_strategy !== undefined && backoff_strategy !== null && !isValidBackoffStrategy(backoff_strategy)) {
+    return res.status(400).json({
+      error: 'backoff_strategy must be { base_ms, max_ms, multiplier } with positive numbers',
+    });
+  }
 
   const secret = `whsec_${crypto.randomBytes(32).toString('hex')}`;
   const { rows } = await db.query(
-    `INSERT INTO webhooks (user_id, url, events, secret)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, url, events, created_at`,
-    [req.user.userId, url, ev, secret]
+    `INSERT INTO webhooks (user_id, url, events, secret, backoff_strategy)
+     VALUES ($1, $2, $3, $4, $5::jsonb)
+     RETURNING id, url, events, backoff_strategy, created_at`,
+    [req.user.userId, url, ev, secret, backoff_strategy ? JSON.stringify(backoff_strategy) : null]
   );
 
   res.status(201).json({
@@ -125,6 +134,24 @@ router.post('/', requireAuth, async (req, res) => {
     secret,
     message: 'Store the signing secret; it is only shown once.',
   });
+});
+
+router.patch('/:id/backoff-strategy', requireAuth, async (req, res) => {
+  const { backoff_strategy } = req.body || {};
+  if (backoff_strategy !== null && !isValidBackoffStrategy(backoff_strategy)) {
+    return res.status(400).json({
+      error: 'backoff_strategy must be { base_ms, max_ms, multiplier } with positive numbers, or null to reset to defaults',
+    });
+  }
+
+  const { rows } = await db.query(
+    `UPDATE webhooks SET backoff_strategy = $1::jsonb
+     WHERE id = $2 AND user_id = $3 AND revoked_at IS NULL
+     RETURNING id, url, events, backoff_strategy`,
+    [backoff_strategy ? JSON.stringify(backoff_strategy) : null, req.params.id, req.user.userId]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'Webhook not found' });
+  res.json(rows[0]);
 });
 
 router.delete('/:id', requireAuth, async (req, res) => {

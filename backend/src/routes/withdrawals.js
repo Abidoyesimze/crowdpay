@@ -29,6 +29,13 @@ function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 }
 
+function emitWithdrawalUpdated(creatorId, withdrawalRow) {
+  if (!creatorId) return;
+  emitWebhookEventForUser(creatorId, WEBHOOK_EVENTS.WITHDRAWAL_UPDATED, {
+    withdrawal: withdrawalRow,
+  }).catch((err) => logger.error('Withdrawal updated webhook emit failed', { error: err.message }));
+}
+
 /** Fail closed when PLATFORM_APPROVER_USER_ID is unset. */
 function canPerformPlatformSignature(userId) {
   if (!process.env.PLATFORM_APPROVER_USER_ID) return false;
@@ -595,6 +602,7 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
       metadata: {},
     });
     await client.query('COMMIT');
+    setImmediate(() => emitWithdrawalUpdated(requestRow.creator_id, updated[0]));
     res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -698,6 +706,7 @@ router.post('/:id/reject', requireAuth, requirePlatformApprover, async (req, res
         body: `Your withdrawal request was rejected. Reason: ${reason}`,
         link: `/campaigns/${requestRow.campaign_id}`,
       }).catch(() => {});
+      emitWithdrawalUpdated(cRows[0].creator_id, updated[0]);
     }
 
     res.json(updated[0]);

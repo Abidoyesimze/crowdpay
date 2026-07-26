@@ -8,8 +8,13 @@ const WEBHOOK_EVENTS = {
   CAMPAIGN_FAILED: 'campaign.failed',
   CONTRIBUTION_RECEIVED: 'contribution.received',
   CONTRIBUTION_INDEXED: 'contribution.indexed', // campaign-level event
+  CONTRIBUTION_REFUNDED: 'contribution.refunded',
   MILESTONE_APPROVED: 'milestone.approved',
+  MILESTONE_REJECTED: 'milestone.rejected',
   WITHDRAWAL_COMPLETED: 'withdrawal.completed',
+  WITHDRAWAL_UPDATED: 'withdrawal.updated',
+  DISPUTE_OPENED: 'dispute.opened',
+  DISPUTE_RESOLVED: 'dispute.resolved',
 };
 
 const ALL_WEBHOOK_EVENTS = Object.values(WEBHOOK_EVENTS);
@@ -21,12 +26,32 @@ function hmacSignature(secret, bodyUtf8) {
   return crypto.createHmac('sha256', secret).update(bodyUtf8, 'utf8').digest('hex');
 }
 
-function backoffMs(attemptNumber) {
+function isValidBackoffStrategy(strategy) {
+  return Boolean(
+    strategy &&
+    typeof strategy === 'object' &&
+    Number.isFinite(strategy.base_ms) &&
+    strategy.base_ms > 0 &&
+    Number.isFinite(strategy.max_ms) &&
+    strategy.max_ms > 0 &&
+    Number.isFinite(strategy.multiplier) &&
+    strategy.multiplier > 0
+  );
+}
+
+function customBackoffMs(attemptNumber, strategy) {
+  const delay = strategy.base_ms * strategy.multiplier ** Math.max(0, attemptNumber - 1);
+  return Math.min(strategy.max_ms, Math.round(delay));
+}
+
+function backoffMs(attemptNumber, strategy) {
+  if (isValidBackoffStrategy(strategy)) return customBackoffMs(attemptNumber, strategy);
   const boundedAttempt = Math.min(Math.max(attemptNumber, 1), WEBHOOK_RETRY_DELAYS_MS.length);
   return WEBHOOK_RETRY_DELAYS_MS[boundedAttempt - 1];
 }
 
-function backoffMsForCampaign(attemptNumber) {
+function backoffMsForCampaign(attemptNumber, strategy) {
+  if (isValidBackoffStrategy(strategy)) return customBackoffMs(attemptNumber, strategy);
   // Campaign webhooks: exponential backoff (5s, 30s, 5min)
   const delays = [5000, 30000, 300000];
   return delays[Math.min(attemptNumber - 1, delays.length - 1)];
@@ -58,7 +83,7 @@ async function emitWebhookEventForUser(ownerUserId, eventType, payload) {
 async function processDelivery(deliveryId) {
   const { rows } = await db.query(
     `SELECT d.id, d.attempt_count, d.status, d.payload, d.event_type,
-            w.url, w.secret, w.revoked_at
+            w.url, w.secret, w.revoked_at, w.backoff_strategy
      FROM webhook_deliveries d
      JOIN webhooks w ON w.id = d.webhook_id
      WHERE d.id = $1`,
@@ -108,7 +133,7 @@ async function processDelivery(deliveryId) {
     });
     responseText = await res.text();
   } catch (err) {
-    await scheduleRetry(deliveryId, nextAttempt, err.message || String(err), null, null);
+    await scheduleRetry(deliveryId, nextAttempt, err.message || String(err), null, null, row.backoff_strategy);
     return;
   }
 
@@ -129,7 +154,8 @@ async function processDelivery(deliveryId) {
     nextAttempt,
     `HTTP ${res.status}`,
     res.status,
-    snippet
+    snippet,
+    row.backoff_strategy
   );
 }
 
@@ -159,7 +185,7 @@ async function notifyCreatorOfFailedDelivery(deliveryId, errMsg) {
   }
 }
 
-async function scheduleRetry(deliveryId, attemptJustUsed, errMsg, httpStatus, snippet) {
+async function scheduleRetry(deliveryId, attemptJustUsed, errMsg, httpStatus, snippet, backoffStrategy) {
   if (attemptJustUsed >= MAX_DELIVERY_ATTEMPTS) {
     await db.query(
       `UPDATE webhook_deliveries
@@ -171,7 +197,7 @@ async function scheduleRetry(deliveryId, attemptJustUsed, errMsg, httpStatus, sn
     return;
   }
 
-  const delay = backoffMs(attemptJustUsed);
+  const delay = backoffMs(attemptJustUsed, backoffStrategy);
   const nextAt = new Date(Date.now() + delay);
   await db.query(
     `UPDATE webhook_deliveries
@@ -227,7 +253,7 @@ async function emitWebhookEventForCampaign(campaignId, eventType, payload) {
 async function processCampaignWebhookDelivery(deliveryId) {
   const { rows } = await db.query(
     `SELECT d.id, d.attempt_count, d.status, d.payload, d.event,
-            w.url, w.secret, w.active
+            w.url, w.secret, w.active, w.backoff_strategy
      FROM campaign_webhook_deliveries d
      JOIN campaign_webhooks w ON w.id = d.webhook_id
      WHERE d.id = $1`,
@@ -275,7 +301,13 @@ async function processCampaignWebhookDelivery(deliveryId) {
       signal: AbortSignal.timeout(9000),
     });
   } catch (err) {
-    await scheduleCampaignWebhookRetry(deliveryId, nextAttempt, err.message || String(err), null);
+    await scheduleCampaignWebhookRetry(
+      deliveryId,
+      nextAttempt,
+      err.message || String(err),
+      null,
+      row.backoff_strategy
+    );
     return;
   }
 
@@ -293,11 +325,12 @@ async function processCampaignWebhookDelivery(deliveryId) {
     deliveryId,
     nextAttempt,
     `HTTP ${res.status}`,
-    res.status
+    res.status,
+    row.backoff_strategy
   );
 }
 
-async function scheduleCampaignWebhookRetry(deliveryId, attemptJustUsed, errMsg, httpStatus) {
+async function scheduleCampaignWebhookRetry(deliveryId, attemptJustUsed, errMsg, httpStatus, backoffStrategy) {
   if (attemptJustUsed >= MAX_CAMPAIGN_DELIVERY_ATTEMPTS) {
     await db.query(
       `UPDATE campaign_webhook_deliveries
@@ -308,7 +341,7 @@ async function scheduleCampaignWebhookRetry(deliveryId, attemptJustUsed, errMsg,
     return;
   }
 
-  const delay = backoffMsForCampaign(attemptJustUsed);
+  const delay = backoffMsForCampaign(attemptJustUsed, backoffStrategy);
   const nextAt = new Date(Date.now() + delay);
   await db.query(
     `UPDATE campaign_webhook_deliveries
@@ -352,6 +385,8 @@ module.exports = {
   MAX_CAMPAIGN_DELIVERY_ATTEMPTS,
   hmacSignature,
   backoffMs,
+  backoffMsForCampaign,
+  isValidBackoffStrategy,
   emitWebhookEventForUser,
   emitWebhookEventForCampaign,
   processDelivery,

@@ -26,8 +26,13 @@ const {
   buildContributionMemo,
   submitCustodialContribution,
 } = require('../services/contributionService');
-const { listUserContributions, getContributorDashboard } = require('../services/userDashboardService');
+const {
+  listUserContributions,
+  getContributorDashboard,
+  getContributorDashboardCsv,
+} = require('../services/userDashboardService');
 const { triggerRefund } = require('../services/sorobanService');
+const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { assertUserKycVerified } = require('../services/kycService');
 const asyncHandler = require('../utils/asyncHandler');
 const { getReferralCodeFromRequest } = require('../services/referralService');
@@ -147,6 +152,14 @@ router.get('/dashboard', requireAuth, asyncHandler(async (req, res) => {
   const data = await getContributorDashboard(req.user.userId);
   if (data === null) return res.status(404).json({ error: 'User not found' });
   res.json(data);
+}));
+
+router.get('/dashboard/export.csv', requireAuth, asyncHandler(async (req, res) => {
+  const csv = await getContributorDashboardCsv(req.user.userId);
+  if (csv === null) return res.status(404).json({ error: 'User not found' });
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="contributions.csv"');
+  res.send(csv);
 }));
 
 router.get('/campaign/:campaignId', async (req, res) => {
@@ -594,7 +607,7 @@ router.post('/:id/refund', requireAuth, asyncHandler(async (req, res) => {
   const signerSecret = req.body.signer_secret || process.env.PLATFORM_SECRET_KEY;
 
   const { rows: contributions } = await db.query(
-    `SELECT ct.*, c.escrow_contract_id, c.status AS campaign_status, c.deadline
+    `SELECT ct.*, c.escrow_contract_id, c.status AS campaign_status, c.deadline, c.creator_id
      FROM contributions ct
      JOIN campaigns c ON c.id = ct.campaign_id
      WHERE ct.id = $1`,
@@ -658,6 +671,23 @@ router.post('/:id/refund', requireAuth, asyncHandler(async (req, res) => {
       contributionId,
       escrowContractId: contribution.escrow_contract_id,
       result,
+    });
+
+    setImmediate(() => {
+      const refundPayload = {
+        campaign_id: contribution.campaign_id,
+        contribution_id: contribution.id,
+        amount: String(contribution.amount),
+        asset: contribution.asset,
+        tx_hash: result?.toString() || null,
+        timestamp: new Date().toISOString(),
+      };
+      emitWebhookEventForUser(contribution.creator_id, WEBHOOK_EVENTS.CONTRIBUTION_REFUNDED, refundPayload).catch(
+        (err) => logger.error('Contribution refunded webhook emit failed', { error: err.message })
+      );
+      emitWebhookEventForCampaign(contribution.campaign_id, WEBHOOK_EVENTS.CONTRIBUTION_REFUNDED, refundPayload).catch(
+        (err) => logger.error('Contribution refunded webhook emit failed', { error: err.message })
+      );
     });
 
     res.json({

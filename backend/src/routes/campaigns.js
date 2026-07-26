@@ -25,6 +25,7 @@ const { sendEmail, sendTeamMemberInvitedEmail } = require('../services/emailServ
 const { uploadCampaignCoverImage } = require('../services/storage');
 const { isKycRequiredForCampaigns } = require('../services/kycProvider');
 const { listCreatorCampaigns } = require('../services/userDashboardService');
+const { publishDraftCampaign, CampaignNotPublishableError } = require('../services/campaignPublishing');
 const {
   MAX_TIERS_PER_CAMPAIGN,
   validateTiersInput,
@@ -432,6 +433,144 @@ router.get('/:id/clone-data', requireAuth, requireCampaignMember('owner'), async
   });
 }));
 
+// One-click clone: copies fields, milestones, and reward tiers into a new
+// draft campaign with no on-chain wallet/contracts yet (instant, no gas cost).
+router.post('/:id/clone', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const sourceId = req.params.id;
+
+  const { rows: campaignRows } = await db.query(
+    `SELECT title, description, target_amount, asset_type, category,
+            min_contribution, max_contribution, max_per_user, show_backer_amounts
+     FROM campaigns WHERE id = $1`,
+    [sourceId]
+  );
+  if (!campaignRows.length) return res.status(404).json({ error: 'Campaign not found' });
+  const source = campaignRows[0];
+
+  const { rows: milestoneRows } = await db.query(
+    'SELECT title, description, release_percentage, sort_order FROM milestones WHERE campaign_id = $1 ORDER BY sort_order ASC',
+    [sourceId]
+  );
+  const { rows: tierRows } = await db.query(
+    'SELECT title, description, min_amount, asset_type, tier_limit, estimated_delivery FROM reward_tiers WHERE campaign_id = $1 ORDER BY min_amount ASC',
+    [sourceId]
+  );
+
+  const { rows: userRows } = await db.query('SELECT email FROM users WHERE id = $1', [req.user.userId]);
+  const creatorEmail = userRows[0]?.email;
+
+  const client = await db.connect();
+  let clone;
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `INSERT INTO campaigns
+         (title, description, target_amount, asset_type, creator_id, status,
+          category, min_contribution, max_contribution, max_per_user, show_backer_amounts,
+          raised_amount, cloned_from)
+       VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8, $9, $10, 0, $11)
+       RETURNING *`,
+      [
+        `${source.title} (Copy)`,
+        source.description,
+        source.target_amount,
+        source.asset_type,
+        req.user.userId,
+        source.category,
+        source.min_contribution,
+        source.max_contribution,
+        source.max_per_user,
+        source.show_backer_amounts,
+        sourceId,
+      ]
+    );
+    clone = rows[0];
+
+    await client.query(
+      `INSERT INTO campaign_members (campaign_id, user_id, email, role, accepted_at)
+       VALUES ($1, $2, $3, 'owner', NOW())`,
+      [clone.id, req.user.userId, creatorEmail]
+    );
+
+    for (const milestone of milestoneRows) {
+      await client.query(
+        `INSERT INTO milestones (campaign_id, title, description, release_percentage, sort_order)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [clone.id, milestone.title, milestone.description, milestone.release_percentage, milestone.sort_order]
+      );
+    }
+
+    if (tierRows.length) {
+      await insertTiers(
+        client,
+        clone.id,
+        tierRows.map((t) => ({
+          title: t.title,
+          description: t.description,
+          min_amount: t.min_amount,
+          asset_type: t.asset_type,
+          tier_limit: t.tier_limit,
+          estimated_delivery: t.estimated_delivery,
+        }))
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    logger.error('[campaigns] clone failed', { source_campaign_id: sourceId, error: err.message });
+    return res.status(500).json({ error: 'Could not clone campaign' });
+  } finally {
+    client.release();
+  }
+
+  res.status(201).json(clone);
+}));
+
+// Schedule (or clear) auto-publish for a draft campaign.
+router.post('/:id/schedule-publish', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const { scheduled_publish_at } = req.body || {};
+
+  const { rows: campaignRows } = await db.query('SELECT status FROM campaigns WHERE id = $1', [req.params.id]);
+  if (!campaignRows.length) return res.status(404).json({ error: 'Campaign not found' });
+  if (campaignRows[0].status !== 'draft') {
+    return res.status(409).json({ error: 'Only draft campaigns can be scheduled for publishing' });
+  }
+
+  let value = null;
+  if (scheduled_publish_at) {
+    const date = new Date(scheduled_publish_at);
+    if (isNaN(date.getTime())) {
+      return res.status(422).json({ error: 'scheduled_publish_at must be a valid ISO 8601 date' });
+    }
+    if (date.getTime() <= Date.now()) {
+      return res.status(422).json({ error: 'scheduled_publish_at must be in the future' });
+    }
+    value = date.toISOString();
+  }
+
+  const { rows } = await db.query(
+    'UPDATE campaigns SET scheduled_publish_at = $1 WHERE id = $2 RETURNING *',
+    [value, req.params.id]
+  );
+  res.json(rows[0]);
+}));
+
+// Deploy the on-chain wallet + contracts for a draft campaign and make it active.
+router.post('/:id/publish', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  try {
+    const campaign = await publishDraftCampaign(req.params.id);
+    res.json(campaign);
+  } catch (err) {
+    if (err instanceof CampaignNotPublishableError) {
+      return res.status(409).json({ error: err.message });
+    }
+    logger.error('[campaigns] publish failed', { campaign_id: req.params.id, error: err.message });
+    res.status(502).json({ error: 'Could not publish campaign', detail: err.message });
+  }
+}));
+
 // Get single Campaign
 // Get featured campaigns
 router.get('/featured', asyncHandler(async (req, res) => {
@@ -447,6 +586,29 @@ router.get('/featured', asyncHandler(async (req, res) => {
     LIMIT 3
   `);
   res.json(rows);
+}));
+
+// Add campaign to the current user's favorites/wishlist
+router.post('/:id/favorite', requireAuth, asyncHandler(async (req, res) => {
+  const { rows: campaigns } = await db.query('SELECT id FROM campaigns WHERE id = $1', [req.params.id]);
+  if (!campaigns.length) return res.status(404).json({ error: 'Campaign not found' });
+
+  await db.query(
+    `INSERT INTO contributor_favorites (user_id, campaign_id)
+     VALUES ($1, $2)
+     ON CONFLICT (user_id, campaign_id) DO NOTHING`,
+    [req.user.userId, req.params.id]
+  );
+  res.status(204).send();
+}));
+
+// Remove campaign from the current user's favorites/wishlist
+router.delete('/:id/favorite', requireAuth, asyncHandler(async (req, res) => {
+  await db.query(
+    'DELETE FROM contributor_favorites WHERE user_id = $1 AND campaign_id = $2',
+    [req.user.userId, req.params.id]
+  );
+  res.status(204).send();
 }));
 
 router.get('/categories', asyncHandler(async (req, res) => {

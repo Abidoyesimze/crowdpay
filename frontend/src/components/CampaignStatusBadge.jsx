@@ -21,6 +21,11 @@ const LABELS = {
     bg: 'var(--color-surface)',
     color: 'var(--color-text-secondary)',
   },
+  draft: {
+    key: 'campaignStatus.draft',
+    bg: 'var(--color-warning-bg, #fffbeb)',
+    color: 'var(--color-warning-text, #92400e)',
+  },
 };
 
 export default function CampaignStatusBadge({ status }) {
