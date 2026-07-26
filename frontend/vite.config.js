@@ -30,6 +30,15 @@ export default defineConfig(({ mode }) => ({
         main: './index.html',
         embed: './embed.html',
       },
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom'],
+          'router': ['react-router-dom'],
+          'sentry': ['@sentry/react'],
+          'recharts': ['recharts'],
+          'i18n': ['i18next', 'react-i18next', 'i18next-browser-languagedetector'],
+        },
+      },
     },
   },
   server: {
