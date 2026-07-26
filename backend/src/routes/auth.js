@@ -2,9 +2,8 @@ const router = require('express').Router();
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { authenticator } = require('otplib');
-const qrcode = require('qrcode');
 const rateLimit = require('express-rate-limit');
+const totpService = require('../services/totpService');
 const { Keypair } = require('@stellar/stellar-sdk');
 const db = require('../config/database');
 const logger = require('../config/logger');
@@ -461,8 +460,19 @@ router.post('/login', loginLimiter, loginValidation, validateRequest, async (req
 
   const user = rows[0];
 
+  const enforceResult = await totpService.enforce2faCheck(user);
+  if (enforceResult.enforced) {
+    return res.status(403).json({ error: enforceResult.message });
+  }
+
   if (user.totp_enabled) {
-    return res.json({ requires_2fa: true });
+    const fingerprint = totpService.generateFingerprint(req);
+    const trusted = await totpService.isDeviceTrusted(user.id, fingerprint);
+    if (trusted) {
+      // Skip 2FA for trusted device
+    } else {
+      return res.json({ requires_2fa: true });
+    }
   }
 
   const { accessToken } = generateTokens(user);
@@ -538,16 +548,12 @@ router.post('/2fa/challenge', totpChallengeLimiter, totpChallengeEmailLimiter, v
   let codeValid = false;
 
   if (code.length === 6) {
-    codeValid = authenticator.verify({ token: code, secret: user.totp_secret });
+    codeValid = totpService.verifyTotp(user.totp_secret, code);
   } else if (user.backup_codes && user.backup_codes.length > 0) {
-    for (let i = 0; i < user.backup_codes.length; i++) {
-      if (await bcrypt.compare(code, user.backup_codes[i])) {
-        codeValid = true;
-        // remove used backup code
-        user.backup_codes.splice(i, 1);
-        await db.query('UPDATE users SET backup_codes = $1 WHERE id = $2', [user.backup_codes, user.id]);
-        break;
-      }
+    const result = await totpService.verifyBackupCode(user.backup_codes, code);
+    if (result.valid) {
+      codeValid = true;
+      await totpService.removeBackupCode(user.id, user.backup_codes, result.index);
     }
   }
 
@@ -562,6 +568,10 @@ router.post('/2fa/challenge', totpChallengeLimiter, totpChallengeEmailLimiter, v
         user.id,
       ]
     );
+    await totpService.logAuditEvent(user.id, 'totp_challenge_failed', req, {
+      consecutiveFailures: failedAttempts,
+      lockedOut: lockingOut,
+    });
     logger.warn('Failed 2FA attempt', {
       event: 'totp_failed_attempt',
       userId: user.id,
@@ -579,6 +589,12 @@ router.post('/2fa/challenge', totpChallengeLimiter, totpChallengeEmailLimiter, v
     );
   }
 
+  const fingerprint = totpService.generateFingerprint(req);
+  const wasBackupCode = code.length !== 6;
+  await totpService.logAuditEvent(user.id, 'totp_challenge_success', req, {
+    method: wasBackupCode ? 'backup_code' : 'totp',
+  });
+
   const { accessToken } = generateTokens(user);
   const { token: refreshToken, expiresAt } = await createRefreshToken(user.id);
 
@@ -587,6 +603,7 @@ router.post('/2fa/challenge', totpChallengeLimiter, totpChallengeEmailLimiter, v
 
   res.json({
     token: accessToken,
+    device_trusted: await totpService.isDeviceTrusted(user.id, fingerprint),
     user: {
       id: user.id,
       email: user.email,
@@ -612,11 +629,12 @@ router.post('/2fa/setup', requireAuth, async (req, res) => {
     return res.status(400).json({ error: '2FA is already enabled' });
   }
 
-  const secret = authenticator.generateSecret();
-  const otpauth = authenticator.keyuri(user.email, 'CrowdPay', secret);
-  const qrCodeDataUrl = await qrcode.toDataURL(otpauth);
+  const secret = totpService.generateSecret();
+  const otpauth = totpService.buildOtpauthUri(user.email, secret);
+  const qrCodeDataUrl = await totpService.generateQrCode(otpauth);
 
   await db.query('UPDATE users SET totp_secret = $1 WHERE id = $2', [secret, user.id]);
+  await totpService.logAuditEvent(user.id, 'totp_setup_initiated', req);
 
   res.json({
     secret,
@@ -637,21 +655,151 @@ router.post('/2fa/verify', requireAuth, async (req, res) => {
     return res.status(400).json({ error: '2FA setup not initiated' });
   }
 
-  const isValid = authenticator.verify({ token: code, secret: user.totp_secret });
+  const isValid = totpService.verifyTotp(user.totp_secret, code);
   if (!isValid) {
     return res.status(401).json({ error: 'Invalid 2FA code' });
   }
 
-  // Generate 8 backup codes
-  const rawBackupCodes = Array.from({ length: 8 }, () => crypto.randomBytes(4).toString('hex'));
-  const hashedBackupCodes = await Promise.all(rawBackupCodes.map(bc => bcrypt.hash(bc, 10)));
+  const { raw: rawBackupCodes, hashed: hashedBackupCodes } = await totpService.generateBackupCodes();
 
   await db.query('UPDATE users SET totp_enabled = true, backup_codes = $1 WHERE id = $2', [hashedBackupCodes, user.id]);
+  await totpService.logAuditEvent(user.id, 'totp_enabled', req);
 
   res.json({
     message: '2FA enabled successfully',
     backupCodes: rawBackupCodes
   });
+});
+
+router.post('/2fa/disable', requireAuth, async (req, res) => {
+  const { code } = req.body;
+  if (!code) {
+    return res.status(400).json({ error: 'Current 2FA code is required to disable' });
+  }
+
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled' });
+  }
+
+  let codeValid = false;
+  if (code.length === 6) {
+    codeValid = totpService.verifyTotp(user.totp_secret, code);
+  } else if (user.backup_codes && user.backup_codes.length > 0) {
+    const result = await totpService.verifyBackupCode(user.backup_codes, code);
+    if (result.valid) {
+      codeValid = true;
+      await totpService.removeBackupCode(user.id, user.backup_codes, result.index);
+    }
+  }
+
+  if (!codeValid) {
+    return res.status(401).json({ error: 'Invalid 2FA code' });
+  }
+
+  await db.query(
+    'UPDATE users SET totp_enabled = false, totp_secret = NULL, backup_codes = NULL WHERE id = $1',
+    [user.id]
+  );
+  await totpService.revokeAllDevices(user.id);
+  await totpService.logAuditEvent(user.id, 'totp_disabled', req);
+
+  res.json({ message: '2FA disabled successfully' });
+});
+
+router.get('/2fa/backup-codes', requireAuth, async (req, res) => {
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled' });
+  }
+
+  const { raw, hashed } = await totpService.generateBackupCodes();
+  await db.query('UPDATE users SET backup_codes = $1 WHERE id = $2', [hashed, user.id]);
+  await totpService.logAuditEvent(user.id, 'backup_codes_regenerated', req);
+
+  res.json({ backupCodes: raw });
+});
+
+router.post('/2fa/trust-device', requireAuth, async (req, res) => {
+  const { code } = req.body;
+  if (!code) {
+    return res.status(400).json({ error: '2FA code is required to trust device' });
+  }
+
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled' });
+  }
+
+  const isValid = totpService.verifyTotp(user.totp_secret, code);
+  if (!isValid) {
+    return res.status(401).json({ error: 'Invalid 2FA code' });
+  }
+
+  const fingerprint = totpService.generateFingerprint(req);
+  await totpService.trustDevice(user.id, fingerprint, req);
+  await totpService.logAuditEvent(user.id, 'device_trusted', req);
+
+  res.json({ message: 'Device trusted successfully' });
+});
+
+router.get('/2fa/devices', requireAuth, async (req, res) => {
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled' });
+  }
+
+  const devices = await totpService.getUserDevices(user.id);
+  res.json({ devices });
+});
+
+router.delete('/2fa/devices/:deviceId', requireAuth, async (req, res) => {
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled' });
+  }
+
+  const removed = await totpService.revokeDevice(user.id, parseInt(req.params.deviceId, 10));
+  if (!removed) {
+    return res.status(404).json({ error: 'Device not found' });
+  }
+
+  await totpService.logAuditEvent(user.id, 'device_revoked', req, {
+    deviceId: parseInt(req.params.deviceId, 10),
+  });
+
+  res.json({ message: 'Device removed' });
+});
+
+router.get('/2fa/audit-log', requireAuth, async (req, res) => {
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled && user.role !== 'admin') {
+    return res.status(403).json({ error: '2FA is not enabled' });
+  }
+
+  const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+  const { rows: events } = await db.query(
+    `SELECT id, event_type, ip_address, user_agent, metadata, created_at
+     FROM security_audit_log
+     WHERE user_id = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [user.id, limit]
+  );
+
+  res.json({ events });
 });
 
 router.post('/refresh', async (req, res) => {

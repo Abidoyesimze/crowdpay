@@ -34,6 +34,23 @@ function buildApp({ queryImpl, stellarImpl, sendEmailImpl, bcryptImpl } = {}) {
     '../middleware/auth': {
       requireAuth: (_req, _res, next) => next(),
     },
+    '../services/totpService': {
+      generateFingerprint: () => 'fp-test',
+      verifyTotp: () => true,
+      generateSecret: () => 'SECRET',
+      buildOtpauthUri: () => 'otpauth://totp/test',
+      generateQrCode: () => 'data:image/png;base64,abc',
+      generateBackupCodes: async () => ({ raw: [], hashed: [] }),
+      verifyBackupCode: async () => ({ valid: false, index: -1 }),
+      removeBackupCode: async () => {},
+      logAuditEvent: async () => {},
+      isDeviceTrusted: async () => false,
+      trustDevice: async () => {},
+      revokeDevice: async () => true,
+      revokeAllDevices: async () => {},
+      getUserDevices: async () => [],
+      enforce2faCheck: async () => ({ enforced: false }),
+    },
     jsonwebtoken: {
       sign: () => 'jwt-token',
     },
