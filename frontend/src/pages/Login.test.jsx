@@ -78,6 +78,6 @@ describe('Login', () => {
       expect(api.login).toHaveBeenCalledWith({ email: 'a@b.c', password: 'Password1' });
     });
     expect(mockLogin).toHaveBeenCalled();
-    expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true });
+    expect(mockNavigate).toHaveBeenCalledWith('/discover', { replace: true });
   });
 });

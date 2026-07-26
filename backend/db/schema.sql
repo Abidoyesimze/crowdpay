@@ -22,6 +22,9 @@ CREATE TABLE users (
   kyc_provider_reference  TEXT,
   kyc_completed_at        TIMESTAMPTZ,
   is_admin                BOOLEAN DEFAULT FALSE,
+  totp_secret             TEXT,
+  totp_enabled            BOOLEAN DEFAULT FALSE,
+  backup_codes            TEXT[],
   created_at              TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -35,11 +38,38 @@ CREATE TABLE campaigns (
   asset_type          TEXT NOT NULL CHECK (asset_type IN ('XLM', 'USDC')),
   wallet_public_key   TEXT UNIQUE NOT NULL,
   status              TEXT NOT NULL DEFAULT 'active'
-                        CHECK (status IN ('active', 'funded', 'in_progress', 'completed', 'closed', 'withdrawn', 'failed')),
+                        CHECK (status IN ('active', 'funded', 'in_progress', 'completed', 'closed', 'withdrawn', 'failed', 'suspended')),
   deadline            DATE,
   show_backer_amounts BOOLEAN DEFAULT TRUE,
+  category            TEXT CHECK (category IN (
+                        'technology', 'community', 'arts', 'education',
+                        'environment', 'health', 'business', 'open_source', 'other'
+                      )),
+  min_contribution    NUMERIC(20, 7),
+  max_contribution    NUMERIC(20, 7),
+  max_per_user        NUMERIC(20, 7),
+  featured            BOOLEAN DEFAULT FALSE,
+  featured_at         TIMESTAMPTZ,
+  featured_note       TEXT,
+  content_fingerprint TEXT,
+  is_flagged_duplicate BOOLEAN DEFAULT FALSE,
+  is_flagged_fraud    BOOLEAN DEFAULT FALSE,
+  fraud_score         INTEGER DEFAULT 0,
+  fraud_signals       JSONB DEFAULT '{}'::jsonb,
   created_at          TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS campaign_updates (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  author_id UUID NOT NULL REFERENCES users(id),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS campaign_updates_campaign_created_idx
+  ON campaign_updates (campaign_id, created_at DESC);
 
 CREATE TABLE contributions (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -58,7 +88,10 @@ CREATE TABLE contributions (
   conversion_rate     NUMERIC(30, 15),
   path                JSONB,
   tx_hash             TEXT UNIQUE NOT NULL,  -- deduplicate by Stellar transaction hash
-  display_name        TEXT,
+  display_name        VARCHAR(50),
+  refunded            BOOLEAN NOT NULL DEFAULT FALSE,
+  platform_fee_amount NUMERIC(20, 7),
+  ip_address          TEXT,
   created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -96,14 +129,54 @@ CREATE TABLE withdrawal_approval_events (
   created_at              TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE platform_announcements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ 
+  message TEXT NOT NULL CHECK (length(trim(message)) > 0),
+  severity                VARCHAR(20) NOT NULL DEFAULT 'info'
+                            CHECK (severity IN ('info', 'warning', 'critical')),
+
+  details_url             TEXT,
+  active_from             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  active_until            TIMESTAMPTZ,
+  deactivated_at          TIMESTAMPTZ,
+  created_by              UUID NOT NULL
+                            REFERENCES users(id)
+                            ON DELETE RESTRICT,
+
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+  CHECK (
+    active_until IS NULL
+    OR active_until > active_from
+  ),
+  
+  CHECK (
+    deactivated_at IS NULL
+    OR deactivated_at >= active_from
+  )
+);
+
 -- Indexes
+
+CREATE INDEX idx_announcements_active_period ON platform_announcements (active_from, active_until);
+CREATE INDEX idx_announcements_created_by ON platform_announcements (created_by);
+CREATE INDEX idx_announcements_current ON platform_announcements (active_from DESC)
+  WHERE deactivated_at IS NULL;
+
 CREATE INDEX ON contributions (campaign_id);
+CREATE INDEX idx_contributions_campaign_unrefunded
+  ON contributions (campaign_id)
+  WHERE refunded = FALSE;
 CREATE INDEX ON contributions (tx_hash);
 CREATE UNIQUE INDEX contributions_anchor_transaction_idx
   ON contributions (anchor_id, anchor_transaction_id)
   WHERE anchor_transaction_id IS NOT NULL;
 CREATE INDEX ON campaigns (status);
 CREATE INDEX ON campaigns (creator_id);
+CREATE INDEX ON campaigns (category);
+CREATE INDEX ON campaigns (featured) WHERE featured = TRUE;
 CREATE UNIQUE INDEX users_kyc_provider_reference_idx
   ON users (kyc_provider_reference)
   WHERE kyc_provider_reference IS NOT NULL;
@@ -204,10 +277,14 @@ CREATE TABLE milestones (
   release_percentage NUMERIC(7, 4) NOT NULL CHECK (release_percentage > 0 AND release_percentage <= 100),
   sort_order      INT NOT NULL DEFAULT 0,
   evidence_url    TEXT,
+  evidence_description TEXT,
+  evidence_submitted_at TIMESTAMPTZ,
   destination_key TEXT,
   review_note     TEXT,
+  reviewer_id     UUID REFERENCES users(id),
+  reviewed_at     TIMESTAMPTZ,
   status          TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending', 'approved', 'released')),
+                    CHECK (status IN ('pending', 'pending_review', 'rejected', 'approved', 'released')),
   created_at      TIMESTAMPTZ DEFAULT NOW(),
   completed_at    TIMESTAMPTZ,
   approved_at     TIMESTAMPTZ,
@@ -215,6 +292,18 @@ CREATE TABLE milestones (
 );
 
 CREATE INDEX milestones_campaign_idx ON milestones (campaign_id);
+
+CREATE TABLE milestone_events (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  milestone_id UUID NOT NULL REFERENCES milestones(id) ON DELETE CASCADE,
+  actor_id     UUID REFERENCES users(id),
+  action       TEXT NOT NULL,
+  note         TEXT,
+  metadata     JSONB NOT NULL DEFAULT '{}',
+  created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX milestone_events_milestone_idx ON milestone_events (milestone_id, created_at ASC);
 ALTER TABLE withdrawal_requests
   ADD COLUMN milestone_id UUID REFERENCES milestones(id);
 
@@ -261,16 +350,7 @@ CREATE INDEX anchor_deposits_user_created_idx
 CREATE INDEX anchor_deposits_campaign_created_idx
   ON anchor_deposits (campaign_id, created_at DESC);
 
-CREATE TABLE campaign_updates (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  campaign_id     UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
-  author_id       UUID NOT NULL REFERENCES users(id),
-  title           TEXT NOT NULL,
-  body            TEXT NOT NULL,
-  created_at      TIMESTAMPTZ DEFAULT NOW()
-);
 
-CREATE INDEX campaign_updates_campaign_idx ON campaign_updates (campaign_id, created_at DESC);
 
 CREATE TABLE password_reset_tokens (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -306,3 +386,35 @@ CREATE TABLE refresh_tokens (
 
 CREATE INDEX refresh_tokens_user_active_idx ON refresh_tokens (user_id) WHERE revoked_at IS NULL;
 CREATE INDEX refresh_tokens_token_hash_idx ON refresh_tokens (token_hash);
+
+-- Referral tracking per campaign contributor
+CREATE TABLE campaign_referrals (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  referrer_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  referral_code TEXT NOT NULL,
+  click_count INTEGER NOT NULL DEFAULT 0,
+  contribution_count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_campaign_referrals_campaign_id ON campaign_referrals(campaign_id);
+CREATE UNIQUE INDEX idx_campaign_referrals_code ON campaign_referrals(referral_code);
+CREATE UNIQUE INDEX idx_campaign_referrals_user_campaign ON campaign_referrals(campaign_id, referrer_user_id);
+
+-- Feature flags for gradual rollouts, A/B tests, and kill switches
+CREATE TABLE feature_flags (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name              TEXT UNIQUE NOT NULL,
+  description       TEXT NOT NULL DEFAULT '',
+  enabled           BOOLEAN NOT NULL DEFAULT false,
+  rollout_pct       INTEGER CHECK (rollout_pct >= 0 AND rollout_pct <= 100),
+  target_roles      TEXT[],
+  target_user_ids   UUID[],
+  variants          JSONB NOT NULL DEFAULT '{}',
+  created_at        TIMESTAMPTZ DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX feature_flags_name_idx ON feature_flags (name);
+CREATE INDEX feature_flags_enabled_idx ON feature_flags (enabled) WHERE enabled = true;
