@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const jwt = require('jsonwebtoken');
+const Sentry = require('@sentry/node');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const {

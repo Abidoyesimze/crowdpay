@@ -266,7 +266,7 @@ const contributionValidation = [
     .optional({ nullable: true })
     .customSanitizer((val) => (typeof val === 'string' ? stripHtml(val).trim() : val))
     .custom((value) => {
-      if (typeof value === 'string' && /[\u0000-\u001F\u007F-\u009F]/.test(value)) {
+      if (typeof value === 'string' && [...value].some((ch) => { const c = ch.charCodeAt(0); return c < 0x20 || c === 0x7F || (c >= 0x80 && c <= 0x9F); })) {
         throw new Error('Display name contains invalid control characters or null bytes');
       }
       return true;
