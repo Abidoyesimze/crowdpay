@@ -309,166 +309,177 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
 const platformApproveHandler = async (req, res) => {
   /**
    * @openapi
-   * /api/withdrawals/{id}/approve:
-   *   post:
-   *     tags: [Withdrawals]
-   *     summary: Platform approval (alias of /approve/platform)
-   *     security:
-   *       - bearerAuth: []
-   *     parameters:
-   *       - in: path
-   *         name: id
-   *         required: true
-   *         schema: { type: string }
-   *     responses:
-   *       200:
-   *         description: OK
-   *       401:
-   *         description: Unauthorized
-   *       403:
-   *         description: Forbidden
+   * ... JSDoc comments ...
    */
-  const { rows: requests } = await db.query(
-    `SELECT wr.*, c.status AS campaign_status
-     FROM withdrawal_requests wr
-     JOIN campaigns c ON c.id = wr.campaign_id
-     WHERE wr.id = $1`,
-    [req.params.id]
-  );
-  if (!requests.length) return res.status(404).json({ error: 'Withdrawal request not found' });
-  const requestRow = requests[0];
+  const client = await (db.pool ? db.pool.connect() : db.connect());
+  let fullySignedXdr;
 
-  if (!requestRow.is_refund && !ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(requestRow.campaign_status)) {
-    return res.status(409).json({
-      error: `Campaign status is "${requestRow.campaign_status}". Platform release is blocked.`,
-    });
-  }
-  if (requestRow.status !== 'pending') {
-    return res.status(409).json({ error: 'Withdrawal request is no longer pending' });
-  }
-  if (!requestRow.creator_signed) {
-    return res.status(409).json({ error: 'Creator approval is required before platform approval' });
-  }
-  if (requestRow.platform_signed) {
-    return res.status(409).json({ error: 'Platform already approved this withdrawal' });
-  }
-
-  const signedXdr = signTransactionXdr({
-    xdr: requestRow.unsigned_xdr,
-    signerSecret: process.env.PLATFORM_SECRET_KEY,
-  });
-
-  const signatureCount = signatureCountFromXdr(signedXdr);
-  if (signatureCount < 2) {
-    return res.status(422).json({ error: 'Insufficient signatures: expected creator + platform' });
-  }
-
-  let txHash;
-  try {
-    txHash = await submitSignedWithdrawal({ xdr: signedXdr });
-  } catch (err) {
-    logger.error('Withdrawal Stellar submission failed', {
-      withdrawal_id: req.params.id,
-      error: err.message,
-    });
-    sendAlert('Withdrawal submission failed', {
-      withdrawal_id: req.params.id,
-      error: err.message,
-    });
-    const client = await db.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(
-        `UPDATE withdrawal_requests SET status = 'failed' WHERE id = $1 AND status = 'pending'`,
-        [req.params.id]
-      );
-      await logWithdrawalEvent(client, {
-        withdrawalRequestId: req.params.id,
-        actorUserId: req.user.userId,
-        action: 'submit_failed',
-        note: err.message || 'Stellar submit failed',
-        metadata: { detail: String(err) },
-      });
-      await markWithdrawalFailed(client, {
-        withdrawalRequestId: req.params.id,
-        reason: err.message || 'Stellar submit failed',
-      });
-      await client.query('COMMIT');
-    } catch (logErr) {
-      await client.query('ROLLBACK');
-      logger.error('Failed to persist withdrawal submit error', { withdrawal_id: req.params.id, error: logErr.message });
-    } finally {
-      client.release();
-    }
-    return res.status(502).json({
-      error: 'Stellar network rejected the transaction after dual approval. Request marked failed; see audit log.',
-    });
-  }
-
-  const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const { rows: updated } = await client.query(
-      `UPDATE withdrawal_requests
-       SET unsigned_xdr = $1, platform_signed = TRUE, status = 'submitted', tx_hash = $2
-       WHERE id = $3 AND status = 'pending'
-       RETURNING *`,
-      [signedXdr, txHash, req.params.id]
+
+    const { rows: requests } = await client.query(
+      `SELECT wr.*, c.status AS campaign_status
+       FROM withdrawal_requests wr
+       JOIN campaigns c ON c.id = wr.campaign_id
+       WHERE wr.id = $1
+       FOR UPDATE`,
+      [req.params.id]
     );
-    if (!updated.length) {
+
+    if (!requests || requests.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Withdrawal request not found' });
+    }
+
+    const requestRow = requests[0];
+
+    if (requestRow.status !== 'pending') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Conflict: Withdrawal request is already being processed or completed' });
+    }
+
+    if (!requestRow.creator_signed) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Creator approval is required before platform approval' });
+    }
+
+    if (requestRow.platform_signed) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Platform has already approved this withdrawal' });
+    }
+
+    const now = new Date();
+    if (requestRow.expires_at && new Date(requestRow.expires_at) < now) {
+      await client.query(
+        `UPDATE withdrawal_requests SET status = 'expired', updated_at = NOW() WHERE id = $1`,
+        [req.params.id]
+      );
+      await client.query('COMMIT');
+      return res.status(400).json({ error: 'Withdrawal XDR has expired' });
+    }
+
+    const fullySignedXdr = signTransactionXdr({
+      xdr: requestRow.unsigned_xdr,
+      signerSecret: process.env.PLATFORM_SECRET_KEY,
+    });
+
+    if (signatureCountFromXdr(fullySignedXdr) < 2) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({ error: 'Withdrawal approval requires both creator and platform signatures' });
+    }
+
+    const { rows: updatedRows } = await client.query(
+      `UPDATE withdrawal_requests
+       SET unsigned_xdr = $1,
+           platform_signed = TRUE,
+           status = 'approved',
+           updated_at = NOW()
+       WHERE id = $2
+         AND status = 'pending'
+         AND creator_signed = TRUE
+         AND platform_signed = FALSE
+       RETURNING *`,
+      [fullySignedXdr, req.params.id]
+    );
+
+    if (!updatedRows.length) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'Withdrawal request changed; refresh and try again.' });
     }
+
     await logWithdrawalEvent(client, {
       withdrawalRequestId: req.params.id,
       actorUserId: req.user.userId,
       action: 'platform_signed',
       note: null,
-      metadata: { tx_hash: txHash },
+      metadata: {},
     });
-    await finalizeWithdrawalSubmitted(client, {
-      withdrawalRequestId: req.params.id,
-      txHash,
-      signedXdr,
-    });
+
     await client.query('COMMIT');
-
-    // Notify creator
-    const { rows: cRows } = await db.query(
-      `SELECT u.email FROM users u JOIN campaigns c ON c.creator_id = u.id WHERE c.id = $1`,
-      [requestRow.campaign_id]
-    );
-    if (cRows.length) {
-      sendEmail({
-        to: cRows[0].email,
-        subject: 'Withdrawal Approved',
-        text: `Your withdrawal for ${requestRow.amount} has been approved by the platform. Transaction Hash: ${txHash}`
-      });
-    }
-
-    const withdrawalRow = updated[0];
-    setImmediate(() => {
-      db.query('SELECT creator_id FROM campaigns WHERE id = $1', [withdrawalRow.campaign_id])
-        .then(({ rows: cr }) => {
-          if (!cr.length) return;
-          return emitWebhookEventForUser(cr[0].creator_id, WEBHOOK_EVENTS.WITHDRAWAL_COMPLETED, {
-            withdrawal: { ...withdrawalRow, tx_hash: txHash },
-          });
-        })
-        .catch((e) => logger.error('Withdrawal webhook emit failed', { error: e.message }));
-    });
-    res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');
-    logger.error('Platform approval persistence failed after Stellar submit', {
-      withdrawal_id: req.params.id,
-      tx_hash: txHash,
-      error: err.message,
-    });
-    res.status(500).json({ error: 'Transaction submitted but failed to update records; check Stellar and audit trail.' });
+    logger.error('Platform approval failed', { withdrawal_id: req.params.id, error: err.message });
+    return res.status(500).json({ error: 'Failed to process withdrawal approval' });
   } finally {
     client.release();
   }
+
+  let txHash;
+  try {
+    txHash = await submitSignedWithdrawal({ xdr: fullySignedXdr });
+  } catch (err) {
+    const failureClient = await db.connect();
+    try {
+      await failureClient.query('BEGIN');
+      await failureClient.query(
+        `UPDATE withdrawal_requests
+         SET status = 'failed', updated_at = NOW()
+         WHERE id = $1`,
+        [req.params.id]
+      );
+      await markWithdrawalFailed(failureClient, {
+        withdrawalRequestId: req.params.id,
+        reason: err.message,
+      });
+      await logWithdrawalEvent(failureClient, {
+        withdrawalRequestId: req.params.id,
+        actorUserId: req.user.userId,
+        action: 'submit_failed',
+        note: err.message,
+        metadata: {},
+      });
+      await failureClient.query('COMMIT');
+    } catch (failureErr) {
+      await failureClient.query('ROLLBACK');
+      logger.error('Failed to record withdrawal submission failure', {
+        withdrawal_id: req.params.id,
+        error: failureErr.message,
+      });
+    } finally {
+      failureClient.release();
+    }
+
+    logger.error('Withdrawal submission failed', { withdrawal_id: req.params.id, error: err.message });
+    return res.status(502).json({
+      error: 'Stellar network rejected the withdrawal transaction',
+      detail: err.message || String(err),
+    });
+  }
+
+  const finalizeClient = await db.connect();
+  try {
+    await finalizeClient.query('BEGIN');
+    await finalizeClient.query(
+      `UPDATE withdrawal_requests
+       SET status = 'submitted', tx_hash = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [txHash, req.params.id]
+    );
+    await finalizeWithdrawalSubmitted(finalizeClient, {
+      withdrawalRequestId: req.params.id,
+      txHash,
+      signedXdr: fullySignedXdr,
+    });
+    await logWithdrawalEvent(finalizeClient, {
+      withdrawalRequestId: req.params.id,
+      actorUserId: req.user.userId,
+      action: 'platform_signed',
+      note: 'Transaction submitted to Stellar network',
+      metadata: { tx_hash: txHash },
+    });
+    await finalizeClient.query('COMMIT');
+  } catch (err) {
+    await finalizeClient.query('ROLLBACK');
+    logger.error('Failed to finalize withdrawal after Stellar submission', {
+      withdrawal_id: req.params.id,
+      error: err.message,
+    });
+    return res.status(500).json({ error: 'Could not finalize withdrawal submission' });
+  } finally {
+    finalizeClient.release();
+  }
+
+  return res.status(200).json({ status: 'submitted', tx_hash: txHash });
 };
 
 router.post('/:id/approve/platform', requireAuth, requireRole('admin'), platformApproveHandler);

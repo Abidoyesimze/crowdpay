@@ -303,6 +303,9 @@ test('POST /api/withdrawals/:id/approve/platform submits with dual signatures', 
           }],
         };
       }
+      if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'approved'")) {
+        return { rows: [{ id: 'w-1', status: 'approved' }] };
+      }
       if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'submitted'")) {
         return { rows: [{ id: 'w-1', status: 'submitted', tx_hash: 'tx-hash' }] };
       }
@@ -324,6 +327,55 @@ test('POST /api/withdrawals/:id/approve/platform submits with dual signatures', 
   assert.equal(response.body.status, 'submitted');
   assert.ok(calls.some((c) => c.includes("status = 'submitted'")));
   assert.ok(calls.some((c) => c.includes('UPDATE stellar_transactions')));
+});
+
+test('POST /api/withdrawals/:id/approve/platform rejects duplicate approval after first request updates status', async () => {
+  let currentStatus = 'pending';
+  const { app, cleanup } = buildApp({
+    role: 'admin',
+    queryImpl: async (text) => {
+      if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes('SELECT wr.*, c.status')) {
+        return {
+          rows: [{
+            id: 'w-1',
+            status: currentStatus,
+            creator_signed: true,
+            platform_signed: false,
+            unsigned_xdr: 'xdr-creator-signed',
+            campaign_status: 'active',
+          }],
+        };
+      }
+      if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'approved'")) {
+        currentStatus = 'approved';
+        return { rows: [{ id: 'w-1', status: 'approved' }] };
+      }
+      if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'submitted'")) {
+        currentStatus = 'submitted';
+        return { rows: [{ id: 'w-1', status: 'submitted', tx_hash: 'tx-hash' }] };
+      }
+      if (text.includes('INSERT INTO withdrawal_approval_events')) return { rows: [] };
+      if (text.includes('UPDATE stellar_transactions') && text.includes("kind = 'withdrawal'")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  await request(app)
+    .post('/api/withdrawals/w-1/approve/platform')
+    .set('Authorization', 'Bearer token')
+    .send({});
+
+  const duplicateResponse = await request(app)
+    .post('/api/withdrawals/w-1/approve/platform')
+    .set('Authorization', 'Bearer token')
+    .send({});
+
+  cleanup();
+  assert.equal(duplicateResponse.status, 409);
+  assert.match(duplicateResponse.body.error, /already being processed|platform has already approved|withdrawal request changed/);
 });
 
 test('POST /api/withdrawals/:id/cancel denies after creator signed', async () => {
@@ -434,6 +486,9 @@ test('POST /api/withdrawals/:id/approve/platform logs failure when Stellar rejec
           }],
         };
       }
+      if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'approved'")) {
+        return { rows: [{ id: 'w-1', status: 'approved' }] };
+      }
       if (text.includes("SET status = 'failed'")) return { rows: [] };
       if (text.includes('INSERT INTO withdrawal_approval_events')) return { rows: [] };
       if (text.includes('UPDATE stellar_transactions') && text.includes("status = 'failed'")) {
@@ -456,3 +511,4 @@ test('POST /api/withdrawals/:id/approve/platform logs failure when Stellar rejec
   cleanup();
   assert.equal(response.status, 502);
 });
+
