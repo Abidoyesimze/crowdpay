@@ -1,9 +1,19 @@
+const express = require('express');
+const router = express.Router();
 const crypto = require('crypto');
-const router = require('express').Router();
 const db = require('../config/database');
+const logger = require('../config/logger');
 const { requireAuth } = require('../middleware/auth');
-const { ALL_WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
-const { extractWebhookResult } = require('../services/kycProvider');
+const {
+  ALL_WEBHOOK_EVENTS,
+  processDelivery,
+  isValidBackoffStrategy,
+} = require('../services/webhookDispatcher');
+const {
+  processIncomingWebhook,
+  verifyWebhookSignature,
+  WebhookError,
+} = require('../services/webhookService');
 
 function isValidWebhookUrl(urlString) {
   try {
@@ -27,43 +37,59 @@ function normalizeEvents(events) {
   return [...new Set(events.filter((e) => typeof e === 'string' && allowed.has(e)))];
 }
 
-router.post('/kyc', async (req, res) => {
-  const result = extractWebhookResult(req.body || {});
-  if (!result.providerReference && !result.userId) {
-    return res.status(400).json({ error: 'KYC webhook payload missing provider reference' });
+// KYC webhooks are handled at POST /api/webhooks/kyc (raw body + Persona signature verification).
+
+router.post('/incoming/:id', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT id, user_id, secret FROM webhooks WHERE id = $1 AND revoked_at IS NULL`,
+      [req.params.id]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Webhook not found' });
+    }
+
+    const webhook = rows[0];
+    const rawBody = req.body;
+
+    // Some services might use variations like X-Signature-256 or x-signature
+    const headerSig = req.headers['x-signature-256'] || req.headers['x-signature'];
+
+    if (!headerSig) {
+      return res.status(401).json({ error: 'Missing signature header' });
+    }
+
+    // Constant-time HMAC-SHA256 comparison (tolerates a `sha256=` prefix).
+    if (!verifyWebhookSignature(webhook.secret, rawBody, headerSig)) {
+      logger.warn('Failed webhook signature verification', { webhookId: req.params.id });
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(rawBody.toString('utf8'));
+    } catch (err) {
+      return res.status(400).json({ error: 'Invalid JSON payload' });
+    }
+
+    const result = await processIncomingWebhook(webhook.id, payload, {
+      ownerUserId: webhook.user_id,
+    });
+
+    res.status(200).json({ success: true, ...result });
+  } catch (err) {
+    if (err instanceof WebhookError) {
+      logger.warn('Rejected incoming webhook', {
+        webhookId: req.params.id,
+        status: err.status,
+        error: err.message,
+      });
+      return res.status(err.status).json({ error: err.message });
+    }
+    logger.error('Error processing incoming webhook', { error: err.message, webhookId: req.params.id });
+    res.status(500).json({ error: 'Internal server error' });
   }
-
-  if (!['verified', 'rejected', 'pending'].includes(result.kycStatus)) {
-    return res.status(400).json({ error: 'Unsupported KYC status' });
-  }
-
-  const params = [result.kycStatus, result.providerReference || null];
-  let lookup = 'kyc_provider_reference = $2';
-  if (result.userId) {
-    params.push(result.userId);
-    lookup = `(kyc_provider_reference = $2 OR id = $3)`;
-  }
-
-  const { rows } = await db.query(
-    `UPDATE users
-     SET kyc_status = $1::kyc_status,
-         kyc_provider_reference = COALESCE($2, kyc_provider_reference),
-         kyc_completed_at = CASE WHEN $1::kyc_status = 'verified' THEN NOW() ELSE NULL END
-     WHERE ${lookup}
-     RETURNING id, kyc_status, kyc_completed_at`,
-    params
-  );
-
-  if (!rows.length) {
-    return res.status(404).json({ error: 'KYC subject not found' });
-  }
-
-  res.json({
-    received: true,
-    user_id: rows[0].id,
-    kyc_status: rows[0].kyc_status,
-    kyc_completed_at: rows[0].kyc_completed_at,
-  });
 });
 
 router.get('/', requireAuth, async (req, res) => {
@@ -78,7 +104,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 router.post('/', requireAuth, async (req, res) => {
-  const { url, events } = req.body || {};
+  const { url, events, backoff_strategy } = req.body || {};
   if (!url || !events) {
     return res.status(400).json({ error: 'url and events array are required' });
   }
@@ -89,13 +115,18 @@ router.post('/', requireAuth, async (req, res) => {
   if (!ev.length) {
     return res.status(400).json({ error: `events must include at least one of: ${ALL_WEBHOOK_EVENTS.join(', ')}` });
   }
+  if (backoff_strategy !== undefined && backoff_strategy !== null && !isValidBackoffStrategy(backoff_strategy)) {
+    return res.status(400).json({
+      error: 'backoff_strategy must be { base_ms, max_ms, multiplier } with positive numbers',
+    });
+  }
 
   const secret = `whsec_${crypto.randomBytes(32).toString('hex')}`;
   const { rows } = await db.query(
-    `INSERT INTO webhooks (user_id, url, events, secret)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, url, events, created_at`,
-    [req.user.userId, url, ev, secret]
+    `INSERT INTO webhooks (user_id, url, events, secret, backoff_strategy)
+     VALUES ($1, $2, $3, $4, $5::jsonb)
+     RETURNING id, url, events, backoff_strategy, created_at`,
+    [req.user.userId, url, ev, secret, backoff_strategy ? JSON.stringify(backoff_strategy) : null]
   );
 
   res.status(201).json({
@@ -103,6 +134,24 @@ router.post('/', requireAuth, async (req, res) => {
     secret,
     message: 'Store the signing secret; it is only shown once.',
   });
+});
+
+router.patch('/:id/backoff-strategy', requireAuth, async (req, res) => {
+  const { backoff_strategy } = req.body || {};
+  if (backoff_strategy !== null && !isValidBackoffStrategy(backoff_strategy)) {
+    return res.status(400).json({
+      error: 'backoff_strategy must be { base_ms, max_ms, multiplier } with positive numbers, or null to reset to defaults',
+    });
+  }
+
+  const { rows } = await db.query(
+    `UPDATE webhooks SET backoff_strategy = $1::jsonb
+     WHERE id = $2 AND user_id = $3 AND revoked_at IS NULL
+     RETURNING id, url, events, backoff_strategy`,
+    [backoff_strategy ? JSON.stringify(backoff_strategy) : null, req.params.id, req.user.userId]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'Webhook not found' });
+  res.json(rows[0]);
 });
 
 router.delete('/:id', requireAuth, async (req, res) => {
@@ -140,6 +189,32 @@ router.get('/deliveries', requireAuth, async (req, res) => {
     params
   );
   res.json(rows);
+});
+
+router.post('/deliveries/:id/replay', requireAuth, async (req, res) => {
+  const { rows } = await db.query(
+    `UPDATE webhook_deliveries d
+     SET status = 'pending', attempt_count = 0, last_error = NULL,
+         response_status = NULL, response_body_snippet = NULL,
+         next_retry_at = NULL, delivered_at = NULL, updated_at = NOW()
+     FROM webhooks w
+     WHERE d.id = $1 AND d.webhook_id = w.id AND w.user_id = $2
+       AND d.status IN ('failed', 'retrying')
+     RETURNING d.id`,
+    [req.params.id, req.user.userId]
+  );
+
+  if (!rows.length) {
+    return res.status(404).json({ error: 'Failed delivery not found or not replayable' });
+  }
+
+  setImmediate(() => {
+    processDelivery(rows[0].id).catch((err) => {
+      logger.error('Failed to replay webhook delivery', { err });
+    });
+  });
+
+  res.json({ message: 'Replay queued', id: rows[0].id });
 });
 
 module.exports = router;

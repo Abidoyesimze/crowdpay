@@ -3,7 +3,6 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import Navbar from './Navbar';
-import { ThemeProvider } from '../context/ThemeContext';
 
 const mockNavigate = vi.fn();
 const mockLogout = vi.fn();
@@ -16,27 +15,21 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-vi.mock('../context/ThemeContext', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    useTheme: () => ({ dark: false, toggleTheme: vi.fn() }),
-  };
-});
-
 vi.mock('../context/AuthContext', () => ({
   useAuth: vi.fn(),
+}));
+
+vi.mock('../context/ThemeContext', () => ({
+  useTheme: () => ({ dark: false, toggleTheme: vi.fn() }),
 }));
 
 import { useAuth } from '../context/AuthContext';
 
 function renderNavbar() {
   return render(
-    <ThemeProvider>
-      <MemoryRouter>
-        <Navbar />
-      </MemoryRouter>
-    </ThemeProvider>
+    <MemoryRouter>
+      <Navbar />
+    </MemoryRouter>
   );
 }
 
@@ -44,15 +37,6 @@ describe('Navbar', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     mockLogout.mockClear();
-    window.matchMedia =
-      window.matchMedia ||
-      function matchMedia() {
-        return {
-          matches: false,
-          addEventListener: () => {},
-          removeEventListener: () => {},
-        };
-      };
   });
 
   it('shows login and sign up when unauthenticated', () => {
@@ -60,31 +44,18 @@ describe('Navbar', () => {
     renderNavbar();
     expect(screen.getByRole('link', { name: /log in/i })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /sign up/i })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /select language/i })).toBeInTheDocument();
   });
 
-  it('shows dashboard and logout when authenticated as creator', () => {
+  it('shows create support space and logout when authenticated', () => {
     useAuth.mockReturnValue({
       user: { name: 'Bola', role: 'creator' },
       logout: mockLogout,
     });
     renderNavbar();
-    expect(screen.getByRole('link', { name: /dashboard/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /create support space/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /logout/i })).toBeInTheDocument();
     expect(screen.getByText('Bola')).toBeInTheDocument();
-  });
-
-  it('shows dashboard when authenticated as contributor', () => {
-    useAuth.mockReturnValue({
-      user: { name: 'Alice', role: 'contributor' },
-      logout: mockLogout,
-    });
-    render(
-      <MemoryRouter>
-        <Navbar />
-      </MemoryRouter>
-    );
-    renderNavbar();
-    expect(screen.getByRole('link', { name: /dashboard/i })).toBeInTheDocument();
   });
 
   it('calls logout and navigates home', async () => {

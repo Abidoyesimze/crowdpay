@@ -6,7 +6,7 @@ test('asyncHandler passes (req, res, next) to the wrapped function', async () =>
   const req = {};
   const res = {};
   let nextCalled = false;
-  const next = (err) => { nextCalled = err; };
+  const next = () => { nextCalled = true; };
 
   const handler = asyncHandler(async (r, s, n) => {
     assert.equal(r, req);

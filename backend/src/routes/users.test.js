@@ -30,9 +30,26 @@ function buildApp({ queryImpl, stellarImpl, sendEmailImpl, bcryptImpl } = {}) {
     '../services/walletSecrets': {
       encryptWalletSecret: async (secret) => `cpws:v1:${secret.slice(0, 8)}`,
     },
-    '../services/emailService': { sendEmail },
+    '../services/emailService': { sendEmail, sendWelcomeEmail: async () => {} },
     '../middleware/auth': {
       requireAuth: (_req, _res, next) => next(),
+    },
+    '../services/totpService': {
+      generateFingerprint: () => 'fp-test',
+      verifyTotp: () => true,
+      generateSecret: () => 'SECRET',
+      buildOtpauthUri: () => 'otpauth://totp/test',
+      generateQrCode: () => 'data:image/png;base64,abc',
+      generateBackupCodes: async () => ({ raw: [], hashed: [] }),
+      verifyBackupCode: async () => ({ valid: false, index: -1 }),
+      removeBackupCode: async () => {},
+      logAuditEvent: async () => {},
+      isDeviceTrusted: async () => false,
+      trustDevice: async () => {},
+      revokeDevice: async () => true,
+      revokeAllDevices: async () => {},
+      getUserDevices: async () => [],
+      enforce2faCheck: async () => ({ enforced: false }),
     },
     jsonwebtoken: {
       sign: () => 'jwt-token',
@@ -106,8 +123,9 @@ test('POST /api/auth/register returns 400 with validation errors for invalid inp
     .send({ email: 'not-an-email', password: 'short', name: '' });
 
   assert.equal(res.status, 400);
-  assert.ok(Array.isArray(res.body.errors));
-  assert.ok(res.body.errors.length >= 1);
+  assert.equal(res.body.error.code, 'VALIDATION_ERROR');
+  assert.ok(Array.isArray(res.body.error.fields));
+  assert.ok(res.body.error.fields.length >= 1);
 });
 
 test('POST /api/auth/login returns 400 with validation errors for invalid email', async () => {
@@ -120,7 +138,8 @@ test('POST /api/auth/login returns 400 with validation errors for invalid email'
     .send({ email: 'bad-email', password: '' });
 
   assert.equal(res.status, 400);
-  assert.ok(Array.isArray(res.body.errors));
+  assert.equal(res.body.error.code, 'VALIDATION_ERROR');
+  assert.ok(Array.isArray(res.body.error.fields));
 });
 
 test('POST /api/auth/forgot-password returns generic message for unknown email', async () => {
