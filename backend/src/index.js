@@ -237,6 +237,7 @@ app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api/users", require("./routes/users"));
 app.use("/api/invites", require("./routes/invites"));
 app.use("/api/campaigns", require("./routes/campaignUpdates"));
+app.use("/api/campaigns", require("./routes/campaignComments"));
 app.use("/api/campaigns", require("./routes/campaigns"));
 app.use("/api/anchor", require("./routes/anchor"));
 app.use("/api/contributions", require("./routes/contributions"));
@@ -385,6 +386,31 @@ function startWeeklyDigestCron() {
   logger.info("Weekly digest cron scheduled", { schedule });
 }
 
+function startScheduledPublishCron() {
+  if (!ff.isEnabled("scheduled-publish-cron")) return;
+  const cron = require("node-cron");
+  const db = require("./config/database");
+  const { publishDraftCampaign } = require("./services/campaignPublishing");
+  cron.schedule("*/5 * * * *", async () => {
+    try {
+      const { rows } = await db.query(
+        `SELECT id FROM campaigns
+         WHERE status = 'draft' AND scheduled_publish_at IS NOT NULL AND scheduled_publish_at <= NOW()`
+      );
+      for (const row of rows) {
+        try {
+          await publishDraftCampaign(row.id);
+        } catch (err) {
+          logger.error("Scheduled publish failed for campaign", { campaign_id: row.id, error: err.message });
+        }
+      }
+    } catch (err) {
+      logger.error("Scheduled publish cron failed", { error: err.message });
+    }
+  });
+  logger.info("Scheduled publish cron scheduled (every 5 minutes)");
+}
+
 function startNotificationDigestCron() {
   if (!ff.isEnabled("notification-quiet-hours-cron")) return;
   const cron = require("node-cron");
@@ -422,6 +448,7 @@ async function bootstrap() {
     startWebhookRetryPoller();
     startCampaignStatusCron();
     startReconciliationCron();
+    startScheduledPublishCron();
     startWeeklyDigestCron();
     startNotificationDigestCron();
     startContractDeploymentRetryCron();

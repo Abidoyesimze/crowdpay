@@ -177,4 +177,51 @@ test('getContributorDashboard returns empty shape when there are no contribution
   const dashboard = await getContributorDashboard('user-1');
   assert.deepEqual(dashboard.campaigns, []);
   assert.equal(dashboard.stats.active_campaigns_backed, 0);
+  assert.equal(dashboard.stats.campaigns_backed, 0);
+  assert.equal(dashboard.stats.avg_contribution, 0);
+  assert.ok(Array.isArray(dashboard.stats.badges));
+  assert.equal(
+    dashboard.stats.badges.find((b) => b.id === 'first_contribution').earned,
+    false
+  );
+});
+
+test('getContributorDashboard computes campaigns_backed, avg_contribution, and badges', async () => {
+  const { db } = buildDashboardDb(5);
+  const { getContributorDashboard } = proxyquire('./userDashboardService', {
+    '../config/database': db,
+  });
+
+  const dashboard = await getContributorDashboard('user-1');
+
+  assert.equal(dashboard.stats.campaigns_backed, 5);
+  assert.equal(dashboard.stats.total_contributed, 50);
+  assert.equal(dashboard.stats.avg_contribution, 10);
+  assert.equal(dashboard.stats.badges.find((b) => b.id === 'first_contribution').earned, true);
+  assert.equal(dashboard.stats.badges.find((b) => b.id === 'backed_5_campaigns').earned, true);
+  assert.equal(dashboard.stats.badges.find((b) => b.id === 'backed_10_campaigns').earned, false);
+  assert.equal(dashboard.stats.badges.find((b) => b.id === 'contributed_1000').earned, false);
+});
+
+test('getContributorDashboardCsv builds a CSV with one row per contribution', async () => {
+  const { db } = buildDashboardDb(2);
+  const { getContributorDashboardCsv } = proxyquire('./userDashboardService', {
+    '../config/database': db,
+  });
+
+  const csv = await getContributorDashboardCsv('user-1');
+  const lines = csv.trim().split('\n');
+  assert.equal(lines[0], 'date,campaign,amount,asset,tx_hash,refund_status');
+  assert.equal(lines.length, 3); // header + 2 contributions
+  assert.match(lines[1], /Campaign 1/);
+  assert.match(lines[1], /hash-0/);
+});
+
+test('getContributorDashboardCsv returns null for an unknown user', async () => {
+  const { getContributorDashboardCsv } = proxyquire('./userDashboardService', {
+    '../config/database': { query: async () => ({ rows: [] }) },
+  });
+
+  const csv = await getContributorDashboardCsv('missing');
+  assert.equal(csv, null);
 });

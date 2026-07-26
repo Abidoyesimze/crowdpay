@@ -429,7 +429,8 @@
   "campaignStatus": {
     "goalReached": "Objectif atteint",
     "campaignEnded": "Campagne terminée",
-    "campaignClosed": "Campagne fermée"
+    "campaignClosed": "Campagne fermée",
+    "draft": "Brouillon"
   },
   "dashboard": {
     "title": "Tableau de bord",

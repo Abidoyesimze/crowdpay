@@ -342,6 +342,9 @@ export const api = {
   getCampaignBackers: (id) => request('GET', `/campaigns/${id}/backers`),
   getCampaignBalance: (id) => request('GET', `/campaigns/${id}/balance`),
   getCloneData: (id) => request('GET', `/campaigns/${id}/clone-data`),
+  cloneCampaign: (id) => request('POST', `/campaigns/${id}/clone`, {}),
+  publishCampaign: (id) => request('POST', `/campaigns/${id}/publish`, {}),
+  scheduleCampaignPublish: (id, body) => request('POST', `/campaigns/${id}/schedule-publish`, body),
   checkDuplicateCampaign: (body) => request('POST', '/campaigns/check-duplicate', body),
   createCampaign: (body) => request('POST', '/campaigns', body),
   updateCampaign: (id, body) => request('PATCH', `/campaigns/${id}`, body),
@@ -383,6 +386,22 @@ export const api = {
   deleteCampaignUpdate: (campaignId, updateId) =>
     request('DELETE', `/campaigns/${campaignId}/updates/${updateId}`),
 
+  getCampaignComments: (campaignId) => request('GET', `/campaigns/${campaignId}/comments`),
+  postCampaignComment: (campaignId, body) =>
+    request('POST', `/campaigns/${campaignId}/comments`, body),
+  updateCampaignComment: (campaignId, commentId, body) =>
+    request('PATCH', `/campaigns/${campaignId}/comments/${commentId}`, body),
+  deleteCampaignComment: (campaignId, commentId) =>
+    request('DELETE', `/campaigns/${campaignId}/comments/${commentId}`),
+  flagCampaignComment: (campaignId, commentId, body) =>
+    request('POST', `/campaigns/${campaignId}/comments/${commentId}/flag`, body),
+  getFlaggedCampaignComments: (campaignId) =>
+    request('GET', `/campaigns/${campaignId}/comments/moderation`),
+  hideCampaignComment: (campaignId, commentId, body) =>
+    request('POST', `/campaigns/${campaignId}/comments/${commentId}/hide`, body),
+  unhideCampaignComment: (campaignId, commentId) =>
+    request('POST', `/campaigns/${campaignId}/comments/${commentId}/unhide`),
+
   getContributions: (campaignId, options = {}) =>
     request('GET', `/contributions/campaign/${campaignId}`, null, {
       query: options,
@@ -421,6 +440,14 @@ export const api = {
   approveRefundPlatform: (id) => request('POST', `/campaigns/${id}/refund/approve/platform`, {}),
   requestContributionRefund: (contributionId) =>
     request('POST', `/contributions/${contributionId}/refund`, {}),
+
+  getContributorDashboard: () => request('GET', '/contributions/dashboard'),
+  exportContributionsCsv: () =>
+    downloadFile('/contributions/dashboard/export.csv', 'contributions.csv'),
+
+  getFavorites: () => request('GET', '/users/me/favorites'),
+  addFavorite: (campaignId) => request('POST', `/campaigns/${campaignId}/favorite`, {}),
+  removeFavorite: (campaignId) => request('DELETE', `/campaigns/${campaignId}/favorite`),
 
   getWithdrawalCapabilities: () => request('GET', '/withdrawals/capabilities'),
   listWithdrawals: (campaignId) => request('GET', `/withdrawals/campaign/${campaignId}`),

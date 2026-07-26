@@ -429,7 +429,8 @@
   "campaignStatus": {
     "goalReached": "Goal reached",
     "campaignEnded": "Campaign ended",
-    "campaignClosed": "Campaign closed"
+    "campaignClosed": "Campaign closed",
+    "draft": "Draft"
   },
   "dashboard": {
     "title": "Dashboard",

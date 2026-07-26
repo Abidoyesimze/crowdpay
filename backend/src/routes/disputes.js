@@ -8,6 +8,7 @@ const {
   sendDisputeResolvedContributorEmail,
 } = require('../services/emailService');
 const logger = require('../config/logger');
+const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -120,6 +121,17 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
     );
 
     logger.info('Dispute raised', { dispute_id: dispute.id, campaign_id: campaign.id });
+
+    setImmediate(() => {
+      const payload = { dispute, campaign_id: campaign.id };
+      emitWebhookEventForUser(campaign.creator_id, WEBHOOK_EVENTS.DISPUTE_OPENED, payload).catch((err) =>
+        logger.error('Dispute opened webhook emit failed', { error: err.message })
+      );
+      emitWebhookEventForCampaign(campaign.id, WEBHOOK_EVENTS.DISPUTE_OPENED, payload).catch((err) =>
+        logger.error('Dispute opened webhook emit failed', { error: err.message })
+      );
+    });
+
     res.status(201).json(dispute);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -161,6 +173,11 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
   );
   if (!disputes.length) return res.status(404).json({ error: 'Dispute not found' });
   const dispute = disputes[0];
+
+  const { rows: disputeCampaigns } = await db.query('SELECT creator_id FROM campaigns WHERE id = $1', [
+    dispute.campaign_id,
+  ]);
+  const campaignCreatorId = disputeCampaigns[0]?.creator_id;
 
   const client = await db.connect();
   try {
@@ -259,12 +276,20 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
 
     if (status === 'resolved_creator') {
       // Unfreeze pending on_hold withdrawals for this campaign
-      await client.query(
+      const { rows: unfrozen } = await client.query(
         `UPDATE withdrawal_requests
          SET status = 'pending', dispute_id = NULL
-         WHERE campaign_id = $1 AND status = 'on_hold' AND dispute_id = $2`,
+         WHERE campaign_id = $1 AND status = 'on_hold' AND dispute_id = $2
+         RETURNING *`,
         [dispute.campaign_id, dispute.id]
       );
+      for (const withdrawal of unfrozen) {
+        setImmediate(() =>
+          emitWebhookEventForUser(campaignCreatorId, WEBHOOK_EVENTS.WITHDRAWAL_UPDATED, {
+            withdrawal,
+          }).catch((err) => logger.error('Withdrawal updated webhook emit failed', { error: err.message }))
+        );
+      }
 
       const { rows: creatorRows } = await db.query(
         `SELECT u.email, u.name, c.title
@@ -286,6 +311,19 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
     }
 
     await client.query('COMMIT');
+
+    if (['resolved_creator', 'resolved_contributor', 'closed'].includes(status)) {
+      setImmediate(() => {
+        const payload = { dispute: updated[0], campaign_id: dispute.campaign_id };
+        emitWebhookEventForUser(campaignCreatorId, WEBHOOK_EVENTS.DISPUTE_RESOLVED, payload).catch((err) =>
+          logger.error('Dispute resolved webhook emit failed', { error: err.message })
+        );
+        emitWebhookEventForCampaign(dispute.campaign_id, WEBHOOK_EVENTS.DISPUTE_RESOLVED, payload).catch((err) =>
+          logger.error('Dispute resolved webhook emit failed', { error: err.message })
+        );
+      });
+    }
+
     res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');

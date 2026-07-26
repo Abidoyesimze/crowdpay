@@ -314,6 +314,20 @@ async function queueFailedCampaignRefunds(campaignId, actorUserId) {
               logger.error(`Failed to send refund email to ${users[0].email}:`, { error: emailErr.message });
             });
           }
+
+          const refundPayload = {
+            campaign_id: campaign.id,
+            contribution_id: contribution.id,
+            amount: String(contribution.amount),
+            asset: contribution.asset,
+            timestamp: new Date().toISOString(),
+          };
+          emitWebhookEventForUser(campaign.creator_id, WEBHOOK_EVENTS.CONTRIBUTION_REFUNDED, refundPayload).catch(
+            (err) => logger.error('Contribution refunded webhook emit failed', { error: err.message })
+          );
+          emitWebhookEventForCampaign(campaign.id, WEBHOOK_EVENTS.CONTRIBUTION_REFUNDED, refundPayload).catch(
+            (err) => logger.error('Contribution refunded webhook emit failed', { error: err.message })
+          );
         } catch (err) {
           logger.warn('On-chain refund failed for contribution, falling back to Stellar withdrawal', {
             campaign_id: campaignId,

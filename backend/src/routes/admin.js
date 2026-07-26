@@ -1109,6 +1109,57 @@ router.post('/webhook-deliveries/:id/retry', async (req, res) => {
 });
 
 /**
+ * GET /api/admin/webhooks/metrics
+ * Delivery observability: success rate, average latency, and failure counts
+ * per event type across both user-level and campaign-level webhooks.
+ */
+router.get('/webhooks/metrics', async (req, res) => {
+  try {
+    const [userMetrics, campaignMetrics] = await Promise.all([
+      db.query(`
+        SELECT event_type AS event,
+               COUNT(*)::int AS total,
+               COUNT(*) FILTER (WHERE status = 'delivered')::int AS delivered,
+               COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+               COUNT(*) FILTER (WHERE status IN ('pending', 'delivering', 'retrying'))::int AS in_flight,
+               ROUND(AVG(EXTRACT(EPOCH FROM (delivered_at - created_at)) * 1000)
+                 FILTER (WHERE status = 'delivered'))::int AS avg_latency_ms
+        FROM webhook_deliveries
+        GROUP BY event_type
+        ORDER BY event_type
+      `),
+      db.query(`
+        SELECT event,
+               COUNT(*)::int AS total,
+               COUNT(*) FILTER (WHERE status = 'delivered')::int AS delivered,
+               COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+               COUNT(*) FILTER (WHERE status IN ('pending', 'delivering', 'retrying'))::int AS in_flight,
+               ROUND(AVG(EXTRACT(EPOCH FROM (delivered_at - created_at)) * 1000)
+                 FILTER (WHERE status = 'delivered'))::int AS avg_latency_ms
+        FROM campaign_webhook_deliveries
+        GROUP BY event
+        ORDER BY event
+      `),
+    ]);
+
+    function withSuccessRate(rows) {
+      return rows.map((row) => ({
+        ...row,
+        success_rate: row.total > 0 ? Number((row.delivered / row.total).toFixed(4)) : 0,
+      }));
+    }
+
+    res.json({
+      user_webhooks: withSuccessRate(userMetrics.rows),
+      campaign_webhooks: withSuccessRate(campaignMetrics.rows),
+    });
+  } catch (err) {
+    logger.error('Error fetching webhook metrics', { error: err.message });
+    res.status(500).json({ error: 'Failed to fetch webhook metrics' });
+  }
+});
+
+/**
  * GET /api/admin/campaigns/:id/contributions
  * Contributor audit trail for withdrawal review
  */
