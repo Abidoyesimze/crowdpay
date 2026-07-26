@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const logger = require('../config/logger');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth');
 const { sendAlert } = require('../services/alerting');
 const { withdrawalValidation, validateRequest } = require('../middleware/validation');
 const {
@@ -10,6 +10,7 @@ const {
   signTransactionXdr,
   signatureCountFromXdr,
   submitSignedWithdrawal,
+  isXdrExpired,
   PLATFORM_PUBLIC_KEY,
 } = require('../services/stellarService');
 const {
@@ -17,11 +18,36 @@ const {
   finalizeWithdrawalSubmitted,
   markWithdrawalFailed,
 } = require('../services/stellarTransactionService');
-const { sendEmail } = require('../services/emailService');
+const { sendWithdrawalApprovedEmail, sendWithdrawalRejectedEmail } = require('../services/emailService');
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { withDecryptedWalletSecret } = require('../services/walletSecrets');
+const { createNotification } = require('../services/notifications');
 
 const ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST = ['active', 'funded'];
+
+function frontendBaseUrl() {
+  return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+}
+
+function emitWithdrawalUpdated(creatorId, withdrawalRow) {
+  if (!creatorId) return;
+  emitWebhookEventForUser(creatorId, WEBHOOK_EVENTS.WITHDRAWAL_UPDATED, {
+    withdrawal: withdrawalRow,
+  }).catch((err) => logger.error('Withdrawal updated webhook emit failed', { error: err.message }));
+}
+
+/** Fail closed when PLATFORM_APPROVER_USER_ID is unset. */
+function canPerformPlatformSignature(userId) {
+  if (!process.env.PLATFORM_APPROVER_USER_ID) return false;
+  return userId === process.env.PLATFORM_APPROVER_USER_ID;
+}
+
+function requirePlatformApprover(req, res, next) {
+  if (!canPerformPlatformSignature(req.user.userId)) {
+    return res.status(403).json({ error: 'Only the designated platform approver can perform this action' });
+  }
+  next();
+}
 
 /**
  * @openapi
@@ -45,7 +71,7 @@ async function logWithdrawalEvent(client, { withdrawalRequestId, actorUserId, ac
 }
 
 async function checkOwnerAccess(req, campaignId) {
-  if (req.user.role === 'admin') return true;
+  if (req.user.role === 'admin' || req.user.is_admin) return true;
 
   const { rows: campaignRows } = await db.query('SELECT creator_id FROM campaigns WHERE id = $1', [campaignId]);
   if (campaignRows.length && campaignRows[0].creator_id === req.user.userId) {
@@ -75,7 +101,7 @@ async function assertWithdrawalAccess(req, campaignId) {
 }
 
 router.get('/capabilities', requireAuth, (req, res) => {
-  res.json({ can_approve_platform: req.user.role === 'admin' });
+  res.json({ can_approve_platform: canPerformPlatformSignature(req.user.userId) });
 });
 
 router.post('/request', requireAuth, withdrawalValidation, validateRequest, async (req, res) => {
@@ -126,6 +152,11 @@ router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyn
   if (campaign.milestone_count > 0) {
     return res.status(409).json({
       error: 'This campaign uses milestone releases. Funds are released through approved milestones instead of manual withdrawals.',
+    });
+  }
+  if (campaign.status === 'failed') {
+    return res.status(400).json({
+      error: 'This campaign has failed. Contributors are eligible for refunds — withdrawals are not permitted.',
     });
   }
   if (!ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST.includes(campaign.status)) {
@@ -381,6 +412,14 @@ const platformApproveHandler = async (req, res) => {
     return res.status(409).json({ error: 'Platform already approved this withdrawal' });
   }
 
+  // Check whether the XDR time bounds have already elapsed before adding our signature.
+  // If expired, tell the creator to re-request so a fresh XDR is built.
+  if (isXdrExpired(requestRow.unsigned_xdr)) {
+    return res.status(410).json({
+      error: 'Withdrawal XDR has expired. The creator must cancel and submit a new withdrawal request.',
+    });
+  }
+
   const signedXdr = signTransactionXdr({
     xdr: requestRow.unsigned_xdr,
     signerSecret: process.env.PLATFORM_SECRET_KEY,
@@ -463,15 +502,27 @@ const platformApproveHandler = async (req, res) => {
 
     // Notify creator
     const { rows: cRows } = await db.query(
-      `SELECT u.email FROM users u JOIN campaigns c ON c.creator_id = u.id WHERE c.id = $1`,
+      `SELECT u.email, u.name, c.creator_id, c.title, c.asset_type
+       FROM users u JOIN campaigns c ON c.creator_id = u.id WHERE c.id = $1`,
       [requestRow.campaign_id]
     );
     if (cRows.length) {
-      sendEmail({
+      sendWithdrawalApprovedEmail({
         to: cRows[0].email,
-        subject: 'Withdrawal Approved',
-        text: `Your withdrawal for ${requestRow.amount} has been approved by the platform. Transaction Hash: ${txHash}`
-      });
+        withdrawalId: req.params.id,
+        creatorName: cRows[0].name,
+        amount: requestRow.amount,
+        asset: cRows[0].asset_type,
+        campaignTitle: cRows[0].title,
+        campaignUrl: `${frontendBaseUrl()}/campaigns/${requestRow.campaign_id}`,
+        txHash,
+      }).catch((err) => logger.error('Withdrawal approved email failed', { error: err.message }));
+      createNotification(cRows[0].creator_id, {
+        type: 'withdrawal_approved',
+        title: 'Withdrawal approved',
+        body: `Your withdrawal of ${requestRow.amount} was approved and submitted on-chain.`,
+        link: `/campaigns/${requestRow.campaign_id}`,
+      }).catch(() => {});
     }
 
     const withdrawalRow = updated[0];
@@ -499,9 +550,9 @@ const platformApproveHandler = async (req, res) => {
   }
 };
 
-router.post('/:id/approve/platform', requireAuth, requireRole('admin'), platformApproveHandler);
+router.post('/:id/approve/platform', requireAuth, requirePlatformApprover, platformApproveHandler);
 // Alias for docs + issue acceptance criteria
-router.post('/:id/approve', requireAuth, requireRole('admin'), platformApproveHandler);
+router.post('/:id/approve', requireAuth, requirePlatformApprover, platformApproveHandler);
 
 router.post('/:id/cancel', requireAuth, async (req, res) => {
   const reason = (req.body && req.body.reason) || 'Cancelled by creator';
@@ -551,6 +602,7 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
       metadata: {},
     });
     await client.query('COMMIT');
+    setImmediate(() => emitWithdrawalUpdated(requestRow.creator_id, updated[0]));
     res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -561,7 +613,7 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/:id/reject', requireAuth, requireRole('admin'), async (req, res) => {
+router.post('/:id/reject', requireAuth, requirePlatformApprover, async (req, res) => {
   /**
    * @openapi
    * /api/withdrawals/{id}/reject:
@@ -634,15 +686,27 @@ router.post('/:id/reject', requireAuth, requireRole('admin'), async (req, res) =
     await client.query('COMMIT');
 
     const { rows: cRows } = await db.query(
-      `SELECT u.email FROM users u JOIN campaigns c ON c.creator_id = u.id WHERE c.id = $1`,
+      `SELECT u.email, u.name, c.creator_id, c.title, c.asset_type
+       FROM users u JOIN campaigns c ON c.creator_id = u.id WHERE c.id = $1`,
       [requestRow.campaign_id]
     );
     if (cRows.length) {
-      sendEmail({
+      sendWithdrawalRejectedEmail({
         to: cRows[0].email,
-        subject: 'Withdrawal Rejected',
-        text: `Your withdrawal request has been rejected by the platform. Reason: ${reason}`
-      });
+        withdrawalId: req.params.id,
+        creatorName: cRows[0].name,
+        amount: requestRow.amount,
+        asset: cRows[0].asset_type,
+        campaignTitle: cRows[0].title,
+        reason,
+      }).catch((err) => logger.error('Withdrawal rejected email failed', { error: err.message }));
+      createNotification(cRows[0].creator_id, {
+        type: 'withdrawal_rejected',
+        title: 'Withdrawal rejected',
+        body: `Your withdrawal request was rejected. Reason: ${reason}`,
+        link: `/campaigns/${requestRow.campaign_id}`,
+      }).catch(() => {});
+      emitWithdrawalUpdated(cRows[0].creator_id, updated[0]);
     }
 
     res.json(updated[0]);

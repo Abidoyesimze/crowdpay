@@ -1,43 +1,130 @@
-import React from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import React, { lazy, Suspense } from 'react';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import Navbar from './components/Navbar';
-import Home from './pages/Home';
-import CreateCampaign from './pages/CreateCampaign';
-import Campaign from './pages/Campaign';
-import CampaignEmbed from './pages/CampaignEmbed';
-import Login from './pages/Login';
-import Register from './pages/Register';
-import ForgotPassword from './pages/ForgotPassword';
-import ResetPassword from './pages/ResetPassword';
-import AdminDashboard from './pages/AdminDashboard';
-import AcceptInvite from './pages/AcceptInvite';
-import Developer from './pages/Developer';
-import Dashboard from './pages/Dashboard';
-import NotFound from './pages/NotFound';
 import { AuthProvider } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
+import { ToastProvider } from './context/ToastContext';
+import { NetworkStatusProvider } from './context/NetworkStatusContext';
+import { OfflineBanner } from './components/OfflineBanner';
+import ImpersonationBanner from './components/ImpersonationBanner';
+import AnnouncementBanner from './components/AnnouncementBanner';
+import { useAuth } from './context/AuthContext';
+
+const Landing = lazy(() => import('./pages/Landing'));
+const Home = lazy(() => import('./pages/Home'));
+const CreateCampaign = lazy(() => import('./pages/CreateCampaign'));
+const Campaign = lazy(() => import('./pages/Campaign'));
+const CampaignEmbed = lazy(() => import('./pages/CampaignEmbed'));
+const Widget = lazy(() => import('./pages/Widget'));
+const Login = lazy(() => import('./pages/Login'));
+const Register = lazy(() => import('./pages/Register'));
+const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
+const ResetPassword = lazy(() => import('./pages/ResetPassword'));
+const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
+const AcceptInvite = lazy(() => import('./pages/AcceptInvite'));
+const Developer = lazy(() => import('./pages/Developer'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Profile = lazy(() => import('./pages/Profile'));
+const NotificationSettings = lazy(() => import('./pages/NotificationSettings'));
+const HowItWorks = lazy(() => import('./pages/HowItWorks'));
+const Pricing = lazy(() => import('./pages/Pricing'));
+const About = lazy(() => import('./pages/About'));
+const Resources = lazy(() => import('./pages/Resources'));
+const NotFound = lazy(() => import('./pages/NotFound'));
+
+function PrivateRoute({ children }) {
+  const { user, ready } = useAuth();
+  if (!ready) return null;
+  return user ? children : <Navigate to="/login" replace />;
+}
 
 export default function App() {
+  const location = useLocation();
+  const hideNavbar =
+    location.pathname.startsWith('/widget/') || location.pathname.startsWith('/embed/');
+
   return (
     <ThemeProvider>
       <AuthProvider>
-        <Navbar />
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/campaigns/new" element={<CreateCampaign />} />
-          <Route path="/campaigns/:id" element={<Campaign />} />
-          <Route path="/campaigns/:id/invite/:token" element={<AcceptInvite />} />
-          <Route path="/embed/campaigns/:id" element={<CampaignEmbed />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/forgot-password" element={<ForgotPassword />} />
-          <Route path="/reset-password" element={<ResetPassword />} />
-          <Route path="/admin" element={<AdminDashboard />} />
-          <Route path="/developer" element={<Developer />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/my-contributions" element={<Navigate to="/dashboard?tab=contributions" replace />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        <ToastProvider>
+          <NetworkStatusProvider>
+            <OfflineBanner />
+            {!hideNavbar && <ImpersonationBanner />}
+            {!hideNavbar && <AnnouncementBanner />}
+            {!hideNavbar && <Navbar />}
+            <Suspense fallback={<div>Loading...</div>}>
+              <Routes>
+                <Route path="/" element={<Landing />} />
+                <Route path="/discover" element={<Home />} />
+                <Route path="/how-it-works" element={<HowItWorks />} />
+                <Route path="/pricing" element={<Pricing />} />
+                <Route path="/about" element={<About />} />
+                <Route path="/resources" element={<Resources />} />
+                <Route
+                  path="/campaigns/new"
+                  element={
+                    <PrivateRoute>
+                      <CreateCampaign />
+                    </PrivateRoute>
+                  }
+                />
+                <Route path="/campaigns/:id" element={<Campaign />} />
+                <Route path="/campaigns/:id/invite/:token" element={<AcceptInvite />} />
+                <Route path="/embed/campaigns/:id" element={<CampaignEmbed />} />
+                <Route path="/widget/campaigns/:id" element={<Widget />} />
+                <Route path="/login" element={<Login />} />
+                <Route path="/register" element={<Register />} />
+                <Route path="/forgot-password" element={<ForgotPassword />} />
+                <Route path="/reset-password" element={<ResetPassword />} />
+                <Route
+                  path="/admin"
+                  element={
+                    <PrivateRoute>
+                      <AdminDashboard />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/developer"
+                  element={
+                    <PrivateRoute>
+                      <Developer />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/dashboard"
+                  element={
+                    <PrivateRoute>
+                      <Dashboard />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/profile"
+                  element={
+                    <PrivateRoute>
+                      <Profile />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/settings/notifications"
+                  element={
+                    <PrivateRoute>
+                      <NotificationSettings />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/my-contributions"
+                  element={<Navigate to="/dashboard?tab=contributions" replace />}
+                />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
+          </NetworkStatusProvider>
+        </ToastProvider>
       </AuthProvider>
     </ThemeProvider>
   );
