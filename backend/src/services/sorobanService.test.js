@@ -235,8 +235,8 @@ describe('Soroban contract integration scenario — campaign milestone release',
     // No calls should have completed
     assert.equal(__mock.getCalls().length, 0);
   });
+});
 const test = require('node:test');
-const assert = require('node:assert/strict');
 const proxyquire = require('proxyquire').noCallThru();
 
 function buildService() {
