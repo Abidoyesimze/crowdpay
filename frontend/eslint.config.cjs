@@ -91,6 +91,7 @@ module.exports = [
         afterEach: 'readonly',
         vi: 'readonly',
         jest: 'readonly',
+        global: 'writable',
       },
     },
   },

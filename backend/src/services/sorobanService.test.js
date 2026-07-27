@@ -235,25 +235,7 @@ describe('Soroban contract integration scenario — campaign milestone release',
     // No calls should have completed
     assert.equal(__mock.getCalls().length, 0);
   });
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const proxyquire = require('proxyquire').noCallThru();
-
-function buildService() {
-  return proxyquire('./sorobanService', {
-    '../config/stellar': {
-      server: {
-        loadAccount: async () => ({ sequence: '1' }),
-        simulateTransaction: async () => ({ result: null }),
-        prepareTransaction: (tx) => tx,
-        submitTransaction: async () => ({ status: 'SUCCESS' }),
-      },
-      networkPassphrase: 'Test SDF Network ; September 2015',
-    },
-    '../config/logger': { info: () => {}, error: () => {}, warn: () => {} },
-    '../config/constants': { TX_TIMEOUT_CONTRIBUTION_S: 30 },
-  });
-}
+});
 
 test('mapMilestoneOnChainStatus maps numeric contract statuses', () => {
   const { mapMilestoneOnChainStatus } = buildService();
