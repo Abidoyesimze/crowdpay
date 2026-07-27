@@ -767,6 +767,7 @@ module.exports = {
   getWalletPayments,
   revokeAndCloseCampaignWallet,
 
+  accountExistsOnLedger,
   getCampaignBalance,
   friendbotFund,
   PLATFORM_PUBLIC_KEY: PLATFORM_KEYPAIR.publicKey(),
