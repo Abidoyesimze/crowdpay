@@ -1200,6 +1200,8 @@ export default function Campaign() {
         />
       </div>
 
+      <CampaignComments campaignId={campaign.id} campaign={campaign} />
+
       {tiers.length > 0 && (
         <div style={{ marginBottom: "1rem" }}>
           <h2 style={styles.sectionTitle}>Reward tiers</h2>
