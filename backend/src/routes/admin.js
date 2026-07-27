@@ -17,6 +17,8 @@ const {
 } = require('../services/webhookDispatcher');
 const cache = require('../utils/cache');
 const { parsePagination } = require('../utils/pagination');
+const { revokeAndCloseCampaignWallet } = require('../services/stellarService');
+const { sendAlert } = require('../services/alerting');
 
 const IMPERSONATION_TTL_SECONDS = 15 * 60;
 
@@ -442,12 +444,33 @@ router.delete('/campaigns/:id', async (req, res) => {
     const { reason } = req.body;
 
     const { rows: campaignRows } = await db.query(
-      'SELECT id, title FROM campaigns WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id, title, creator_id, wallet_public_key, wallet_secret_encrypted FROM campaigns WHERE id = $1 AND deleted_at IS NULL',
       [id]
     );
 
     if (!campaignRows.length) {
       return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    const campaign = campaignRows[0];
+
+    // Revoke platform multisig, sweep non-zero funds to platform, and close Stellar account
+    try {
+      await revokeAndCloseCampaignWallet(campaign);
+    } catch (stellarErr) {
+      logger.error('Failed to revoke platform multisig / close Stellar account for deleted campaign', {
+        campaignId: id,
+        error: stellarErr.message,
+      });
+      await sendAlert('Campaign wallet cleanup failed on deletion', {
+        campaignId: id,
+        walletPublicKey: campaign.wallet_public_key,
+        error: stellarErr.message,
+      });
+      return res.status(502).json({
+        error: 'Failed to revoke Stellar wallet multisig and close account',
+        details: stellarErr.message,
+      });
     }
 
     const { rows: updated } = await db.query(
