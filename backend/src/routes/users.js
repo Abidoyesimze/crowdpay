@@ -1,14 +1,18 @@
 const router = require('express').Router();
 const db = require('../config/database');
+const logger = require('../config/logger');
 const { requireAuth } = require('../middleware/auth');
 const { isKycRequiredForCampaigns } = require('../services/kycProvider');
 const { startKycForUser } = require('../services/kycService');
 const { listCreatorCampaigns, listUserContributions } = require('../services/userDashboardService');
+const { ensureCustodialAccountFundedAndTrusted } = require('../services/stellarService');
+const { withDecryptedWalletSecret } = require('../services/walletSecrets');
+const { sendWalletFundingFailedEmail } = require('../services/emailService');
 const asyncHandler = require('../utils/asyncHandler');
 
 router.get('/me', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
-    `SELECT id, email, name, wallet_public_key, wallet_type, role, kyc_status, kyc_completed_at, created_at
+    `SELECT id, email, name, wallet_public_key, wallet_type, role, kyc_status, kyc_completed_at, wallet_funded_at, wallet_funding_failed_at, created_at
      FROM users
      WHERE id = $1`,
     [req.user.userId]
@@ -26,6 +30,89 @@ router.get('/me', requireAuth, asyncHandler(async (req, res) => {
     impersonated_by: req.impersonation?.adminUserId || null,
   });
 }));
+
+async function handleRetryWalletFunding(req, res) {
+  const targetUserId = (req.user.role === 'admin' && req.body?.userId)
+    ? req.body.userId
+    : req.user.userId;
+
+  const { rows } = await db.query(
+    'SELECT id, email, name, wallet_public_key, wallet_secret_encrypted, wallet_type, wallet_funded_at, wallet_funding_failed_at FROM users WHERE id = $1',
+    [targetUserId]
+  );
+
+  if (!rows.length) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  const user = rows[0];
+
+  if (user.wallet_type !== 'custodial') {
+    return res.status(400).json({ error: 'Non-custodial (freighter) wallets do not require background funding' });
+  }
+
+  if (!user.wallet_secret_encrypted) {
+    return res.status(400).json({ error: 'No wallet secret found for user' });
+  }
+
+  let decryptedSecret = null;
+  try {
+    await withDecryptedWalletSecret(
+      user.wallet_secret_encrypted,
+      { userId: user.id, walletPublicKey: user.wallet_public_key },
+      async (secret) => {
+        decryptedSecret = secret;
+      }
+    );
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to decrypt wallet secret', details: err.message });
+  }
+
+  try {
+    await ensureCustodialAccountFundedAndTrusted({
+      publicKey: user.wallet_public_key,
+      secret: decryptedSecret,
+    });
+
+    await db.query(
+      'UPDATE users SET wallet_funded_at = NOW(), wallet_funding_failed_at = NULL WHERE id = $1',
+      [user.id]
+    );
+
+    res.json({
+      message: 'Wallet funding and trustlines established successfully',
+      funded: true,
+      user_id: user.id,
+      wallet_public_key: user.wallet_public_key,
+    });
+  } catch (err) {
+    logger.error('Retry wallet funding failed', { userId: user.id, error: err.message });
+
+    await db.query(
+      'UPDATE users SET wallet_funding_failed_at = NOW() WHERE id = $1',
+      [user.id]
+    );
+
+    sendWalletFundingFailedEmail({
+      to: user.email,
+      name: user.name,
+      walletPublicKey: user.wallet_public_key,
+    }).catch((emailErr) => {
+      logger.error('Failed to send wallet funding failed email on retry', {
+        userId: user.id,
+        error: emailErr.message,
+      });
+    });
+
+    res.status(502).json({
+      error: 'Wallet funding failed. Please check platform funds or try adding funds manually.',
+      details: err.message,
+    });
+  }
+}
+
+router.post('/retry-wallet-funding', requireAuth, asyncHandler(handleRetryWalletFunding));
+router.post('/me/retry-wallet-funding', requireAuth, asyncHandler(handleRetryWalletFunding));
 
 router.post('/me/kyc/start', requireAuth, asyncHandler(async (req, res) => {
   try {

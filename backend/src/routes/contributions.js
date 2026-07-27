@@ -8,6 +8,7 @@ const { requireAuth } = require('../middleware/auth');
 const logger = require('../config/logger');
 const { sendAlert } = require('../services/alerting');
 const { contributionValidation, contributionQuoteValidation, validateRequest } = require('../middleware/validation');
+const { parsePagination } = require('../utils/pagination');
 const {
   buildUnsignedContributionPayment,
   buildUnsignedContributionPathPayment,
@@ -15,6 +16,7 @@ const {
   getPathPaymentQuote,
   getSupportedAssetCodes,
   isBadSequenceError,
+  accountExistsOnLedger,
 } = require("../services/stellarService");
 const {
   insertContributionSubmitted,
@@ -163,8 +165,7 @@ router.get('/dashboard/export.csv', requireAuth, asyncHandler(async (req, res) =
 }));
 
 router.get('/campaign/:campaignId', async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
-  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
 
   const { rows } = await db.query(
     `SELECT c.id, c.sender_public_key, c.amount, c.asset, c.payment_type,
@@ -458,12 +459,50 @@ router.post('/submit-signed', requireAuth, asyncHandler(async (req, res) => {
   });
 }));
 
+async function assertUserWalletFunded(userId) {
+  const { rows } = await db.query(
+    'SELECT wallet_type, wallet_public_key, wallet_funded_at, wallet_funding_failed_at FROM users WHERE id = $1',
+    [userId]
+  );
+  if (!rows.length) return;
+
+  const user = rows[0];
+  if (user.wallet_type === 'freighter') return;
+
+  if (user.wallet_funded_at) return;
+
+  if (user.wallet_public_key) {
+    const onLedger = await accountExistsOnLedger(user.wallet_public_key);
+    if (onLedger) {
+      await db.query(
+        'UPDATE users SET wallet_funded_at = NOW(), wallet_funding_failed_at = NULL WHERE id = $1',
+        [userId]
+      );
+      return;
+    }
+  }
+
+  const err = new Error('Your wallet has not been funded yet. Please retry wallet funding or add funds before contributing.');
+  err.statusCode = 400;
+  err.code = 'WALLET_NOT_FUNDED';
+  throw err;
+}
+
 router.post('/', contributionPostLimiter, requireAuth, contributionValidation, validateRequest, asyncHandler(async (req, res) => {
   try {
     await assertUserKycVerified(req.user.userId);
   } catch (err) {
     const handled = handleKycGateError(res, err);
     if (handled) return handled;
+  }
+
+  try {
+    await assertUserWalletFunded(req.user.userId);
+  } catch (err) {
+    if (err.code === 'WALLET_NOT_FUNDED') {
+      return res.status(400).json({ error: err.message });
+    }
+    throw err;
   }
 
   const { campaign_id, amount, send_asset, display_name } = req.body;

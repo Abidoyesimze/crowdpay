@@ -15,6 +15,15 @@ function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 }
 
+function isValidEvidenceUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    return u.protocol === 'https:' || u.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
 async function logDisputeEvent(client, { disputeId, actorId, action, note }) {
   await client.query(
     `INSERT INTO dispute_events (dispute_id, actor_id, action, note)
@@ -33,6 +42,9 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   }
   if (!description || !description.trim()) {
     return res.status(422).json({ error: 'description is required' });
+  }
+  if (evidence_url !== undefined && evidence_url !== null && evidence_url !== '' && !isValidEvidenceUrl(evidence_url)) {
+    return res.status(422).json({ error: 'evidence_url must be a valid http(s) URL' });
   }
 
   const { rows: campaigns } = await db.query(

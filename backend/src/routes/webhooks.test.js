@@ -154,3 +154,60 @@ test('POST /incoming/:id links a matching contribution and returns success', asy
   assert.equal(res.body.body.linked, true);
   assert.equal(res.body.body.contribution_id, 'c-1');
 });
+
+// --- POST /api/webhooks/incoming/:id rate limiting (#489) -------------------
+//
+// The route's `incomingWebhookLimiter` is built with `skip: () => isTest`, so
+// under the suite's normal `NODE_ENV=test` it never actually limits (matching
+// the existing auth.js limiters' convention of being inert in tests). To
+// exercise the real 30 req/min ceiling, this test loads a fresh, uncached copy
+// of the module with NODE_ENV temporarily forced to a non-test value so the
+// limiter's `max` is the real production value (30) instead of the
+// effectively-infinite test value.
+test('POST /incoming/:id returns 429 after 30 requests per minute from the same IP', async () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  const modulePath = require.resolve('./webhooks');
+  delete require.cache[modulePath];
+
+  try {
+    const router = proxyquire('./webhooks', {
+      '../config/database': {
+        query: async () => ({ rows: [{ id: WEBHOOK_ID, user_id: OWNER, secret: SECRET }] }),
+      },
+      '../middleware/auth': { requireAuth: (req, _res, next) => next() },
+      '../services/webhookDispatcher': { ALL_WEBHOOK_EVENTS: [], processDelivery: async () => {} },
+      '../services/webhookService': proxyquire('../services/webhookService', {
+        '../config/database': { query: async () => ({ rows: [] }) },
+        '../config/logger': { info: () => {}, warn: () => {}, error: () => {} },
+        './notifications': { createNotification: async () => {} },
+      }),
+    });
+
+    const app = express();
+    app.use('/api/webhooks', router);
+
+    const body = JSON.stringify({ type: 'contribution.confirmed', tx_hash: 'tx-limit' });
+    const sig = sign(SECRET, Buffer.from(body));
+
+    for (let i = 0; i < 30; i += 1) {
+      await request(app)
+        .post(`/api/webhooks/incoming/${WEBHOOK_ID}`)
+        .set('Content-Type', 'application/json')
+        .set('x-signature-256', sig)
+        .send(body);
+    }
+
+    const res = await request(app)
+      .post(`/api/webhooks/incoming/${WEBHOOK_ID}`)
+      .set('Content-Type', 'application/json')
+      .set('x-signature-256', sig)
+      .send(body);
+
+    assert.equal(res.status, 429);
+    assert.match(res.body.error, /Too many webhook deliveries/);
+  } finally {
+    process.env.NODE_ENV = originalNodeEnv;
+    delete require.cache[modulePath];
+  }
+});

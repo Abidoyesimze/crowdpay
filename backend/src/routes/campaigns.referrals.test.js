@@ -153,6 +153,39 @@ test('GET /api/campaigns/:id/referral creates a new referral code', async () => 
   assert.ok(calls.some((text) => text.includes('INSERT INTO campaign_referrals')));
 });
 
+test('GET /api/campaigns/:id/referral retries on referral_code collision', async () => {
+  let selectCount = 0;
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('SELECT 1 FROM campaign_referrals WHERE referral_code')) {
+        selectCount++;
+        if (selectCount === 1) {
+          return { rows: [{ 1: 1 }] };
+        }
+        return { rows: [] };
+      }
+      if (text.includes('INSERT INTO campaign_referrals')) {
+        return {
+          rows: [{
+            referral_code: 'retrycode1',
+            click_count: 0,
+            contribution_count: 0,
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .get('/api/campaigns/camp-1/referral')
+    .set('Authorization', 'Bearer token');
+
+  assert.equal(response.status, 201);
+  assert.equal(selectCount, 2);
+  assert.equal(response.body.referral_code, 'retrycode1');
+});
+
 test('GET /api/campaigns/:id?ref=CODE increments click count and sets cookie', async () => {
   const calls = [];
   const app = buildApp({

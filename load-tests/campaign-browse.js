@@ -20,13 +20,16 @@ import { Trend, Rate } from 'k6/metrics';
 // ---------------------------------------------------------------------------
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:3001';
 
-// Seed campaign IDs (match backend/db/seed.sql)
-const CAMPAIGN_IDS = [
+// Seed campaign IDs (match backend/db/seed.sql or read from env)
+const DEFAULT_CAMPAIGN_IDS = [
   '11111111-1111-1111-1111-111111111111',
   '22222222-2222-2222-2222-222222222222',
   '33333333-3333-3333-3333-333333333333',
   '44444444-4444-4444-4444-444444444444',
 ];
+const CAMPAIGN_IDS = __ENV.CAMPAIGN_IDS
+  ? __ENV.CAMPAIGN_IDS.split(',').map((id) => id.trim())
+  : (__ENV.CAMPAIGN_ID ? [__ENV.CAMPAIGN_ID] : DEFAULT_CAMPAIGN_IDS);
 
 // ---------------------------------------------------------------------------
 // Options

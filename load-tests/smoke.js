@@ -11,6 +11,9 @@ import http from 'k6/http';
 import { check, group } from 'k6';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:3001';
+const CAMPAIGN_ID = __ENV.CAMPAIGN_ID || '11111111-1111-1111-1111-111111111111';
+const CONTRIBUTOR_EMAIL = __ENV.CONTRIBUTOR_EMAIL || 'alice@example.com';
+const CONTRIBUTOR_PASSWORD = __ENV.CONTRIBUTOR_PASSWORD || 'password123';
 
 export const options = {
   vus: 1,
@@ -20,8 +23,6 @@ export const options = {
     http_req_failed:   ['rate<0.05'],  // slightly relaxed for smoke
   },
 };
-
-const CAMPAIGN_ID = '11111111-1111-1111-1111-111111111111';
 
 export default function () {
   const headers = { 'Content-Type': 'application/json' };
@@ -68,7 +69,7 @@ export default function () {
   group('Login', () => {
     const r = http.post(
       `${BASE_URL}/api/auth/login`,
-      JSON.stringify({ email: 'alice@example.com', password: 'password123' }),
+      JSON.stringify({ email: CONTRIBUTOR_EMAIL, password: CONTRIBUTOR_PASSWORD }),
       { headers, tags: { name: 'POST /api/auth/login' } }
     );
     check(r, { 'login 200': (res) => res.status === 200 });

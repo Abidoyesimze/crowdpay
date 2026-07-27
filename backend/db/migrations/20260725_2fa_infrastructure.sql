@@ -1,6 +1,6 @@
 CREATE TABLE trusted_devices (
   id SERIAL PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   device_fingerprint TEXT NOT NULL,
   device_name TEXT,
   ip_address INET,
@@ -11,7 +11,7 @@ CREATE TABLE trusted_devices (
 
 CREATE TABLE security_audit_log (
   id SERIAL PRIMARY KEY,
-  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
   event_type TEXT NOT NULL,
   ip_address INET,
   user_agent TEXT,

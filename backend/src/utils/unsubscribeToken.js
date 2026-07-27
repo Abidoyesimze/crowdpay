@@ -22,7 +22,7 @@ function buildUnsubscribeUrl({ email, category, campaignId }) {
 
 function verifyUnsubscribeToken({ email, category, sig, campaign_id: campaignId }) {
   if (!email || !category || !sig) return false;
-  const expected = sign(email, category, campaignId ? Number(campaignId) : undefined);
+  const expected = sign(email, category, campaignId || undefined);
   const a = Buffer.from(expected);
   const b = Buffer.from(String(sig));
   return a.length === b.length && crypto.timingSafeEqual(a, b);

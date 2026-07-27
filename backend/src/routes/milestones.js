@@ -3,6 +3,7 @@ const multer = require('multer');
 const { Keypair } = require('@stellar/stellar-sdk');
 const db = require('../config/database');
 const logger = require('../config/logger');
+const { MILESTONE_LIMIT, MILESTONE_EVIDENCE_MAX_FILE_SIZE } = require('../config/constants');
 const { requireAuth } = require('../middleware/auth');
 const { sendAlert } = require('../services/alerting');
 const {
@@ -52,11 +53,9 @@ function toReleaseAmount(raisedAmount, releasePercentage) {
   return ((Number(raisedAmount) * Number(releasePercentage)) / 100).toFixed(7);
 }
 
-const MILESTONE_LIMIT = 5;
-
 const evidenceUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: MILESTONE_EVIDENCE_MAX_FILE_SIZE },
   fileFilter: (_req, file, cb) => {
     const allowed = [
       'image/jpeg',
