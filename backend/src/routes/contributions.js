@@ -8,6 +8,7 @@ const { requireAuth } = require('../middleware/auth');
 const logger = require('../config/logger');
 const { sendAlert } = require('../services/alerting');
 const { contributionValidation, contributionQuoteValidation, validateRequest } = require('../middleware/validation');
+const { parsePagination } = require('../utils/pagination');
 const {
   buildUnsignedContributionPayment,
   buildUnsignedContributionPathPayment,
@@ -163,8 +164,7 @@ router.get('/dashboard/export.csv', requireAuth, asyncHandler(async (req, res) =
 }));
 
 router.get('/campaign/:campaignId', async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
-  const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
 
   const { rows } = await db.query(
     `SELECT c.id, c.sender_public_key, c.amount, c.asset, c.payment_type,

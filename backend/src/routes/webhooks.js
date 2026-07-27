@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { requireAuth } = require('../middleware/auth');
@@ -14,6 +15,21 @@ const {
   verifyWebhookSignature,
   WebhookError,
 } = require('../services/webhookService');
+
+const isTest = process.env.NODE_ENV === 'test';
+
+// Per-IP: 30 req/min on the public webhook ingress endpoint. This route has
+// no auth (any caller with a valid webhook id + signature can post to it),
+// so it's a DoS vector without its own limiter — the global 100 req/15min
+// limit is far too permissive for a single public endpoint.
+const incomingWebhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: isTest ? 100000 : 30,
+  message: { error: 'Too many webhook deliveries from this IP. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isTest,
+});
 
 function isValidWebhookUrl(urlString) {
   try {
@@ -39,7 +55,7 @@ function normalizeEvents(events) {
 
 // KYC webhooks are handled at POST /api/webhooks/kyc (raw body + Persona signature verification).
 
-router.post('/incoming/:id', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/incoming/:id', incomingWebhookLimiter, express.raw({ type: 'application/json' }), async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT id, user_id, secret FROM webhooks WHERE id = $1 AND revoked_at IS NULL`,
