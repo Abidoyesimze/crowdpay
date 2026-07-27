@@ -21,6 +21,7 @@ const campaignUpdatePostedEmail = require("../emails/campaignUpdatePosted");
 const weeklyDigestEmail = require("../emails/weeklyDigest");
 const teamMemberInvitedEmail = require("../emails/teamMemberInvited");
 const thankYouEmail = require("../emails/thankYou");
+const walletFundingFailedEmail = require("../emails/walletFundingFailed");
 
 let transporter;
 
@@ -310,6 +311,12 @@ async function sendCampaignFraudFlaggedEmail({ to, campaignId, ...params }) {
   await sendIdempotent({ dedupeKey: `campaign_fraud_flagged:${campaignId}:${to}`, to, subject, text, html });
 }
 
+async function sendWalletFundingFailedEmail({ to, ...params }) {
+  if (!to) return;
+  const { subject, text, html } = walletFundingFailedEmail.build(params);
+  await sendIdempotent({ dedupeKey: `wallet_funding_failed:${to}`, to, subject, text, html });
+}
+
 module.exports = {
   sendEmail,
   sendIdempotent,
@@ -318,6 +325,7 @@ module.exports = {
   getStellarExpertTxUrl,
   sendContributionReceipt,
   sendWelcomeEmail,
+  sendWalletFundingFailedEmail,
   sendCampaignFundedCreatorEmail,
   sendCampaignFundedContributorEmail,
   sendCampaignFailedCreatorEmail,
