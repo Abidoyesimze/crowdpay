@@ -98,6 +98,9 @@ router.post('/impersonate/:userId', async (req, res) => {
     const expiresAt = new Date(Date.now() + IMPERSONATION_TTL_SECONDS * 1000);
     const token = jwt.sign(
       {
+        sub: target.id.toString(),
+        iss: 'https://crowdpay.io',
+        aud: 'crowdpay-api',
         userId: target.id,
         role: target.role || 'contributor',
         impersonated_by: req.user.userId,

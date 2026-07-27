@@ -42,10 +42,16 @@ describe('Admin Moderation Features', async () => {
     );
     campaignId = campaignRes.rows[0].id;
 
-    // Create JWT tokens (simplified for testing)
+    // Create JWT tokens with standard claims
     const jwt = require('jsonwebtoken');
-    adminToken = jwt.sign({ userId: adminUserId, is_admin: true }, process.env.JWT_SECRET);
-    regularUserToken = jwt.sign({ userId: testUserId, is_admin: false }, process.env.JWT_SECRET);
+    adminToken = jwt.sign(
+      { sub: String(adminUserId), iss: 'https://crowdpay.io', aud: 'crowdpay-api', userId: adminUserId, is_admin: true },
+      process.env.JWT_SECRET
+    );
+    regularUserToken = jwt.sign(
+      { sub: String(testUserId), iss: 'https://crowdpay.io', aud: 'crowdpay-api', userId: testUserId, is_admin: false },
+      process.env.JWT_SECRET
+    );
   });
 
   after(async () => {
