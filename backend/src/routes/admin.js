@@ -20,7 +20,6 @@ const { parsePagination } = require('../utils/pagination');
 const { revokeAndCloseCampaignWallet } = require('../services/stellarService');
 const { sendAlert } = require('../services/alerting');
 
-const IMPERSONATION_TTL_SECONDS = 15 * 60;
 const { IMPERSONATION_TTL_SECONDS, ADMIN_AUDIT_LOG_MAX_LIMIT } = require('../config/constants');
 
 /**
