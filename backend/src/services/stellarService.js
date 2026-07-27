@@ -726,14 +726,18 @@ async function revokeAndCloseCampaignWallet(campaign) {
     try {
       const creatorKeypair = Keypair.fromSecret(creatorSecret);
       tx.sign(creatorKeypair);
-    } catch (_err) {}
+    } catch (_err) {
+      // ignore invalid creator keypair
+    }
   }
 
   if (campaignSecret) {
     try {
       const campaignKeypair = Keypair.fromSecret(campaignSecret);
       tx.sign(campaignKeypair);
-    } catch (_err) {}
+    } catch (_err) {
+      // ignore invalid campaign keypair
+    }
   }
 
   const result = await server.submitTransaction(tx);
