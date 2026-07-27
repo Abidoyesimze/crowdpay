@@ -19,6 +19,7 @@ const cache = require('../utils/cache');
 const { parsePagination } = require('../utils/pagination');
 const { revokeAndCloseCampaignWallet } = require('../services/stellarService');
 const { sendAlert } = require('../services/alerting');
+const asyncHandler = require('../utils/asyncHandler');
 
 const IMPERSONATION_TTL_SECONDS = 15 * 60;
 const { IMPERSONATION_TTL_SECONDS, ADMIN_AUDIT_LOG_MAX_LIMIT } = require('../config/constants');
@@ -807,7 +808,7 @@ router.patch('/users/:id/demote', async (req, res) => {
 });
 
 // Migrate old /milestones endpoint if needed
-router.get('/milestones', async (req, res) => {
+router.get('/milestones', asyncHandler(async (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const allowedStatuses = ['pending', 'pending_review', 'rejected', 'approved', 'released'];
   if (status && !allowedStatuses.includes(status)) {
@@ -839,7 +840,7 @@ router.get('/milestones', async (req, res) => {
     [...params, limit, offset]
   );
   res.json({ data: rows, total, limit, offset });
-});
+}));
 
 /**
  * POST /api/admin/campaigns/:id/reconcile

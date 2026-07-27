@@ -2,8 +2,9 @@ const router = require('express').Router();
 const db = require('../config/database');
 const { verifyUnsubscribeToken } = require('../utils/unsubscribeToken');
 const { isUuid } = require('../utils/validation');
+const asyncHandler = require('../utils/asyncHandler');
 
-router.get('/unsubscribe', async (req, res) => {
+router.get('/unsubscribe', asyncHandler(async (req, res) => {
   const { email, category, sig, campaign_id: campaignId } = req.query;
 
   if (campaignId !== undefined && !isUuid(campaignId)) {
@@ -48,6 +49,6 @@ router.get('/unsubscribe', async (req, res) => {
   );
 
   res.send('You have been unsubscribed from these emails.');
-});
+}));
 
 module.exports = router;

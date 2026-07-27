@@ -23,6 +23,7 @@ const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhook
 const { withDecryptedWalletSecret } = require('../services/walletSecrets');
 const { createNotification } = require('../services/notifications');
 const { parsePagination } = require('../utils/pagination');
+const asyncHandler = require('../utils/asyncHandler');
 
 const ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST = ['active', 'funded'];
 
@@ -753,7 +754,7 @@ router.post('/:id/reject', requireAuth, requirePlatformApprover, async (req, res
   }
 });
 
-router.get('/campaign/:campaignId', requireAuth, async (req, res) => {
+router.get('/campaign/:campaignId', requireAuth, asyncHandler(async (req, res) => {
   const access = await assertWithdrawalAccess(req, req.params.campaignId);
   if (access.error) return res.status(access.status).json({ error: access.error });
 
@@ -775,10 +776,10 @@ router.get('/campaign/:campaignId', requireAuth, async (req, res) => {
     [req.params.campaignId, limit, offset]
   );
   res.json({ data: rows, total, limit, offset });
-});
+}));
 
 // Get a single withdrawal request (including unsigned_xdr) for authorized users
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query('SELECT * FROM withdrawal_requests WHERE id = $1', [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: 'Withdrawal request not found' });
   const row = rows[0];
@@ -787,9 +788,9 @@ router.get('/:id', requireAuth, async (req, res) => {
 
   // Only return unsigned_xdr to owners/admins
   res.json(row);
-});
+}));
 
-const withdrawalAuditHandler = async (req, res) => {
+const withdrawalAuditHandler = asyncHandler(async (req, res) => {
   /**
    * @openapi
    * /api/withdrawals/{id}/audit:
@@ -830,7 +831,7 @@ const withdrawalAuditHandler = async (req, res) => {
     [req.params.id]
   );
   res.json(rows);
-};
+});
 
 router.get('/:id/events', requireAuth, withdrawalAuditHandler);
 // Alias for docs + issue acceptance criteria

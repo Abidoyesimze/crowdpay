@@ -10,6 +10,7 @@ const {
 const logger = require('../config/logger');
 const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { parsePagination } = require('../utils/pagination');
+const asyncHandler = require('../utils/asyncHandler');
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -159,7 +160,7 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
 });
 
 // GET /campaigns/:id/disputes — admin only
-router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), async (req, res) => {
+router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
   const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
 
   const countResult = await db.query(
@@ -178,7 +179,7 @@ router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), async (
     [req.params.id, limit, offset]
   );
   res.json({ data: rows, total, limit, offset });
-});
+}));
 
 // PATCH /disputes/:id — admin updates status + resolution note
 router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res) => {
@@ -357,7 +358,7 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
 });
 
 // GET /disputes/:id/events — audit log (admin only)
-router.get('/disputes/:id/events', requireAuth, requireRole('admin'), async (req, res) => {
+router.get('/disputes/:id/events', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT de.*, u.name AS actor_name
      FROM dispute_events de
@@ -367,6 +368,6 @@ router.get('/disputes/:id/events', requireAuth, requireRole('admin'), async (req
     [req.params.id]
   );
   res.json(rows);
-});
+}));
 
 module.exports = router;

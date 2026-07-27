@@ -29,6 +29,7 @@ const {
   sendMilestoneReleasedContributorEmail,
   sendMilestoneEvidenceSubmittedAdminEmail,
 } = require('../services/emailService');
+const asyncHandler = require('../utils/asyncHandler');
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -163,7 +164,7 @@ async function setCampaignStatusFromMilestoneProgress(client, campaignId) {
   return updated[0] || null;
 }
 
-router.get('/campaign/:campaignId', async (req, res) => {
+router.get('/campaign/:campaignId', asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT m.*, 
             (c.milestones_contract_id IS NOT NULL) AS on_chain
@@ -174,7 +175,7 @@ router.get('/campaign/:campaignId', async (req, res) => {
     [req.params.campaignId]
   );
   res.json(rows);
-});
+}));
 
 router.post('/', requireAuth, async (req, res) => {
   const {
@@ -414,7 +415,7 @@ router.post('/:id/upload-evidence', requireAuth, evidenceUpload.single('evidence
   }
 });
 
-router.get('/:id/events', requireAuth, async (req, res) => {
+router.get('/:id/events', requireAuth, asyncHandler(async (req, res) => {
   const { rows: milestones } = await db.query(
     `SELECT m.*, c.creator_id
      FROM milestones m
@@ -440,7 +441,7 @@ router.get('/:id/events', requireAuth, async (req, res) => {
     [req.params.id]
   );
   res.json(rows);
-});
+}));
 
 router.post('/:id/reject', requireAuth, async (req, res) => {
   if (!canPerformPlatformSignature(req.user.userId)) {

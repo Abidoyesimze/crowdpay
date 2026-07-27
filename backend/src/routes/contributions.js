@@ -164,7 +164,7 @@ router.get('/dashboard/export.csv', requireAuth, asyncHandler(async (req, res) =
   res.send(csv);
 }));
 
-router.get('/campaign/:campaignId', async (req, res) => {
+router.get('/campaign/:campaignId', asyncHandler(async (req, res) => {
   const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
 
   const { rows } = await db.query(
@@ -192,7 +192,7 @@ router.get('/campaign/:campaignId', async (req, res) => {
   const total = rows[0]?.total_count ?? 0;
   const cleanedRows = rows.map(({ total_count, ...rest }) => rest);
   res.json({ contributions: cleanedRows, total: Number(total), limit, offset });
-});
+}));
 
 router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const rows = await listUserContributions(req.user.userId);

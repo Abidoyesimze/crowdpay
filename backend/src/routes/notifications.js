@@ -2,10 +2,11 @@ const router = require('express').Router();
 const db = require('../config/database');
 const { requireAuth } = require('../middleware/auth');
 const { CHANNELS } = require('../services/notificationChannels');
+const asyncHandler = require('../utils/asyncHandler');
 
 const EXTERNAL_CHANNELS = CHANNELS.filter((c) => c !== 'in_app');
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT id, type, title, body, link, read_at, created_at
      FROM notifications
@@ -15,17 +16,17 @@ router.get('/', requireAuth, async (req, res) => {
     [req.user.userId]
   );
   res.json(rows);
-});
+}));
 
-router.patch('/read-all', requireAuth, async (req, res) => {
+router.patch('/read-all', requireAuth, asyncHandler(async (req, res) => {
   await db.query(
     `UPDATE notifications SET read_at = NOW() WHERE user_id = $1 AND read_at IS NULL`,
     [req.user.userId]
   );
   res.json({ ok: true });
-});
+}));
 
-router.patch('/:id/read', requireAuth, async (req, res) => {
+router.patch('/:id/read', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `UPDATE notifications SET read_at = NOW()
      WHERE id = $1 AND user_id = $2 AND read_at IS NULL
@@ -34,12 +35,12 @@ router.patch('/:id/read', requireAuth, async (req, res) => {
   );
   if (!rows.length) return res.status(404).json({ error: 'Notification not found' });
   res.json({ ok: true });
-});
+}));
 
 // ── Multi-channel settings (issue #429) ────────────────────────────────────
 
 // Per-user channel destinations + quiet-hours window.
-router.get('/channel-settings', requireAuth, async (req, res) => {
+router.get('/channel-settings', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT push_token, slack_webhook_url, discord_webhook_url, sms_phone_number,
             quiet_hours_start, quiet_hours_end
@@ -57,13 +58,13 @@ router.get('/channel-settings', requireAuth, async (req, res) => {
       quiet_hours_end: null,
     }
   );
-});
+}));
 
 function validQuietHour(value) {
   return value === null || (Number.isInteger(value) && value >= 0 && value <= 23);
 }
 
-router.put('/channel-settings', requireAuth, async (req, res) => {
+router.put('/channel-settings', requireAuth, asyncHandler(async (req, res) => {
   const {
     push_token = null,
     slack_webhook_url = null,
@@ -103,10 +104,10 @@ router.put('/channel-settings', requireAuth, async (req, res) => {
     ]
   );
   res.json(rows[0]);
-});
+}));
 
 // Per-event-type, per-channel enable/disable overrides.
-router.get('/preferences', requireAuth, async (req, res) => {
+router.get('/preferences', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT event_type, channel, enabled
      FROM notification_preferences
@@ -115,9 +116,9 @@ router.get('/preferences', requireAuth, async (req, res) => {
     [req.user.userId]
   );
   res.json(rows);
-});
+}));
 
-router.put('/preferences', requireAuth, async (req, res) => {
+router.put('/preferences', requireAuth, asyncHandler(async (req, res) => {
   const { event_type, channel, enabled } = req.body || {};
   if (!event_type || typeof event_type !== 'string') {
     return res.status(400).json({ error: 'event_type is required' });
@@ -136,6 +137,6 @@ router.put('/preferences', requireAuth, async (req, res) => {
     [req.user.userId, event_type, channel, enabled]
   );
   res.json({ ok: true });
-});
+}));
 
 module.exports = router;
