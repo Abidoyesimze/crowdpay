@@ -22,6 +22,7 @@ const { sendWithdrawalApprovedEmail, sendWithdrawalRejectedEmail } = require('..
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { withDecryptedWalletSecret } = require('../services/walletSecrets');
 const { createNotification } = require('../services/notifications');
+const { parsePagination } = require('../utils/pagination');
 
 const ALLOWED_CAMPAIGN_STATUS_FOR_REQUEST = ['active', 'funded'];
 
@@ -770,15 +771,24 @@ router.get('/campaign/:campaignId', requireAuth, async (req, res) => {
   const access = await assertWithdrawalAccess(req, req.params.campaignId);
   if (access.error) return res.status(access.status).json({ error: access.error });
 
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
+
+  const countResult = await db.query(
+    'SELECT COUNT(*)::int AS total FROM withdrawal_requests WHERE campaign_id = $1',
+    [req.params.campaignId]
+  );
+  const total = countResult.rows[0].total;
+
   const { rows } = await db.query(
     `SELECT id, campaign_id, requested_by, amount, destination_key, creator_signed,
             platform_signed, status, denial_reason, tx_hash, created_at
      FROM withdrawal_requests
      WHERE campaign_id = $1
-     ORDER BY created_at DESC`,
-    [req.params.campaignId]
+     ORDER BY created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [req.params.campaignId, limit, offset]
   );
-  res.json(rows);
+  res.json({ data: rows, total, limit, offset });
 });
 
 // Get a single withdrawal request (including unsigned_xdr) for authorized users

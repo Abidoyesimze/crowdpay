@@ -276,7 +276,10 @@ describe('Admin Moderation Features', async () => {
       });
       assert.strictEqual(res.status, 200);
       const data = await res.json();
-      assert.ok(Array.isArray(data));
+      assert.ok(Array.isArray(data.data));
+      assert.ok(typeof data.total === 'number');
+      assert.ok(typeof data.limit === 'number');
+      assert.ok(typeof data.offset === 'number');
     });
 
     it('GET /admin/disputes returns dispute list', async () => {
@@ -285,7 +288,10 @@ describe('Admin Moderation Features', async () => {
       });
       assert.strictEqual(res.status, 200);
       const data = await res.json();
-      assert.ok(Array.isArray(data));
+      assert.ok(Array.isArray(data.data));
+      assert.ok(typeof data.total === 'number');
+      assert.ok(typeof data.limit === 'number');
+      assert.ok(typeof data.offset === 'number');
     });
 
     it('PATCH /admin/users/:id/kyc updates status and logs audit', async () => {

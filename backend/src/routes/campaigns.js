@@ -59,6 +59,7 @@ const {
 } = require('../lib/campaignPermissions');
 const { stripHtml } = require('../lib/sanitize');
 const { getSimhash, simhashSimilarity } = require('../utils/simhash');
+const { parsePagination } = require('../utils/pagination');
 
 const crypto = require('crypto');
 
@@ -914,6 +915,14 @@ router.get('/:id/backers', asyncHandler(async (req, res) => {
   if (!campaignRows.length) return res.status(404).json({ error: 'Campaign not found' });
   const { show_backer_amounts } = campaignRows[0];
 
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
+
+  const countResult = await db.query(
+    'SELECT COUNT(*)::int AS total FROM contributions WHERE campaign_id = $1',
+    [campaignId]
+  );
+  const total = countResult.rows[0].total;
+
   const query = `
     SELECT 
       display_name,
@@ -924,9 +933,10 @@ router.get('/:id/backers', asyncHandler(async (req, res) => {
     FROM contributions
     WHERE campaign_id = $1
     ORDER BY created_at DESC
+    LIMIT $2 OFFSET $3
   `;
-  const { rows } = await db.query(query, [campaignId]);
-  res.json(rows);
+  const { rows } = await db.query(query, [campaignId, limit, offset]);
+  res.json({ data: rows, total, limit, offset });
 }));
 
 // Download contributor fulfillment data for campaign owners/admins.
@@ -1572,6 +1582,14 @@ router.post('/:id/members/invite', requireAuth, requireCampaignMember('owner', '
 
 // GET /campaigns/:id/members — team list (owner/manager)
 router.get('/:id/members', requireAuth, requireCampaignMember('owner', 'manager'), asyncHandler(async (req, res) => {
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
+
+  const countResult = await db.query(
+    'SELECT COUNT(*)::int AS total FROM campaign_members WHERE campaign_id = $1',
+    [req.params.id]
+  );
+  const total = countResult.rows[0].total;
+
   const { rows } = await db.query(
     `SELECT cm.id, cm.user_id, cm.email, cm.role, cm.accepted_at, cm.created_at,
             cm.invite_expires_at,
@@ -1579,10 +1597,11 @@ router.get('/:id/members', requireAuth, requireCampaignMember('owner', 'manager'
      FROM campaign_members cm
      LEFT JOIN users u ON u.id = cm.user_id
      WHERE cm.campaign_id = $1
-     ORDER BY cm.created_at ASC`,
-    [req.params.id]
+     ORDER BY cm.created_at ASC
+     LIMIT $2 OFFSET $3`,
+    [req.params.id, limit, offset]
   );
-  res.json(rows);
+  res.json({ data: rows, total, limit, offset });
 }));
 
 // PATCH /campaigns/:id/members/:userId — change role (owner only)
