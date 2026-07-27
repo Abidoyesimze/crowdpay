@@ -67,8 +67,16 @@ const { parsePagination } = require('../utils/pagination');
 
 const crypto = require('crypto');
 
-function generateReferralCode() {
-  return crypto.randomBytes(6).toString('base64url').slice(0, 8);
+async function generateUniqueReferralCode(runner = db) {
+  for (let i = 0; i < 10; i++) {
+    const code = crypto.randomBytes(6).toString('base64url').slice(0, 8);
+    const { rows } = await runner.query(
+      'SELECT 1 FROM campaign_referrals WHERE referral_code = $1',
+      [code]
+    );
+    if (!rows.length) return code;
+  }
+  throw new Error('Could not generate unique referral code');
 }
 
 /**
@@ -1856,7 +1864,7 @@ router.get('/:id/referral', requireAuth, asyncHandler(async (req, res) => {
     });
   }
 
-  const code = generateReferralCode();
+  const code = await generateUniqueReferralCode(db);
   const { rows: inserted } = await db.query(
     `INSERT INTO campaign_referrals (campaign_id, referrer_user_id, referral_code)
      VALUES ($1, $2, $3)
