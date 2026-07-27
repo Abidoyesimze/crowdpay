@@ -237,6 +237,24 @@ describe('Soroban contract integration scenario — campaign milestone release',
   });
 });
 
+const proxyquire = require('proxyquire').noCallThru();
+
+function buildService() {
+  return proxyquire('./sorobanService', {
+    '../config/stellar': {
+      server: {
+        loadAccount: async () => ({ sequence: '1' }),
+        simulateTransaction: async () => ({ result: null }),
+        prepareTransaction: (tx) => tx,
+        submitTransaction: async () => ({ status: 'SUCCESS' }),
+      },
+      networkPassphrase: 'Test SDF Network ; September 2015',
+    },
+    '../config/logger': { info: () => {}, error: () => {}, warn: () => {} },
+    '../config/constants': { TX_TIMEOUT_CONTRIBUTION_S: 30 },
+  });
+}
+
 test('mapMilestoneOnChainStatus maps numeric contract statuses', () => {
   const { mapMilestoneOnChainStatus } = buildService();
   assert.equal(mapMilestoneOnChainStatus(0), 'pending');
