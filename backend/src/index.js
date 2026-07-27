@@ -22,6 +22,7 @@ const {
   normalizeErrorResponse,
   errorHandler,
 } = require("./middleware/errorHandler");
+const compressionMiddleware = require("./middleware/compression");
 const {
   startLedgerMonitor,
   getLedgerStreamHealth,
@@ -67,7 +68,7 @@ app.use(
       },
     },
     hsts: {
-      maxAge: 31_536_000, // 1 year
+      maxAge: 31_536_000,
       includeSubDomains: true,
       preload: true,
     },
@@ -81,6 +82,9 @@ app.use(
     credentials: true,
   }),
 );
+// Compress all responses >= COMPRESSION_THRESHOLD bytes (default 1 KB).
+// SSE streams are excluded automatically. See middleware/compression.js.
+app.use(compressionMiddleware);
 app.post(
   "/api/webhooks/kyc",
   express.raw({ type: "application/json" }),
