@@ -139,7 +139,15 @@ function getFrontendUrl() {
 
 function generateTokens(user) {
   const accessToken = jwt.sign(
-    { userId: user.id, role: user.role },
+    {
+      sub: user.id.toString(),
+      iss: 'https://crowdpay.io',
+      aud: 'crowdpay-api',
+      userId: user.id,
+      email: user.email,
+      is_admin: user.is_admin,
+      role: user.role,
+    },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || '15m' }
   );
