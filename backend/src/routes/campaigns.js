@@ -9,7 +9,10 @@ const {
   createCampaignWallet,
   getCampaignBalance,
   getSupportedAssetCodes,
+  revokeAndCloseCampaignWallet,
 } = require('../services/stellarService');
+const { sendAlert } = require('../services/alerting');
+const cache = require('../utils/cache');
 const { Keypair } = require('@stellar/stellar-sdk');
 const { encryptSecret } = require('../services/walletService');
 const { watchCampaignWallet, addSSEClient, removeSSEClient } = require('../services/ledgerMonitor');
@@ -602,6 +605,51 @@ router.post('/:id/favorite', requireAuth, asyncHandler(async (req, res) => {
     [req.user.userId, req.params.id]
   );
   res.status(204).send();
+}));
+
+// DELETE /campaigns/:id — Soft-delete campaign (owner only) and revoke/close Stellar wallet
+router.delete('/:id', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const { rows: campaignRows } = await db.query(
+    'SELECT id, title, creator_id, wallet_public_key, wallet_secret_encrypted FROM campaigns WHERE id = $1 AND deleted_at IS NULL',
+    [id]
+  );
+
+  if (!campaignRows.length) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+
+  const campaign = campaignRows[0];
+
+  // Revoke platform multisig, sweep non-zero funds to platform, and close Stellar account
+  try {
+    await revokeAndCloseCampaignWallet(campaign);
+  } catch (stellarErr) {
+    logger.error('Failed to revoke platform multisig / close Stellar account for deleted campaign', {
+      campaignId: id,
+      error: stellarErr.message,
+    });
+    await sendAlert('Campaign wallet cleanup failed on deletion', {
+      campaignId: id,
+      walletPublicKey: campaign.wallet_public_key,
+      error: stellarErr.message,
+    });
+    return res.status(502).json({
+      error: 'Failed to revoke Stellar wallet multisig and close account',
+      details: stellarErr.message,
+    });
+  }
+
+  const { rows: updated } = await db.query(
+    `UPDATE campaigns SET deleted_at = NOW() WHERE id = $1 RETURNING id, title, deleted_at`,
+    [id]
+  );
+
+  logger.info('Campaign deleted by owner', { campaignId: id, userId: req.user.userId });
+  cache.invalidate(`campaigns:id:${id}`);
+  cache.invalidatePrefix('campaigns:list:');
+  res.json({ message: 'Campaign deleted', campaign: updated[0] });
 }));
 
 // Remove campaign from the current user's favorites/wishlist
