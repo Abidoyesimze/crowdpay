@@ -390,6 +390,8 @@ export const api = {
   getCampaignComments: (campaignId) => request('GET', `/campaigns/${campaignId}/comments`),
   postCampaignComment: (campaignId, body) =>
     request('POST', `/campaigns/${campaignId}/comments`, body),
+  upvoteCampaignComment: (campaignId, commentId) =>
+    request('POST', `/campaigns/${campaignId}/comments/${commentId}/upvote`),
   updateCampaignComment: (campaignId, commentId, body) =>
     request('PATCH', `/campaigns/${campaignId}/comments/${commentId}`, body),
   deleteCampaignComment: (campaignId, commentId) =>
