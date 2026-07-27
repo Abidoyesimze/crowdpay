@@ -23,17 +23,8 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           envs: DATABASE_URL,JWT_SECRET,API_KEY_PEPPER,PLATFORM_SECRET_KEY,USDC_ISSUER,STELLAR_NETWORK,STELLAR_HORIZON_URL,FRONTEND_URL,DEPLOY_PATH
-          env:
-            DATABASE_URL: ${{ secrets.DATABASE_URL }}
-            JWT_SECRET: ${{ secrets.JWT_SECRET }}
-            API_KEY_PEPPER: ${{ secrets.API_KEY_PEPPER }}
-            PLATFORM_SECRET_KEY: ${{ secrets.PLATFORM_SECRET_KEY }}
-            USDC_ISSUER: ${{ secrets.USDC_ISSUER }}
-            STELLAR_NETWORK: ${{ secrets.STELLAR_NETWORK }}
-            STELLAR_HORIZON_URL: ${{ secrets.STELLAR_HORIZON_URL }}
-            FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
-            DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           script: |
+
             set -euo pipefail
             cd "$DEPLOY_PATH"
             git fetch origin main
@@ -52,6 +43,16 @@ jobs:
 
             docker compose -f docker-compose.prod.yml up -d --build
             docker compose -f docker-compose.prod.yml exec -T backend node db/migrate.js
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          API_KEY_PEPPER: ${{ secrets.API_KEY_PEPPER }}
+          PLATFORM_SECRET_KEY: ${{ secrets.PLATFORM_SECRET_KEY }}
+          USDC_ISSUER: ${{ secrets.USDC_ISSUER }}
+          STELLAR_NETWORK: ${{ secrets.STELLAR_NETWORK }}
+          STELLAR_HORIZON_URL: ${{ secrets.STELLAR_HORIZON_URL }}
+          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
 
       - name: Wait for backend to become healthy
         run: |
