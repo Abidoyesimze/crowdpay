@@ -227,7 +227,10 @@ async function createContractFromWasmHash({ wasmHash, signerSecret }) {
       const meta = xdr.TransactionMeta.fromXDR(result.resultMetaXdr, 'base64');
       const created = meta.v3().sorobanMeta().createdContracts();
       if (created && created.length > 0) {
-        return created[0].contractId().toString('hex');
+        return {
+          contractId: created[0].contractId().toString('hex'),
+          txHash: result.hash || null,
+        };
       }
     }
   }
@@ -339,21 +342,21 @@ async function deployCampaignContracts({
 
   try {
     logger.info('Deploying escrow contract instance...');
-    const escrowContractId = await createContractFromWasmHash({
+    const escrow = await createContractFromWasmHash({
       wasmHash: escrowWasmHash,
       signerSecret,
     });
 
     logger.info('Deploying milestones contract instance...');
-    const milestonesContractId = await createContractFromWasmHash({
+    const milestones = await createContractFromWasmHash({
       wasmHash: milestonesWasmHash,
       signerSecret,
     });
 
     logger.info('Initializing escrow contract...');
     await initializeEscrow({
-      contractId: escrowContractId,
-      adminAddress: milestonesContractId,
+      contractId: escrow.contractId,
+      adminAddress: milestones.contractId,
       campaignId: parseInt(campaignId.replace(/-/g, '').slice(0, 8), 16) || 1,
       target: targetAmount,
       deadline: deadlineUnix,
@@ -365,15 +368,19 @@ async function deployCampaignContracts({
 
     logger.info('Initializing milestones contract...');
     await initializeMilestones({
-      contractId: milestonesContractId,
+      contractId: milestones.contractId,
       creatorAddress: creatorPublicKey,
       platformAddress: platformPublicKey,
-      escrowContractId,
+      escrowContractId: escrow.contractId,
       milestones,
       signerSecret,
     });
 
-    return { escrowContractId, milestonesContractId };
+    return {
+      escrowContractId: escrow.contractId,
+      milestonesContractId: milestones.contractId,
+      deploymentTxHash: escrow.txHash,
+    };
   } catch (err) {
     logger.error('Soroban contract deployment failed', { error: err.message });
     throw new Error(`Soroban contract deployment failed: ${err.message}`);

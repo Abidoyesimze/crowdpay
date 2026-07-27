@@ -22,7 +22,7 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: DATABASE_URL,JWT_SECRET,API_KEY_PEPPER,PLATFORM_SECRET_KEY,USDC_ISSUER,STELLAR_NETWORK,STELLAR_HORIZON_URL,FRONTEND_URL,DEPLOY_PATH
+          envs: DATABASE_URL,JWT_SECRET,API_KEY_PEPPER,PLATFORM_SECRET_KEY,USDC_ISSUER,STELLAR_NETWORK,STELLAR_HORIZON_URL,FRONTEND_URL,DEPLOY_PATH,SENTRY_RELEASE
           env:
             DATABASE_URL: ${{ secrets.DATABASE_URL }}
             JWT_SECRET: ${{ secrets.JWT_SECRET }}
@@ -33,23 +33,26 @@ jobs:
             STELLAR_HORIZON_URL: ${{ secrets.STELLAR_HORIZON_URL }}
             FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
             DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+            SENTRY_RELEASE: ${{ github.sha }}
           script: |
             set -euo pipefail
             cd "$DEPLOY_PATH"
             git fetch origin main
             git reset --hard origin/main
 
-            printf '%s\n' \
-              "NODE_ENV=production" \
-              "DATABASE_URL=${DATABASE_URL}" \
-              "JWT_SECRET=${JWT_SECRET}" \
-              "API_KEY_PEPPER=${API_KEY_PEPPER}" \
-              "PLATFORM_SECRET_KEY=${PLATFORM_SECRET_KEY}" \
-              "USDC_ISSUER=${USDC_ISSUER}" \
-              "STELLAR_NETWORK=${STELLAR_NETWORK}" \
-              "STELLAR_HORIZON_URL=${STELLAR_HORIZON_URL}" \
-              "FRONTEND_URL=${FRONTEND_URL}" \
-              > backend/.env
+            printf '%s\n' "NODE_ENV=production" \
+            "DATABASE_URL=${DATABASE_URL}" \
+            "JWT_SECRET=${JWT_SECRET}" \
+            "API_KEY_PEPPER=${API_KEY_PEPPER}" \
+            "PLATFORM_SECRET_KEY=${PLATFORM_SECRET_KEY}" \
+            "USDC_ISSUER=${USDC_ISSUER}" \
+            "STELLAR_NETWORK=${STELLAR_NETWORK}" \
+            "STELLAR_HORIZON_URL=${STELLAR_HORIZON_URL}" \
+            "FRONTEND_URL=${FRONTEND_URL}" \
+            "SENTRY_RELEASE=${SENTRY_RELEASE}" \
+            > backend/.env
+
+            export SENTRY_RELEASE="${SENTRY_RELEASE}"
 
             docker compose -f docker-compose.prod.yml up -d --build
             docker compose -f docker-compose.prod.yml exec -T backend node db/migrate.js

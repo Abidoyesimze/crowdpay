@@ -94,7 +94,7 @@ export default function Widget() {
     <div style={styles.shell}>
       <div style={styles.card}>
         <div style={styles.title}>{data.title}</div>
-        <div style={styles.progressTrack}>
+        <div style={styles.progressTrack} role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
           <div style={{ ...styles.progressFill, width: `${pct}%` }} />
         </div>
         <div style={styles.meta}>

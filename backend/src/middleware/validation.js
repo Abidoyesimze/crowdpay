@@ -1,4 +1,4 @@
-const { body, query, validationResult } = require('express-validator');
+const { body, param, query, validationResult } = require('express-validator');
 const { Keypair } = require('@stellar/stellar-sdk');
 const { getSupportedAssetCodes } = require('../services/stellarService');
 const { stripHtml, sanitizeRichText } = require('../lib/sanitize');
@@ -14,6 +14,10 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 function isUuid(value) {
   return typeof value === 'string' && UUID_PATTERN.test(value);
+}
+
+function blankToNull(value) {
+  return typeof value === 'string' && value.trim() === '' ? null : value;
 }
 
 const passwordValidation = [
@@ -262,7 +266,7 @@ const contributionValidation = [
     .optional({ nullable: true })
     .customSanitizer((val) => (typeof val === 'string' ? stripHtml(val).trim() : val))
     .custom((value) => {
-      if (typeof value === 'string' && /[\u0000-\u001F\u007F-\u009F]/.test(value)) {
+      if (typeof value === 'string' && [...value].some((ch) => { const c = ch.charCodeAt(0); return c < 0x20 || c === 0x7F || (c >= 0x80 && c <= 0x9F); })) {
         throw new Error('Display name contains invalid control characters or null bytes');
       }
       return true;
@@ -294,6 +298,52 @@ const withdrawalValidation = [
       } catch (_err) {
         throw new Error('destination_key must be a valid Stellar public key');
       }
+    }),
+];
+
+const createAnnouncementValidation = [
+  body('message')
+    .customSanitizer(stripHtml)
+    .trim()
+    .notEmpty()
+    .withMessage('message is required')
+    .isLength({ max: 500 })
+    .withMessage('message must be at most 500 characters'),
+  body('severity')
+    .customSanitizer(blankToNull)
+    .optional({ nullable: true })
+    .isIn(['info', 'warning', 'critical'])
+    .withMessage('severity must be info, warning, or critical'),
+  body('details_url')
+    .customSanitizer(blankToNull)
+    .optional({ nullable: true })
+    .isURL({ require_protocol: true })
+    .withMessage('details_url must be a valid URL'),
+  body('active_from')
+    .customSanitizer(blankToNull)
+    .optional({ nullable: true })
+    .isISO8601()
+    .withMessage('active_from must be a valid ISO 8601 date-time'),
+  body('active_until')
+    .customSanitizer(blankToNull)
+    .optional({ nullable: true })
+    .isISO8601()
+    .withMessage('active_until must be a valid ISO 8601 date-time')
+    .custom((value, { req }) => {
+      const activeFrom = req.body.active_from;
+      const startsAt = activeFrom ? new Date(activeFrom) : new Date();
+      if (new Date(value).getTime() <= startsAt.getTime()) {
+        throw new Error(activeFrom ? 'active_until must be after active_from' : 'active_until must be in the future');
+      }
+      return true;
+    }),
+];
+
+const announcementIdValidation = [
+  param('id')
+    .custom((value) => {
+      if (!isUuid(value)) throw new Error('id must be a valid UUID');
+      return true;
     }),
 ];
 
@@ -377,6 +427,8 @@ module.exports = {
   contributionValidation,
   contributionQuoteValidation,
   withdrawalValidation,
+  createAnnouncementValidation,
+  announcementIdValidation,
   getCampaignsValidation,
   validateRequest,
 };

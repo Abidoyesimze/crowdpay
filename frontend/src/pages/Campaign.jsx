@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Link, useParams, useLocation, useNavigate } from 'react-router-dom';
 import DOMPurify from 'dompurify';
 import { api } from '../services/api';
@@ -18,6 +18,7 @@ import CampaignQRCode from '../components/CampaignQRCode';
 import { getNetwork, signTransaction } from '@stellar/freighter-api';
 import { isConnected, getPublicKey } from '@stellar/freighter-api';
 import BackerInsightsCard from '../components/BackerInsightsCard';
+import CampaignComments from '../components/CampaignComments';
 import { addRecentlyViewed } from '../lib/recentlyViewed';
 
 
@@ -51,6 +52,158 @@ function progressColor(pct, status) {
     return '#6b7280'; // grey — ended
   if (pct >= 75) return '#3b82f6'; // blue — nearly there
   return '#7c3aed'; // default purple
+}
+
+function FavoriteToggle({ campaignId }) {
+  const [favorited, setFavorited] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function toggle() {
+    setBusy(true);
+    try {
+      if (favorited) {
+        await api.removeFavorite(campaignId);
+        setFavorited(false);
+      } else {
+        await api.addFavorite(campaignId);
+        setFavorited(true);
+      }
+    } catch {
+      // no-op — leave state unchanged on failure
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={busy}
+      title={favorited ? 'Remove from favorites' : 'Add to favorites'}
+      style={{
+        background: 'none',
+        border: '1px solid var(--color-border-lighter)',
+        borderRadius: '999px',
+        fontSize: '0.85rem',
+        padding: '0.2rem 0.6rem',
+        cursor: 'pointer',
+        color: favorited ? 'var(--color-accent)' : 'var(--color-text-hint)',
+      }}
+    >
+      {favorited ? '★ Favorited' : '☆ Favorite'}
+    </button>
+  );
+}
+
+function CampaignPublishControls({ campaign, isOwner, navigate }) {
+  const [cloning, setCloning] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [error, setError] = useState('');
+
+  if (!isOwner) return null;
+
+  async function clone() {
+    setCloning(true);
+    setError('');
+    try {
+      const newCampaign = await api.cloneCampaign(campaign.id);
+      navigate(`/campaigns/${newCampaign.id}`);
+    } catch (err) {
+      setError(err.message || 'Could not clone campaign');
+      setCloning(false);
+    }
+  }
+
+  async function publishNow() {
+    setPublishing(true);
+    setError('');
+    try {
+      await api.publishCampaign(campaign.id);
+      window.location.reload();
+    } catch (err) {
+      setError(err.message || 'Could not publish campaign');
+      setPublishing(false);
+    }
+  }
+
+  async function schedulePublish(e) {
+    e.preventDefault();
+    setScheduling(true);
+    setError('');
+    try {
+      await api.scheduleCampaignPublish(campaign.id, { scheduled_publish_at: scheduledAt || null });
+      window.location.reload();
+    } catch (err) {
+      setError(err.message || 'Could not schedule publishing');
+      setScheduling(false);
+    }
+  }
+
+  return (
+    <div data-no-print style={{ marginBottom: '1.25rem' }}>
+      {campaign.status === 'draft' && (
+        <div
+          className="campaign-card"
+          style={{
+            minHeight: 'auto',
+            padding: '0.85rem',
+            marginBottom: '0.75rem',
+            display: 'grid',
+            gap: '0.6rem',
+          }}
+        >
+          <strong style={{ fontSize: '0.9rem' }}>This campaign is a draft</strong>
+          <p style={{ fontSize: '0.82rem', color: 'var(--color-text-hint)', margin: 0 }}>
+            No wallet or on-chain contracts exist yet. Publish now, or schedule an automatic
+            publish time.
+          </p>
+          {campaign.scheduled_publish_at && (
+            <p style={{ fontSize: '0.82rem', margin: 0 }}>
+              Scheduled to auto-publish at {new Date(campaign.scheduled_publish_at).toLocaleString()}
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button type="button" className="btn-primary" onClick={publishNow} disabled={publishing}>
+              {publishing ? 'Publishing…' : 'Publish now'}
+            </button>
+          </div>
+          <form onSubmit={schedulePublish} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              type="datetime-local"
+              value={scheduledAt}
+              onChange={(e) => setScheduledAt(e.target.value)}
+              style={{ fontSize: '0.85rem' }}
+            />
+            <button type="submit" className="btn-secondary" disabled={scheduling} style={{ fontSize: '0.85rem' }}>
+              {scheduling ? 'Saving…' : 'Schedule publish'}
+            </button>
+          </form>
+          {error && (
+            <p className="alert alert--error" style={{ fontSize: '0.8rem', margin: 0 }}>
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+      <button
+        type="button"
+        className="btn-secondary"
+        style={{ fontSize: '0.85rem' }}
+        onClick={clone}
+        disabled={cloning}
+      >
+        {cloning ? 'Cloning…' : 'Clone campaign'}
+      </button>
+      {campaign.status !== 'draft' && error && (
+        <p className="alert alert--error" style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function ContributionRow({ c }) {
@@ -199,6 +352,9 @@ export default function Campaign() {
   const [contributorRefundBusy, setContributorRefundBusy] = useState(false);
   const [contributorRefundError, setContributorRefundError] = useState('');
   const [contributorRefundSuccess, setContributorRefundSuccess] = useState('');
+  const editModalRef = useRef(null);
+  const deleteModalRef = useRef(null);
+
   const refParam = new URLSearchParams(location.search).get('ref');
 
   const currentUserId = user?.id || user?.userId;
@@ -219,6 +375,60 @@ export default function Campaign() {
       })
       .catch(() => { });
   }, [user, id]);
+
+  useEffect(() => {
+    if (!isEditingCampaign) return;
+    const onKey = (e) => { if (e.key === 'Escape') handleCloseEditModal(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isEditingCampaign, handleCloseEditModal]);
+
+  useEffect(() => {
+    if (!isEditingCampaign) return;
+    const modal = editModalRef.current;
+    if (!modal) return;
+    const focusable = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    first?.focus();
+    function trapTab(e) {
+      if (e.key !== 'Tab') return;
+      if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last?.focus(); } }
+      else { if (document.activeElement === last) { e.preventDefault(); first?.focus(); } }
+    }
+    modal.addEventListener('keydown', trapTab);
+    return () => modal.removeEventListener('keydown', trapTab);
+  }, [isEditingCampaign]);
+
+  useEffect(() => {
+    if (!showDeleteDialog) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        setShowDeleteDialog(false);
+        setDeleteConfirmation('');
+        setDeleteError('');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showDeleteDialog]);
+
+  useEffect(() => {
+    if (!showDeleteDialog) return;
+    const modal = deleteModalRef.current;
+    if (!modal) return;
+    const focusable = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    first?.focus();
+    function trapTab(e) {
+      if (e.key !== 'Tab') return;
+      if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last?.focus(); } }
+      else { if (document.activeElement === last) { e.preventDefault(); first?.focus(); } }
+    }
+    modal.addEventListener('keydown', trapTab);
+    return () => modal.removeEventListener('keydown', trapTab);
+  }, [showDeleteDialog]);
 
   useEffect(() => {
     if (!isOwner || !id) return;
@@ -957,6 +1167,7 @@ export default function Campaign() {
           <span style={styles.asset}>{campaign.asset_type}</span>
           <CampaignStatusBadge status={campaign.status} />
           <VerificationBadge status={campaign.creator_kyc_status} />
+          {user && <FavoriteToggle campaignId={campaign.id} />}
           {campaign.contract_address && (
             <span
               title="This campaign is backed by a Soroban smart contract"
@@ -1252,6 +1463,10 @@ export default function Campaign() {
         </div>
       </div>
 
+      {user && campaign && isOwner && (
+        <CampaignPublishControls campaign={campaign} isOwner={isOwner} navigate={navigate} />
+      )}
+
       {/* Edit campaign — owner or editor */}
       {user && campaign && canEditCampaign && (
         <div
@@ -1307,6 +1522,7 @@ export default function Campaign() {
           type="button"
           className="btn-secondary"
           data-no-print
+          aria-expanded={showQR}
           onClick={() => setShowQR((v) => !v)}
         >
           {showQR ? 'Hide QR code' : 'Show QR code'}
@@ -1381,6 +1597,7 @@ export default function Campaign() {
             <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>Embed this campaign</h3>
             <button
               type="button"
+              aria-expanded={showEmbedSection}
               onClick={() => setShowEmbedSection(!showEmbedSection)}
               style={{
                 background: 'transparent',
@@ -1588,6 +1805,7 @@ export default function Campaign() {
       {canManageTeam && (
         <div style={{ marginBottom: '2rem' }} data-no-print>
           <div
+            role="tablist"
             style={{
               display: 'flex',
               gap: '0.5rem',
@@ -1598,6 +1816,8 @@ export default function Campaign() {
           >
             <button
               type="button"
+              role="tab"
+              aria-selected={activeTab === 'team'}
               onClick={() => setActiveTab('team')}
               style={{
                 background: activeTab === 'team' ? 'var(--color-accent)' : 'transparent',
@@ -1615,6 +1835,8 @@ export default function Campaign() {
             {canViewAnalytics && (
               <button
                 type="button"
+                role="tab"
+                aria-selected={activeTab === 'analytics'}
                 onClick={() => setActiveTab('analytics')}
                 style={{
                   background: activeTab === 'analytics' ? 'var(--color-accent)' : 'transparent',
@@ -1912,14 +2134,18 @@ export default function Campaign() {
           <strong style={{ marginBottom: '0.5rem', display: 'block' }}>
             {editingUpdateId ? 'Edit update' : 'Post update'}
           </strong>
+          <label htmlFor="update-title" className="sr-only">Update title</label>
           <input
+            id="update-title"
             placeholder="Update title"
             value={updateForm.title}
             onChange={(e) => setUpdateForm((s) => ({ ...s, title: e.target.value }))}
             required
             style={{ marginBottom: '0.5rem' }}
           />
+          <label htmlFor="update-body" className="sr-only">Update body</label>
           <textarea
+            id="update-body"
             placeholder="Write markdown update..."
             value={updateForm.body}
             onChange={(e) => setUpdateForm((s) => ({ ...s, body: e.target.value }))}
@@ -1990,12 +2216,17 @@ export default function Campaign() {
         </article>
       ))}
 
+      <div style={{ marginTop: '2rem', marginBottom: '2rem' }} data-no-print>
+        <CampaignComments campaignId={campaign.id} campaign={campaign} />
+      </div>
+
       {/* Analytics Section */}
       {canViewAnalytics && (canManageTeam ? activeTab === 'analytics' : true) && (
         <div style={{ marginBottom: '2rem' }}>
           <h2 style={styles.sectionTitle}>Analytics</h2>
 
           <div
+            role="tablist"
             style={{
               display: 'flex',
               gap: '0.5rem',
@@ -2006,6 +2237,8 @@ export default function Campaign() {
           >
             <button
               type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'overview'}
               onClick={() => setAnalyticsTab('overview')}
               style={{
                 background: analyticsTab === 'overview' ? 'var(--color-accent)' : 'transparent',
@@ -2023,6 +2256,8 @@ export default function Campaign() {
 
             <button
               type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'backers'}
               onClick={() => setAnalyticsTab('backers')}
               style={{
                 background: analyticsTab === 'backers' ? 'var(--color-accent)' : 'transparent',
@@ -2254,6 +2489,9 @@ export default function Campaign() {
       {/* Edit Campaign Modal */}
       {isEditingCampaign && campaign && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-campaign-title"
           style={{
             position: 'fixed',
             top: 0,
@@ -2269,6 +2507,7 @@ export default function Campaign() {
           onClick={handleCloseEditModal}
         >
           <div
+            ref={editModalRef}
             style={{
               background: '#fff',
               borderRadius: '12px',
@@ -2282,6 +2521,7 @@ export default function Campaign() {
             onClick={(e) => e.stopPropagation()}
           >
             <h2
+              id="edit-campaign-title"
               style={{
                 marginTop: 0,
                 marginBottom: '1.5rem',
@@ -2439,6 +2679,9 @@ export default function Campaign() {
       {/* Delete Campaign Confirmation Dialog */}
       {showDeleteDialog && campaign && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-campaign-title"
           style={{
             position: 'fixed',
             top: 0,
@@ -2453,6 +2696,7 @@ export default function Campaign() {
           }}
         >
           <div
+            ref={deleteModalRef}
             style={{
               background: 'var(--color-surface)',
               borderRadius: '8px',
@@ -2463,6 +2707,7 @@ export default function Campaign() {
             }}
           >
             <h2
+              id="delete-campaign-title"
               style={{
                 fontSize: '1.5rem',
                 fontWeight: 700,

@@ -1,5 +1,5 @@
 /* eslint-disable */
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
@@ -40,10 +40,36 @@ const badgeStyle = {
 };
 
 function Drawer({ title, onClose, children }) {
+  const panelRef = useRef(null);
+
+  useEffect(() => {
+    if (!onClose) return;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const focusable = panel.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    first?.focus();
+    function trapTab(e) {
+      if (e.key !== 'Tab') return;
+      if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last?.focus(); } }
+      else { if (document.activeElement === last) { e.preventDefault(); first?.focus(); } }
+    }
+    panel.addEventListener('keydown', trapTab);
+    return () => panel.removeEventListener('keydown', trapTab);
+  }, [children]);
+
   return (
     <div
       role="dialog"
       aria-modal="true"
+      aria-label={title}
       style={{
         position: 'fixed',
         inset: 0,
@@ -55,6 +81,7 @@ function Drawer({ title, onClose, children }) {
       onClick={onClose}
     >
       <div
+        ref={panelRef}
         style={{
           width: 'min(520px, 100%)',
           height: '100%',
@@ -917,11 +944,10 @@ function MilestonesQueue() {
                 gap: '0.45rem',
               }}
             >
+              <label htmlFor={`milestone-reject-${m.id}`} className="sr-only">Rejection reason</label>
               <textarea
+                id={`milestone-reject-${m.id}`}
                 value={rejectReason}
-                onChange={(e) => setRejectReason(e.target.value)}
-                placeholder="Rejection reason (visible to creator)"
-                rows={2}
                 style={{
                   fontSize: '0.85rem',
                   resize: 'vertical',
@@ -1342,11 +1368,13 @@ export default function AdminDashboard() {
         Withdrawal approvals, dispute management, KYC oversight, and platform health.
       </p>
 
-      <nav style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
+      <nav role="tablist" style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
         {TABS.map((t) => (
           <button
             key={t.id}
             type="button"
+            role="tab"
+            aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
             style={{
               ...badgeStyle,

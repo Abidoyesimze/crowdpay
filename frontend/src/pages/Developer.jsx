@@ -216,7 +216,19 @@ export default function Developer() {
     setNewKeyScopes((cur) => (cur.includes(sc) ? cur.filter((x) => x !== sc) : [...cur, sc]));
   }
 
-  const selectedEndpoint = v1Endpoints.find((e) => e.id === explorerEndpoint) || v1Endpoints[0];
+  const selectedEndpoint =
+    v1Endpoints.find((e) => e.id === explorerEndpoint) ||
+    v1Endpoints[0] ||
+    {
+      id: '',
+      auth: false,
+      method: 'GET',
+      path: '',
+      pathFields: [],
+      queryFields: [],
+      bodyTemplate: null,
+      label: '',
+    };
 
   function buildExplorerUrl() {
     if (!selectedEndpoint) return '';
@@ -449,7 +461,9 @@ export default function Developer() {
             marginBottom: '1rem',
           }}
         >
+          <label htmlFor="new-key-label" className="sr-only">API key label</label>
           <input
+            id="new-key-label"
             value={newKeyLabel}
             onChange={(e) => setNewKeyLabel(e.target.value)}
             placeholder="Label"
@@ -540,7 +554,9 @@ export default function Developer() {
             marginBottom: '1rem',
           }}
         >
+          <label htmlFor="webhook-url" className="sr-only">Webhook URL</label>
           <input
+            id="webhook-url"
             value={hookUrl}
             onChange={(e) => setHookUrl(e.target.value)}
             placeholder="https://example.com/crowdpay-webhook"

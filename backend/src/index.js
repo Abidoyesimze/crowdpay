@@ -5,6 +5,7 @@ const Sentry = require("@sentry/node");
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.NODE_ENV || "development",
+  release: process.env.SENTRY_RELEASE || "unknown",
   tracesSampleRate: process.env.NODE_ENV === "production" ? 0.2 : 1.0,
   enabled: !!process.env.SENTRY_DSN,
   integrations: [Sentry.expressIntegration()],
@@ -22,6 +23,7 @@ const {
   normalizeErrorResponse,
   errorHandler,
 } = require("./middleware/errorHandler");
+const compressionMiddleware = require("./middleware/compression");
 const {
   startLedgerMonitor,
   getLedgerStreamHealth,
@@ -67,7 +69,7 @@ app.use(
       },
     },
     hsts: {
-      maxAge: 31_536_000, // 1 year
+      maxAge: 31_536_000,
       includeSubDomains: true,
       preload: true,
     },
@@ -81,6 +83,9 @@ app.use(
     credentials: true,
   }),
 );
+// Compress all responses >= COMPRESSION_THRESHOLD bytes (default 1 KB).
+// SSE streams are excluded automatically. See middleware/compression.js.
+app.use(compressionMiddleware);
 app.post(
   "/api/webhooks/kyc",
   express.raw({ type: "application/json" }),
@@ -166,7 +171,12 @@ const openApiSpec = swaggerJsdoc({
   },
   apis: ["./src/routes/*.js"],
 });
-app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
+app.get("/api/docs/openapi.json", (_req, res) => res.json(openApiSpec));
+app.use(
+  "/api/docs",
+  swaggerUi.serveFiles(openApiSpec),
+  swaggerUi.setup(openApiSpec),
+);
 
 const v1OpenApiSpec = swaggerJsdoc({
   definition: {
@@ -224,8 +234,16 @@ app.use("/api/v1/dev", require("./routes/dev"));
 app.use("/v1/dev", require("./routes/dev"));
 app.get("/api/v1/docs/openapi.json", (_req, res) => res.json(v1OpenApiSpec));
 app.get("/v1/docs/openapi.json", (_req, res) => res.json(v1OpenApiSpec));
-app.use("/api/v1/docs", swaggerUi.serve, swaggerUi.setup(v1OpenApiSpec));
-app.use("/v1/docs", swaggerUi.serve, swaggerUi.setup(v1OpenApiSpec));
+app.use(
+  "/api/v1/docs",
+  swaggerUi.serveFiles(v1OpenApiSpec),
+  swaggerUi.setup(v1OpenApiSpec),
+);
+app.use(
+  "/v1/docs",
+  swaggerUi.serveFiles(v1OpenApiSpec),
+  swaggerUi.setup(v1OpenApiSpec),
+);
 
 app.use("/api/auth", require("./routes/auth"));
 // Backwards/alternate compatibility for docs + clients expecting /api/users/register|login.
@@ -237,6 +255,7 @@ app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api/users", require("./routes/users"));
 app.use("/api/invites", require("./routes/invites"));
 app.use("/api/campaigns", require("./routes/campaignUpdates"));
+app.use("/api/campaigns", require("./routes/campaignComments"));
 app.use("/api/campaigns", require("./routes/campaigns"));
 app.use("/api/anchor", require("./routes/anchor"));
 app.use("/api/contributions", require("./routes/contributions"));
@@ -253,6 +272,7 @@ app.use("/api/notifications", require("./routes/notifications"));
 app.use("/api/emails", require("./routes/emails"));
 app.use("/api/campaigns", require("./routes/thankYou"));
 app.use("/api/contributions", require("./routes/thankYou"));
+app.use("/api", require("./routes/announcement"));
 
 app.get("/health", async (_, res) => {
   try {
@@ -385,6 +405,31 @@ function startWeeklyDigestCron() {
   logger.info("Weekly digest cron scheduled", { schedule });
 }
 
+function startScheduledPublishCron() {
+  if (!ff.isEnabled("scheduled-publish-cron")) return;
+  const cron = require("node-cron");
+  const db = require("./config/database");
+  const { publishDraftCampaign } = require("./services/campaignPublishing");
+  cron.schedule("*/5 * * * *", async () => {
+    try {
+      const { rows } = await db.query(
+        `SELECT id FROM campaigns
+         WHERE status = 'draft' AND scheduled_publish_at IS NOT NULL AND scheduled_publish_at <= NOW()`
+      );
+      for (const row of rows) {
+        try {
+          await publishDraftCampaign(row.id);
+        } catch (err) {
+          logger.error("Scheduled publish failed for campaign", { campaign_id: row.id, error: err.message });
+        }
+      }
+    } catch (err) {
+      logger.error("Scheduled publish cron failed", { error: err.message });
+    }
+  });
+  logger.info("Scheduled publish cron scheduled (every 5 minutes)");
+}
+
 function startNotificationDigestCron() {
   if (!ff.isEnabled("notification-quiet-hours-cron")) return;
   const cron = require("node-cron");
@@ -422,6 +467,7 @@ async function bootstrap() {
     startWebhookRetryPoller();
     startCampaignStatusCron();
     startReconciliationCron();
+    startScheduledPublishCron();
     startWeeklyDigestCron();
     startNotificationDigestCron();
     startContractDeploymentRetryCron();

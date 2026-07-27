@@ -477,7 +477,7 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
 
   // Soroban integration: Reject milestone on-chain
   const { rows: campaignRows } = await db.query(
-    'SELECT milestones_contract_id FROM campaigns WHERE id = $1',
+    'SELECT milestones_contract_id, creator_id FROM campaigns WHERE id = $1',
     [rows[0].campaign_id]
   );
   const contractId = campaignRows[0]?.milestones_contract_id;
@@ -496,6 +496,16 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
   }
 
   evaluateCampaign(rows[0].campaign_id).catch(err => logger.error('Fraud evaluate failed in milestone reject', { error: err.message }));
+
+  if (campaignRows[0]?.creator_id) {
+    setImmediate(() => {
+      emitWebhookEventForUser(campaignRows[0].creator_id, WEBHOOK_EVENTS.MILESTONE_REJECTED, {
+        milestone: rows[0],
+        campaign_id: rows[0].campaign_id,
+        reason,
+      }).catch((err) => logger.error('Milestone rejected webhook emit failed', { error: err.message }));
+    });
+  }
 
   res.json(rows[0]);
 });

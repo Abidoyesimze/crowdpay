@@ -20,7 +20,7 @@ function mockRes() {
 function createMiddleware({ dbRows }) {
   return proxyquire('./auth', {
     jsonwebtoken: {
-      verify: () => ({ userId: 'user-123', role: 'contributor' }),
+      verify: () => ({ sub: 'user-123', iss: 'https://crowdpay.io', aud: 'crowdpay-api', userId: 'user-123', role: 'contributor' }),
     },
     '../config/database': {
       query: async () => ({ rows: dbRows }),

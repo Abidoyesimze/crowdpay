@@ -61,6 +61,43 @@ async function listUserContributions(userId) {
 }
 
 const ACTIVE_CAMPAIGN_STATUSES = new Set(['active', 'funded']);
+const COMPLETED_CAMPAIGN_STATUSES = new Set(['completed', 'funded', 'withdrawn']);
+
+const BADGE_DEFINITIONS = [
+  {
+    id: 'first_contribution',
+    label: 'First contribution',
+    earned: (stats) => stats.campaigns_backed >= 1,
+  },
+  {
+    id: 'backed_5_campaigns',
+    label: 'Backed 5 campaigns',
+    earned: (stats) => stats.campaigns_backed >= 5,
+  },
+  {
+    id: 'backed_10_campaigns',
+    label: 'Backed 10 campaigns',
+    earned: (stats) => stats.campaigns_backed >= 10,
+  },
+  {
+    id: 'contributed_1000',
+    label: 'Contributed 1,000+',
+    earned: (stats) => stats.total_contributed >= 1000,
+  },
+  {
+    id: 'backed_completed_campaign',
+    label: 'Backed a completed campaign',
+    earned: (stats) => stats.campaigns_completed >= 1,
+  },
+];
+
+function computeBadges(stats) {
+  return BADGE_DEFINITIONS.map((def) => ({
+    id: def.id,
+    label: def.label,
+    earned: def.earned(stats),
+  }));
+}
 
 async function getContributorDashboard(userId) {
   const { rows: userRows } = await db.query(
@@ -84,8 +121,16 @@ async function getContributorDashboard(userId) {
   );
 
   if (!contribs.length) {
+    const emptyStats = {
+      total_contributed: 0,
+      active_campaigns_backed: 0,
+      total_refunded: 0,
+      campaigns_backed: 0,
+      campaigns_completed: 0,
+      avg_contribution: 0,
+    };
     return {
-      stats: { total_contributed: 0, active_campaigns_backed: 0, total_refunded: 0 },
+      stats: { ...emptyStats, badges: computeBadges(emptyStats) },
       campaigns: [],
     };
   }
@@ -155,22 +200,67 @@ async function getContributorDashboard(userId) {
     });
   }
 
-  const activeCampaignsBacked = [...campaignsMap.values()].filter((campaign) =>
+  const allCampaigns = [...campaignsMap.values()];
+  const activeCampaignsBacked = allCampaigns.filter((campaign) =>
     ACTIVE_CAMPAIGN_STATUSES.has(campaign.status)
   ).length;
+  const campaignsCompleted = allCampaigns.filter((campaign) =>
+    COMPLETED_CAMPAIGN_STATUSES.has(campaign.status)
+  ).length;
+
+  const stats = {
+    total_contributed: totalContributed,
+    active_campaigns_backed: activeCampaignsBacked,
+    total_refunded: totalRefunded,
+    campaigns_backed: allCampaigns.length,
+    campaigns_completed: campaignsCompleted,
+    avg_contribution: contribs.length ? totalContributed / contribs.length : 0,
+  };
 
   return {
-    stats: {
-      total_contributed: totalContributed,
-      active_campaigns_backed: activeCampaignsBacked,
-      total_refunded: totalRefunded,
-    },
-    campaigns: [...campaignsMap.values()],
+    stats: { ...stats, badges: computeBadges(stats) },
+    campaigns: allCampaigns,
   };
+}
+
+function csvEscape(value) {
+  const str = value === null || value === undefined ? '' : String(value);
+  if (/[",\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+async function getContributorDashboardCsv(userId) {
+  const dashboard = await getContributorDashboard(userId);
+  if (!dashboard) return null;
+
+  const header = ['date', 'campaign', 'amount', 'asset', 'tx_hash', 'refund_status'];
+  const rows = [header.join(',')];
+
+  for (const campaign of dashboard.campaigns) {
+    for (const contribution of campaign.contributions) {
+      rows.push(
+        [
+          new Date(contribution.created_at).toISOString(),
+          campaign.title,
+          contribution.amount,
+          contribution.asset,
+          contribution.tx_hash || '',
+          contribution.refund_status || '',
+        ]
+          .map(csvEscape)
+          .join(',')
+      );
+    }
+  }
+
+  return rows.join('\n');
 }
 
 module.exports = {
   listCreatorCampaigns,
   listUserContributions,
   getContributorDashboard,
+  getContributorDashboardCsv,
 };

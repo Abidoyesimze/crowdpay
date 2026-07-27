@@ -133,7 +133,7 @@ export default function CampaignEmbed() {
           <div style={styles.target}>{progressPct.toFixed(1)}%</div>
         </div>
 
-        <div style={styles.progressBar}>
+        <div style={styles.progressBar} role="progressbar" aria-valuenow={Math.round(progressPct)} aria-valuemin={0} aria-valuemax={100}>
           <div
             style={{
               ...styles.progressFill,
