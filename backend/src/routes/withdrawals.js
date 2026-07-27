@@ -409,7 +409,7 @@ const platformApproveHandler = async (req, res) => {
     }
 
     const now = new Date();
-    if (requestRow.expires_at && new Date(requestRow.expires_at) < now) {
+    if ((requestRow.expires_at && new Date(requestRow.expires_at) < now) || (isXdrExpired && isXdrExpired(requestRow.unsigned_xdr))) {
       await client.query(
         `UPDATE withdrawal_requests SET status = 'expired', updated_at = NOW() WHERE id = $1`,
         [req.params.id]
@@ -418,7 +418,7 @@ const platformApproveHandler = async (req, res) => {
       return res.status(400).json({ error: 'Withdrawal XDR has expired' });
     }
 
-    const fullySignedXdr = signTransactionXdr({
+    fullySignedXdr = signTransactionXdr({
       xdr: requestRow.unsigned_xdr,
       signerSecret: process.env.PLATFORM_SECRET_KEY,
     });
@@ -441,18 +441,6 @@ const platformApproveHandler = async (req, res) => {
        RETURNING *`,
       [fullySignedXdr, req.params.id]
     );
-  // Check whether the XDR time bounds have already elapsed before adding our signature.
-  // If expired, tell the creator to re-request so a fresh XDR is built.
-  if (isXdrExpired(requestRow.unsigned_xdr)) {
-    return res.status(410).json({
-      error: 'Withdrawal XDR has expired. The creator must cancel and submit a new withdrawal request.',
-    });
-  }
-
-  const signedXdr = signTransactionXdr({
-    xdr: requestRow.unsigned_xdr,
-    signerSecret: process.env.PLATFORM_SECRET_KEY,
-  });
 
     if (!updatedRows.length) {
       await client.query('ROLLBACK');
@@ -519,14 +507,18 @@ const platformApproveHandler = async (req, res) => {
   }
 
   const finalizeClient = await db.connect();
+  let updatedWithdrawalRow;
   try {
     await finalizeClient.query('BEGIN');
-    await finalizeClient.query(
+    const { rows: updated } = await finalizeClient.query(
       `UPDATE withdrawal_requests
        SET status = 'submitted', tx_hash = $1, updated_at = NOW()
-       WHERE id = $2`,
+       WHERE id = $2
+       RETURNING *`,
       [txHash, req.params.id]
     );
+    updatedWithdrawalRow = updated[0];
+
     await finalizeWithdrawalSubmitted(finalizeClient, {
       withdrawalRequestId: req.params.id,
       txHash,
@@ -540,50 +532,44 @@ const platformApproveHandler = async (req, res) => {
       metadata: { tx_hash: txHash },
     });
     await finalizeClient.query('COMMIT');
-    await finalizeWithdrawalSubmitted(client, {
-      withdrawalRequestId: req.params.id,
-      txHash,
-      signedXdr,
-    });
-    await client.query('COMMIT');
 
     // Notify creator
-    const { rows: cRows } = await db.query(
-      `SELECT u.email, u.name, c.creator_id, c.title, c.asset_type
-       FROM users u JOIN campaigns c ON c.creator_id = u.id WHERE c.id = $1`,
-      [requestRow.campaign_id]
-    );
-    if (cRows.length) {
-      sendWithdrawalApprovedEmail({
-        to: cRows[0].email,
-        withdrawalId: req.params.id,
-        creatorName: cRows[0].name,
-        amount: requestRow.amount,
-        asset: cRows[0].asset_type,
-        campaignTitle: cRows[0].title,
-        campaignUrl: `${frontendBaseUrl()}/campaigns/${requestRow.campaign_id}`,
-        txHash,
-      }).catch((err) => logger.error('Withdrawal approved email failed', { error: err.message }));
-      createNotification(cRows[0].creator_id, {
-        type: 'withdrawal_approved',
-        title: 'Withdrawal approved',
-        body: `Your withdrawal of ${requestRow.amount} was approved and submitted on-chain.`,
-        link: `/campaigns/${requestRow.campaign_id}`,
-      }).catch(() => {});
-    }
+    if (updatedWithdrawalRow) {
+      const { rows: cRows } = await db.query(
+        `SELECT u.email, u.name, c.creator_id, c.title, c.asset_type
+         FROM users u JOIN campaigns c ON c.creator_id = u.id WHERE c.id = $1`,
+        [updatedWithdrawalRow.campaign_id]
+      );
+      if (cRows.length) {
+        sendWithdrawalApprovedEmail({
+          to: cRows[0].email,
+          withdrawalId: req.params.id,
+          creatorName: cRows[0].name,
+          amount: updatedWithdrawalRow.amount,
+          asset: cRows[0].asset_type,
+          campaignTitle: cRows[0].title,
+          campaignUrl: `${frontendBaseUrl()}/campaigns/${updatedWithdrawalRow.campaign_id}`,
+          txHash,
+        }).catch((err) => logger.error('Withdrawal approved email failed', { error: err.message }));
+        createNotification(cRows[0].creator_id, {
+          type: 'withdrawal_approved',
+          title: 'Withdrawal approved',
+          body: `Your withdrawal of ${updatedWithdrawalRow.amount} was approved and submitted on-chain.`,
+          link: `/campaigns/${updatedWithdrawalRow.campaign_id}`,
+        }).catch(() => {});
+      }
 
-    const withdrawalRow = updated[0];
-    setImmediate(() => {
-      db.query('SELECT creator_id FROM campaigns WHERE id = $1', [withdrawalRow.campaign_id])
-        .then(({ rows: cr }) => {
-          if (!cr.length) return;
-          return emitWebhookEventForUser(cr[0].creator_id, WEBHOOK_EVENTS.WITHDRAWAL_COMPLETED, {
-            withdrawal: { ...withdrawalRow, tx_hash: txHash },
-          });
-        })
-        .catch((e) => logger.error('Withdrawal webhook emit failed', { error: e.message }));
-    });
-    res.json(updated[0]);
+      setImmediate(() => {
+        db.query('SELECT creator_id FROM campaigns WHERE id = $1', [updatedWithdrawalRow.campaign_id])
+          .then(({ rows: cr }) => {
+            if (!cr.length) return;
+            return emitWebhookEventForUser(cr[0].creator_id, WEBHOOK_EVENTS.WITHDRAWAL_COMPLETED, {
+              withdrawal: { ...updatedWithdrawalRow, tx_hash: txHash },
+            });
+          })
+          .catch((e) => logger.error('Withdrawal webhook emit failed', { error: e.message }));
+      });
+    }
   } catch (err) {
     await finalizeClient.query('ROLLBACK');
     logger.error('Failed to finalize withdrawal after Stellar submission', {
@@ -595,7 +581,7 @@ const platformApproveHandler = async (req, res) => {
     finalizeClient.release();
   }
 
-  return res.status(200).json({ status: 'submitted', tx_hash: txHash });
+  return res.status(200).json(updatedWithdrawalRow || { status: 'submitted', tx_hash: txHash });
 };
 
 router.post('/:id/approve/platform', requireAuth, requirePlatformApprover, platformApproveHandler);
