@@ -17,6 +17,7 @@ for (const key of REQUIRED_ENV_VARS) {
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
   environment: import.meta.env.MODE,
+  release: import.meta.env.VITE_SENTRY_RELEASE || 'unknown',
   tracesSampleRate: 0.1,
   enabled: !!import.meta.env.VITE_SENTRY_DSN,
   integrations: [Sentry.browserTracingIntegration()],

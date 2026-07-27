@@ -89,4 +89,7 @@ jobs:
 
       - name: Run build
         working-directory: ./frontend
+        env:
+          SENTRY_RELEASE: ${{ github.sha }}
+          VITE_SENTRY_RELEASE: ${{ github.sha }}
         run: npm run build
