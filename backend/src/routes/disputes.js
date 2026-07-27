@@ -9,6 +9,7 @@ const {
 } = require('../services/emailService');
 const logger = require('../config/logger');
 const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
+const { parsePagination } = require('../utils/pagination');
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -147,15 +148,24 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
 
 // GET /campaigns/:id/disputes — admin only
 router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), async (req, res) => {
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
+
+  const countResult = await db.query(
+    'SELECT COUNT(*)::int AS total FROM disputes WHERE campaign_id = $1',
+    [req.params.id]
+  );
+  const total = countResult.rows[0].total;
+
   const { rows } = await db.query(
     `SELECT d.*, u.name AS raised_by_name, u.email AS raised_by_email
      FROM disputes d
      JOIN users u ON u.id = d.raised_by
      WHERE d.campaign_id = $1
-     ORDER BY d.created_at DESC`,
-    [req.params.id]
+     ORDER BY d.created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [req.params.id, limit, offset]
   );
-  res.json(rows);
+  res.json({ data: rows, total, limit, offset });
 });
 
 // PATCH /disputes/:id — admin updates status + resolution note

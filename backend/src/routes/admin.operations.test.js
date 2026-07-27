@@ -10,8 +10,14 @@ const mockQuery = async (text) => {
   if (text.includes('SUM(raised_amount)')) {
     return { rows: [{ total: '1500' }] };
   }
+  if (text.includes('COUNT(*)') && text.includes('FROM withdrawal_requests wr')) {
+    return { rows: [{ total: 1 }] };
+  }
   if (text.includes('FROM withdrawal_requests WHERE status')) {
     return { rows: [{ count: 2, total_value: '400' }] };
+  }
+  if (text.includes('COUNT(*)') && text.includes('FROM disputes d')) {
+    return { rows: [{ total: 0 }] };
   }
   if (text.includes('FROM disputes WHERE status IN')) {
     return { rows: [{ count: 1 }] };
@@ -115,8 +121,10 @@ test('GET /api/admin/withdrawals returns pending queue', async () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/admin/withdrawals`);
     assert.strictEqual(res.status, 200);
     const body = await res.json();
-    assert.strictEqual(body.length, 1);
-    assert.strictEqual(body[0].id, 'w-1');
+    assert.ok(Array.isArray(body.data));
+    assert.strictEqual(body.data.length, 1);
+    assert.strictEqual(body.data[0].id, 'w-1');
+    assert.ok(typeof body.total === 'number');
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
