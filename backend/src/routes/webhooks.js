@@ -15,6 +15,7 @@ const {
   verifyWebhookSignature,
   WebhookError,
 } = require('../services/webhookService');
+const asyncHandler = require('../utils/asyncHandler');
 
 const isTest = process.env.NODE_ENV === 'test';
 
@@ -108,7 +109,7 @@ router.post('/incoming/:id', incomingWebhookLimiter, express.raw({ type: 'applic
   }
 });
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT id, url, events,
             CONCAT(LEFT(secret, 10), '…', RIGHT(secret, 4)) AS secret_hint,
@@ -117,9 +118,9 @@ router.get('/', requireAuth, async (req, res) => {
     [req.user.userId]
   );
   res.json(rows);
-});
+}));
 
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, asyncHandler(async (req, res) => {
   const { url, events, backoff_strategy } = req.body || {};
   if (!url || !events) {
     return res.status(400).json({ error: 'url and events array are required' });
@@ -150,9 +151,9 @@ router.post('/', requireAuth, async (req, res) => {
     secret,
     message: 'Store the signing secret; it is only shown once.',
   });
-});
+}));
 
-router.patch('/:id/backoff-strategy', requireAuth, async (req, res) => {
+router.patch('/:id/backoff-strategy', requireAuth, asyncHandler(async (req, res) => {
   const { backoff_strategy } = req.body || {};
   if (backoff_strategy !== null && !isValidBackoffStrategy(backoff_strategy)) {
     return res.status(400).json({
@@ -168,9 +169,9 @@ router.patch('/:id/backoff-strategy', requireAuth, async (req, res) => {
   );
   if (!rows.length) return res.status(404).json({ error: 'Webhook not found' });
   res.json(rows[0]);
-});
+}));
 
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `UPDATE webhooks SET revoked_at = NOW()
      WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
@@ -179,9 +180,9 @@ router.delete('/:id', requireAuth, async (req, res) => {
   );
   if (!rows.length) return res.status(404).json({ error: 'Webhook not found' });
   res.json({ revoked: true, id: rows[0].id });
-});
+}));
 
-router.get('/deliveries', requireAuth, async (req, res) => {
+router.get('/deliveries', requireAuth, asyncHandler(async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
   const webhookId = req.query.webhook_id || null;
 
@@ -205,9 +206,9 @@ router.get('/deliveries', requireAuth, async (req, res) => {
     params
   );
   res.json(rows);
-});
+}));
 
-router.post('/deliveries/:id/replay', requireAuth, async (req, res) => {
+router.post('/deliveries/:id/replay', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `UPDATE webhook_deliveries d
      SET status = 'pending', attempt_count = 0, last_error = NULL,
@@ -231,6 +232,6 @@ router.post('/deliveries/:id/replay', requireAuth, async (req, res) => {
   });
 
   res.json({ message: 'Replay queued', id: rows[0].id });
-});
+}));
 
 module.exports = router;
