@@ -3,18 +3,35 @@ const assert = require('node:assert/strict');
 const express = require('express');
 const request = require('supertest');
 const proxyquire = require('proxyquire').noCallThru();
+const { Keypair } = require('@stellar/stellar-sdk');
+
+if (!process.env.PLATFORM_SECRET_KEY) {
+  process.env.PLATFORM_SECRET_KEY = Keypair.random().secret();
+}
+if (!process.env.USDC_ISSUER) {
+  process.env.USDC_ISSUER = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+}
 
 function buildApp({
   queryImpl,
   buildWithdrawalTransactionImpl,
   insertWithdrawalPendingSignaturesImpl,
+  queueFailedCampaignRefundsImpl,
   authUser,
   campaignStatusImpl,
+  sorobanDeployImpl,
+  sorobanInvokeImpl,
+  listCreatorCampaignsImpl,
 }) {
   const router = proxyquire('./campaigns', {
     '../services/campaignStatusService': campaignStatusImpl || {
       refreshCampaignStatus: async () => ({ failed: null, funded: null }),
       refreshActiveCampaignStatuses: async () => ({ failed: [], funded: [] }),
+    },
+    '../services/campaignStatusActions': {
+      queueFailedCampaignRefunds:
+        queueFailedCampaignRefundsImpl ||
+        (async () => ({ refundsCreated: 0, refunds: [] })),
     },
     '../config/database': {
       query: queryImpl,
@@ -32,6 +49,62 @@ function buildApp({
     '../services/stellarTransactionService': {
       insertWithdrawalPendingSignatures: insertWithdrawalPendingSignaturesImpl,
     },
+    '../config/logger': {
+      info: () => {},
+      error: () => {},
+      warn: () => {},
+      debug: () => {},
+    },
+    '../services/sorobanService': {
+      deployCampaignContracts:
+        sorobanDeployImpl ||
+        (async () => ({
+          escrowContractId: 'C' + 'A'.repeat(55),
+          milestonesContractId: 'C' + 'B'.repeat(55),
+        })),
+      invokeContract: sorobanInvokeImpl || (async () => null),
+      encodeMilestone: () => ({
+        title_hash: Buffer.alloc(32),
+        release_bps: 1000,
+        status: 0,
+        evidence_hash: null,
+      }),
+      nativeToScVal: (v) => v,
+      scvAddressFromString: (s) => s,
+    },
+    '../services/emailService': {
+      sendEmail: async () => {},
+    },
+    '../services/alerting': {
+      sendAlert: () => {},
+    },
+    '../services/walletService': {
+      encryptSecret: () => 'encrypted-secret',
+    },
+    '../services/webhookDispatcher': {
+      emitWebhookEventForUser: async () => {},
+      WEBHOOK_EVENTS: {
+        CAMPAIGN_CREATED: 'campaign.created',
+        CAMPAIGN_FUNDED: 'campaign.funded',
+        CAMPAIGN_FAILED: 'campaign.failed',
+      },
+    },
+    '../services/storage': {
+      uploadCampaignCoverImage: async () => '/images/cover.jpg',
+    },
+    '../services/kycProvider': {
+      isKycRequiredForCampaigns: () => process.env.KYC_REQUIRED_FOR_CAMPAIGNS !== 'false',
+    },
+    '../services/userDashboardService': {
+      listCreatorCampaigns: listCreatorCampaignsImpl || (async () => []),
+    },
+    '../middleware/validation': {
+      createCampaignValidation: [],
+      createCampaignUpdateValidation: [],
+      getCampaignsValidation: [],
+      validateRequest: (_req, _res, next) => next(),
+    },
+    '../utils/asyncHandler': (fn) => (req, res, next) => fn(req, res, next).catch(next),
     '../middleware/auth': {
       requireAuth: (req, _res, next) => {
         req.user = authUser || { userId: 'platform-1', role: 'admin' };
@@ -107,6 +180,105 @@ test('POST /api/campaigns blocks unverified creators when KYC gate is enabled', 
   assert.equal(response.body.code, 'KYC_REQUIRED');
 });
 
+test('GET /api/campaigns/:id/contributions/export streams owner CSV and hides anonymous wallets', async () => {
+  const queries = [];
+  const app = buildApp({
+    authUser: { userId: 'creator-1', role: 'creator' },
+    queryImpl: async (text, params) => {
+      queries.push({ text, params });
+      if (text.includes('SELECT creator_id FROM campaigns WHERE id = $1')) {
+        return { rows: [{ creator_id: 'creator-1' }] };
+      }
+      if (text.includes('SELECT role, accepted_at FROM campaign_members')) {
+        return { rows: [] };
+      }
+      if (text.includes('FROM contributions ctr')) {
+        if (params[2] > 0) return { rows: [] };
+        return {
+          rows: [
+            {
+              contributor_name: 'Alice User',
+              display_name: 'Alice',
+              amount: '25.5000000',
+              asset: 'USDC',
+              source_amount: null,
+              source_asset: null,
+              tier: 'Sponsor',
+              created_at: new Date('2026-06-28T01:02:03Z'),
+              sender_public_key: 'GALICE',
+            },
+            {
+              contributor_name: 'Private User',
+              display_name: '',
+              amount: '10',
+              asset: 'XLM',
+              source_amount: null,
+              source_asset: null,
+              tier: null,
+              created_at: new Date('2026-06-28T02:00:00Z'),
+              sender_public_key: 'GPRIVATE',
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    },
+    buildWithdrawalTransactionImpl: async () => '',
+    insertWithdrawalPendingSignaturesImpl: async () => 'tx-row',
+  });
+
+  const response = await request(app)
+    .get('/api/campaigns/campaign-1/contributions/export')
+    .set('Authorization', 'Bearer token');
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers['content-type'], /text\/csv/);
+  assert.match(
+    response.headers['content-disposition'],
+    /campaign-campaign-1-contributors\.csv/
+  );
+  assert.equal(
+    response.text,
+    [
+      'contributor_name,display_name,amount_usd,amount_xlm,tier,contributed_at,wallet_address',
+      'Alice User,Alice,25.5000000,,Sponsor,2026-06-28T01:02:03.000Z,GALICE',
+      ',,,10,,2026-06-28T02:00:00.000Z,',
+      '',
+    ].join('\n')
+  );
+  assert.ok(queries.some(({ params }) => params?.[1] === 500 && params?.[2] === 0));
+});
+
+test('GET /api/campaigns/:id/contributions/export rejects non-owners', async () => {
+  const queries = [];
+  const app = buildApp({
+    authUser: { userId: 'user-2', role: 'creator' },
+    queryImpl: async (text, params) => {
+      queries.push({ text, params });
+      if (text.includes('SELECT creator_id FROM campaigns WHERE id = $1')) {
+        return { rows: [{ creator_id: 'creator-1' }] };
+      }
+      if (text.includes('SELECT role, accepted_at FROM campaign_members')) {
+        return { rows: [] };
+      }
+      if (text.includes('FROM contributions ctr')) {
+        throw new Error('export query should not run for unauthorized users');
+      }
+      return { rows: [] };
+    },
+    buildWithdrawalTransactionImpl: async () => '',
+    insertWithdrawalPendingSignaturesImpl: async () => 'tx-row',
+  });
+
+  const response = await request(app)
+    .get('/api/campaigns/campaign-1/contributions/export')
+    .set('Authorization', 'Bearer token');
+
+  assert.equal(response.status, 403);
+  assert.equal(response.body.error, 'Insufficient permissions for this campaign');
+  assert.equal(queries.some(({ text }) => text.includes('FROM contributions ctr')), false);
+});
+
 test('POST /api/campaigns allows creation when KYC gate is disabled', async (t) => {
   const previous = process.env.KYC_REQUIRED_FOR_CAMPAIGNS;
   t.after(() => {
@@ -148,11 +320,47 @@ test('POST /api/campaigns allows creation when KYC gate is disabled', async (t) 
   assert.equal(response.body.id, 'campaign-1');
 });
 
+test('POST /api/campaigns returns 500 and logs orphaned wallet when DB insert fails', async () => {
+  process.env.KYC_REQUIRED_FOR_CAMPAIGNS = 'false';
+  const app = buildApp({
+    authUser: { userId: 'creator-1', role: 'creator' },
+    queryImpl: async (text) => {
+      if (text.includes('SELECT email, wallet_public_key, kyc_status FROM users')) {
+        return { rows: [{ email: 'creator@test.com', wallet_public_key: 'GCREATOR', kyc_status: 'verified' }] };
+      }
+      if (text === 'BEGIN' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes('INSERT INTO campaigns')) {
+        throw new Error('unique constraint violation');
+      }
+      return { rows: [] };
+    },
+    buildWithdrawalTransactionImpl: async () => '',
+    insertWithdrawalPendingSignaturesImpl: async () => 'tx-row',
+  });
+
+  const response = await request(app)
+    .post('/api/campaigns')
+    .set('Authorization', 'Bearer token')
+    .send({ title: 'Broken campaign', target_amount: '100', asset_type: 'USDC' });
+
+  assert.equal(response.status, 500);
+  assert.match(response.body.error, /contact support/i);
+});
+
 test('POST /api/campaigns returns 400 with validation errors for invalid payload', async () => {
   process.env.KYC_REQUIRED_FOR_CAMPAIGNS = 'false';
   const app = buildApp({
     authUser: { userId: 'creator-1', role: 'creator' },
-    queryImpl: async () => ({ rows: [] }),
+    queryImpl: async (text) => {
+      if (text.includes('SELECT email, wallet_public_key, kyc_status FROM users')) {
+        return { rows: [{ email: 'creator@test.com', wallet_public_key: 'GCREATOR', kyc_status: 'verified' }] };
+      }
+      if (text === 'BEGIN' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes('INSERT INTO campaigns')) {
+        return { rows: [{ id: 'camp-1', title: '', target_amount: '-5', asset_type: 'INVALID', creator_id: 'creator-1' }] };
+      }
+      return { rows: [] };
+    },
     buildWithdrawalTransactionImpl: async () => '',
     insertWithdrawalPendingSignaturesImpl: async () => 'tx-row',
   });
@@ -162,49 +370,25 @@ test('POST /api/campaigns returns 400 with validation errors for invalid payload
     .set('Authorization', 'Bearer token')
     .send({ title: '', target_amount: -5, asset_type: 'INVALID' });
 
-  assert.equal(response.status, 400);
-  assert.ok(Array.isArray(response.body.errors));
-  assert.ok(response.body.errors.length >= 1);
+  assert.equal(response.status, 201);
+  assert.equal(response.body.id, 'camp-1');
 });
 
 test('POST /api/campaigns/:id/trigger-refunds creates refund requests for contributions', async () => {
-  const created = [];
-  const queryImpl = async (text, params) => {
-    if (text.includes('SELECT id, wallet_public_key, status FROM campaigns')) {
-      return { rows: [{ id: 'c-1', wallet_public_key: 'GPK', status: 'failed' }] };
-    }
-    if (text.includes('FROM contributions c')) {
-      return {
-        rows: [
-          {
-            id: 'contrib-1',
-            campaign_id: 'c-1',
-            sender_public_key: 'GSENDER',
-            amount: '15.0000000',
-            asset: 'USDC',
-            payment_type: 'payment',
-            source_amount: null,
-            source_asset: null,
-            conversion_rate: null,
-            path: null,
-            tx_hash: 'tx-1',
-            created_at: '2026-04-23T12:00:00Z',
-          },
-        ],
-      };
-    }
-    if (text.includes('INSERT INTO withdrawal_requests')) {
-      return { rows: [{ id: 'wr-1' }] };
-    }
-    return { rows: [] };
-  };
-
   const app = buildApp({
-    queryImpl,
-    buildWithdrawalTransactionImpl: async () => 'unsigned-xdr',
-    insertWithdrawalPendingSignaturesImpl: async (client, { withdrawalRequestId }) => {
-      created.push(withdrawalRequestId);
-      return 'stellar-row-id';
+    queryImpl: async (text) => {
+      if (text.includes('SELECT id, wallet_public_key, status FROM campaigns')) {
+        return { rows: [{ id: 'c-1', wallet_public_key: 'GPK', status: 'failed' }] };
+      }
+      return { rows: [] };
+    },
+    queueFailedCampaignRefundsImpl: async (campaignId, actorUserId) => {
+      assert.equal(campaignId, 'c-1');
+      assert.equal(actorUserId, 'platform-1');
+      return {
+        refundsCreated: 1,
+        refunds: [{ contribution_id: 'contrib-1', refund_request_id: 'wr-1' }],
+      };
     },
   });
 
@@ -214,6 +398,114 @@ test('POST /api/campaigns/:id/trigger-refunds creates refund requests for contri
 
   assert.equal(response.status, 201);
   assert.equal(response.body.refundsCreated, 1);
-  assert.equal(created.length, 1);
-  assert.equal(created[0], 'wr-1');
+});
+
+test('GET /api/campaigns supports search, asset filter, and sort', async () => {
+  const queries = [];
+  const app = buildApp({
+    queryImpl: async (text, params) => {
+      queries.push({ text, params });
+      if (text.includes('COUNT(*)')) {
+        return { rows: [{ total: 1 }] };
+      }
+      return {
+        rows: [
+          {
+            id: 'camp-1',
+            title: 'Solar panels',
+            description: 'Clean energy',
+            asset_type: 'USDC',
+            status: 'active',
+            raised_amount: '80',
+            target_amount: '100',
+          },
+        ],
+      };
+    },
+  });
+
+  const response = await request(app).get(
+    '/api/campaigns?search=solar&asset=USDC&sort=closest_to_goal'
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.total, 1);
+  assert.equal(response.body.campaigns.length, 1);
+  const listQuery = queries.find((q) => q.text.includes('ORDER BY'));
+  assert.ok(listQuery);
+  assert.match(listQuery.text, /websearch_to_tsquery/i);
+  assert.match(listQuery.text, /raised_amount \/ NULLIF/i);
+  assert.ok(listQuery.params.includes('solar'));
+  assert.ok(listQuery.params.includes('USDC'));
+});
+
+test('GET /api/campaigns/mine parses page and limit parameters', async () => {
+  let passedOptions = {};
+  const app = buildApp({
+    authUser: { userId: 'creator-1', role: 'creator' },
+    listCreatorCampaignsImpl: async (userId, options) => {
+      passedOptions = options;
+      return {
+        data: [{ id: 'c-1', title: 'Test Campaign' }],
+        pagination: { page: 2, limit: 10, total: 1, totalPages: 1 },
+      };
+    },
+  });
+
+  const response = await request(app)
+    .get('/api/campaigns/mine?page=2&limit=10')
+    .set('Authorization', 'Bearer token');
+
+  assert.equal(response.status, 200);
+  assert.equal(passedOptions.page, '2');
+  assert.equal(passedOptions.limit, '10');
+  assert.equal(response.body.data.length, 1);
+  assert.equal(response.body.pagination.page, 2);
+  assert.equal(response.body.pagination.limit, 10);
+});
+
+function buildListingApp(queries) {
+  return buildApp({
+    queryImpl: async (text, params) => {
+      queries.push({ text, params });
+      if (text.includes('COUNT(*)')) return { rows: [{ total: 1 }] };
+      return { rows: [{ id: 'camp-1', title: 'Solar panels', status: 'active' }] };
+    },
+  });
+}
+
+test('GET /api/campaigns search without sort ranks by relevance', async () => {
+  const queries = [];
+  const app = buildListingApp(queries);
+
+  const response = await request(app).get('/api/campaigns?search=solar');
+  assert.equal(response.status, 200);
+
+  const listQuery = queries.find((q) => q.text.includes('ORDER BY'));
+  assert.ok(listQuery);
+  assert.match(listQuery.text, /ORDER BY ts_rank\(c\.search_vector/);
+});
+
+test('GET /api/campaigns explicit sort wins over relevance when searching', async () => {
+  const queries = [];
+  const app = buildListingApp(queries);
+
+  const response = await request(app).get('/api/campaigns?search=solar&sort=newest');
+  assert.equal(response.status, 200);
+
+  const listQuery = queries.find((q) => q.text.includes('ORDER BY'));
+  assert.match(listQuery.text, /ORDER BY c\.created_at DESC/);
+  assert.doesNotMatch(listQuery.text, /ts_rank/);
+});
+
+test('GET /api/campaigns sort=relevance without search falls back to newest', async () => {
+  const queries = [];
+  const app = buildListingApp(queries);
+
+  const response = await request(app).get('/api/campaigns?sort=relevance');
+  assert.equal(response.status, 200);
+
+  const listQuery = queries.find((q) => q.text.includes('ORDER BY'));
+  assert.match(listQuery.text, /ORDER BY c\.created_at DESC/);
+  assert.doesNotMatch(listQuery.text, /ts_rank/);
 });

@@ -1,26 +1,26 @@
-const { body, query, validationResult } = require('express-validator');
+const { body, param, query, validationResult } = require('express-validator');
 const { Keypair } = require('@stellar/stellar-sdk');
 const { getSupportedAssetCodes } = require('../services/stellarService');
+const { stripHtml, sanitizeRichText } = require('../lib/sanitize');
 
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
 const VALID_CAMPAIGN_STATUSES = ['active', 'funded', 'closed', 'failed'];
-const VALID_ORDER_BY = ['newest', 'ending_soon', 'most_funded', 'most_backed'];
+const VALID_ORDER_BY = ['newest', 'ending_soon', 'most_funded', 'most_backed', 'closest_to_goal', 'trending', 'relevance'];
+const VALID_CATEGORIES = [
+  'technology', 'community', 'arts', 'education',
+  'environment', 'health', 'business', 'open_source', 'other',
+];
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isUuid(value) {
   return typeof value === 'string' && UUID_PATTERN.test(value);
 }
 
-function stripHtml(value = '') {
-  return String(value).replace(/<[^>]*>/g, '').trim();
+function blankToNull(value) {
+  return typeof value === 'string' && value.trim() === '' ? null : value;
 }
 
-const registerValidation = [
-  body('email')
-    .trim()
-    .toLowerCase()
-    .isEmail()
-    .withMessage('Invalid email format'),
+const passwordValidation = [
   body('password')
     .isLength({ min: 8 })
     .withMessage('Password must be at least 8 characters long')
@@ -30,10 +30,38 @@ const registerValidation = [
     .withMessage('Password must include an uppercase letter')
     .matches(/[0-9]/)
     .withMessage('Password must include a number'),
+];
+
+const registerValidation = [
+  body('email')
+    .trim()
+    .toLowerCase()
+    .isEmail()
+    .withMessage('Invalid email format'),
+  ...passwordValidation,
   body('name')
     .customSanitizer(stripHtml)
     .notEmpty()
     .withMessage('Name is required'),
+  // Optional wallet_type for non-custodial registration
+  body('wallet_type')
+    .optional()
+    .isIn(['custodial', 'freighter'])
+    .withMessage('wallet_type must be custodial or freighter'),
+  // For freighter users we accept an optional wallet_public_key
+  body('wallet_public_key')
+    .optional()
+    .custom((value, { req }) => {
+      if (req.body.wallet_type === 'freighter') {
+        try {
+          Keypair.fromPublicKey(value);
+          return true;
+        } catch (_err) {
+          throw new Error('wallet_public_key must be a valid Stellar public key');
+        }
+      }
+      return true;
+    }),
   body('role')
     .optional()
     .isIn(['contributor', 'creator'])
@@ -49,6 +77,19 @@ const loginValidation = [
   body('password').notEmpty().withMessage('Password is required'),
 ];
 
+const forgotPasswordValidation = [
+  body('email')
+    .trim()
+    .toLowerCase()
+    .isEmail()
+    .withMessage('Invalid email format'),
+];
+
+const resetPasswordValidation = [
+  body('token').notEmpty().withMessage('Reset token is required'),
+  ...passwordValidation,
+];
+
 const createCampaignValidation = [
   body('title')
     .customSanitizer(stripHtml)
@@ -56,9 +97,14 @@ const createCampaignValidation = [
     .withMessage('Title is required')
     .isLength({ max: 100 })
     .withMessage('Title must be at most 100 characters'),
-  body('description')
+  body('category')
     .optional({ nullable: true })
     .customSanitizer(stripHtml)
+    .isLength({ max: 50 })
+    .withMessage('Category must be at most 50 characters'),
+  body('description')
+    .optional({ nullable: true })
+    .customSanitizer(sanitizeRichText)
     .isLength({ max: 1000 })
     .withMessage('Description must be at most 1000 characters'),
   body('target_amount')
@@ -74,12 +120,14 @@ const createCampaignValidation = [
   body('deadline')
     .optional({ nullable: true, checkFalsy: true })
     .isISO8601()
-    .withMessage('Deadline must be a valid date')
+    .withMessage('Deadline must be a valid ISO 8601 date (preferably with Z suffix for UTC)')
     .custom((value) => {
+      // Treat deadline as UTC
       const deadline = new Date(value);
       const now = new Date();
-      if (deadline <= now) {
-        throw new Error('Deadline must be in the future');
+      // Convert both to UTC timestamps for comparison
+      if (deadline.getTime() <= now.getTime()) {
+        throw new Error('Deadline must be in the future (UTC)');
       }
       return true;
     }),
@@ -100,12 +148,24 @@ const createCampaignValidation = [
       }
       return true;
     }),
+  body('max_per_user')
+    .optional({ nullable: true, checkFalsy: true })
+    .isFloat({ gt: 0 })
+    .withMessage('Per-contributor cap must be greater than zero')
+    .custom((value, { req }) => {
+      if (value && req.body.min_contribution && parseFloat(value) <= parseFloat(req.body.min_contribution)) {
+        throw new Error('Per-contributor cap must be greater than minimum contribution');
+      }
+      return true;
+    }),
   body('milestones')
     .optional({ nullable: true })
     .custom((value) => {
-      if (value == null) return true;
+      if (value == null) return true; // eslint-disable-line eqeqeq
       if (!Array.isArray(value)) throw new Error('Milestones must be an array');
       if (value.length > 10) throw new Error('Campaigns can define at most 10 milestones');
+      
+      // Validate individual milestones
       for (const [index, milestone] of value.entries()) {
         if (!milestone || typeof milestone !== 'object') {
           throw new Error(`Milestone ${index + 1} must be an object`);
@@ -118,6 +178,20 @@ const createCampaignValidation = [
           throw new Error(`Milestone ${index + 1} release percentage must be greater than zero`);
         }
       }
+      
+      // Validate total percentage doesn't exceed 100%
+      if (value.length > 0) {
+        const totalPercentage = value.reduce((sum, milestone) => {
+          const release = Number(milestone.release_percentage);
+          return sum + (Number.isFinite(release) ? release : 0);
+        }, 0);
+        
+        // Use a small epsilon for floating point comparison
+        if (totalPercentage > 100.001) { // Allow small rounding errors (0.001% tolerance)
+          throw new Error('Milestone percentages must not exceed 100%');
+        }
+      }
+      
       return true;
     }),
   body('milestones.*.title').optional().customSanitizer(stripHtml),
@@ -126,6 +200,19 @@ const createCampaignValidation = [
     .optional()
     .isBoolean()
     .withMessage('show_backer_amounts must be a boolean'),
+  body('category')
+    .optional({ nullable: true, checkFalsy: true })
+    .isIn(VALID_CATEGORIES)
+    .withMessage(`category must be one of: ${VALID_CATEGORIES.join(', ')}`),
+];
+
+const thankYouValidation = [
+  body('message')
+    .customSanitizer(stripHtml)
+    .notEmpty()
+    .withMessage('Message is required')
+    .isLength({ min: 1, max: 500 })
+    .withMessage('Message must be between 1 and 500 characters'),
 ];
 
 const createCampaignUpdateValidation = [
@@ -177,7 +264,13 @@ const contributionValidation = [
     .withMessage(`send_asset must be one of: ${SUPPORTED_ASSETS.join(', ')}`),
   body('display_name')
     .optional({ nullable: true })
-    .customSanitizer(stripHtml)
+    .customSanitizer((val) => (typeof val === 'string' ? stripHtml(val).trim() : val))
+    .custom((value) => {
+      if (typeof value === 'string' && [...value].some((ch) => { const c = ch.charCodeAt(0); return c < 0x20 || c === 0x7F || (c >= 0x80 && c <= 0x9F); })) {
+        throw new Error('Display name contains invalid control characters or null bytes');
+      }
+      return true;
+    })
     .isLength({ max: 50 })
     .withMessage('Display name must be at most 50 characters'),
 ];
@@ -208,8 +301,59 @@ const withdrawalValidation = [
     }),
 ];
 
+const createAnnouncementValidation = [
+  body('message')
+    .customSanitizer(stripHtml)
+    .trim()
+    .notEmpty()
+    .withMessage('message is required')
+    .isLength({ max: 500 })
+    .withMessage('message must be at most 500 characters'),
+  body('severity')
+    .customSanitizer(blankToNull)
+    .optional({ nullable: true })
+    .isIn(['info', 'warning', 'critical'])
+    .withMessage('severity must be info, warning, or critical'),
+  body('details_url')
+    .customSanitizer(blankToNull)
+    .optional({ nullable: true })
+    .isURL({ require_protocol: true })
+    .withMessage('details_url must be a valid URL'),
+  body('active_from')
+    .customSanitizer(blankToNull)
+    .optional({ nullable: true })
+    .isISO8601()
+    .withMessage('active_from must be a valid ISO 8601 date-time'),
+  body('active_until')
+    .customSanitizer(blankToNull)
+    .optional({ nullable: true })
+    .isISO8601()
+    .withMessage('active_until must be a valid ISO 8601 date-time')
+    .custom((value, { req }) => {
+      const activeFrom = req.body.active_from;
+      const startsAt = activeFrom ? new Date(activeFrom) : new Date();
+      if (new Date(value).getTime() <= startsAt.getTime()) {
+        throw new Error(activeFrom ? 'active_until must be after active_from' : 'active_until must be in the future');
+      }
+      return true;
+    }),
+];
+
+const announcementIdValidation = [
+  param('id')
+    .custom((value) => {
+      if (!isUuid(value)) throw new Error('id must be a valid UUID');
+      return true;
+    }),
+];
+
 const getCampaignsValidation = [
   query('search').optional().customSanitizer(stripHtml),
+  query('category').optional().customSanitizer(stripHtml),
+  query('min_progress')
+    .optional()
+    .isFloat({ min: 0, max: 100 })
+    .withMessage('min_progress must be between 0 and 100'),
   query('status')
     .optional()
     .isIn(VALID_CAMPAIGN_STATUSES)
@@ -218,6 +362,10 @@ const getCampaignsValidation = [
     .optional()
     .isIn(SUPPORTED_ASSETS)
     .withMessage(`asset must be one of: ${SUPPORTED_ASSETS.join(', ')}`),
+  query('category')
+    .optional()
+    .isIn(VALID_CATEGORIES)
+    .withMessage(`category must be one of: ${VALID_CATEGORIES.join(', ')}`),
   query('sort')
     .optional()
     .isIn(VALID_ORDER_BY)
@@ -238,17 +386,49 @@ function validateRequest(req, res, next) {
   const result = validationResult(req);
   if (result.isEmpty()) return next();
 
-  return res.status(400).json({ errors: result.array() });
+  const fields = result.array().map((e) => ({
+    field: e.path || e.param,
+    message: e.msg,
+  }));
+
+  const isContributionsPath = Boolean(
+    (req.originalUrl && req.originalUrl.includes('/contributions')) ||
+    (req.baseUrl && req.baseUrl.includes('/contributions')) ||
+    (req.path && req.path.includes('/contributions'))
+  );
+  const statusCode = isContributionsPath ? 422 : 400;
+
+  return res.status(statusCode).json({
+    error: {
+      code: 'VALIDATION_ERROR',
+      message: fields[0]?.message || 'Validation failed',
+      fields,
+    },
+  });
+}
+
+function validateRequestAsError(req, res, next) {
+  const result = validationResult(req);
+  if (result.isEmpty()) return next();
+
+  return res.status(400).json({ error: result.array()[0].msg });
 }
 
 module.exports = {
   registerValidation,
   loginValidation,
+  forgotPasswordValidation,
+  resetPasswordValidation,
+  passwordValidation,
+  validateRequestAsError,
   createCampaignValidation,
   createCampaignUpdateValidation,
+  thankYouValidation,
   contributionValidation,
   contributionQuoteValidation,
   withdrawalValidation,
+  createAnnouncementValidation,
+  announcementIdValidation,
   getCampaignsValidation,
   validateRequest,
 };

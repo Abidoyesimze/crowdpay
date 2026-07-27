@@ -1,0 +1,2 @@
+-- category column already added by 20260602_campaign_categories.sql
+-- campaigns_search_idx (GIN on search_vector) already created by 20260602_campaign_search_vector.sql

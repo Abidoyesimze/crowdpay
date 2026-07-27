@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
-const BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const BASE_URL = import.meta.env.VITE_API_URL || `${API_BASE_URL}/api`;
 
 export default function CampaignEmbed() {
   const [campaign, setCampaign] = useState(null);
@@ -53,9 +54,7 @@ export default function CampaignEmbed() {
       }
 
       if (msg.type === 'contribution') {
-        setCampaign((prev) =>
-          prev ? { ...prev, raised_amount: msg.raised_amount } : prev
-        );
+        setCampaign((prev) => (prev ? { ...prev, raised_amount: msg.raised_amount } : prev));
       }
     };
 
@@ -81,7 +80,18 @@ export default function CampaignEmbed() {
     const interval = setInterval(notifyHeight, 500);
 
     return () => clearInterval(interval);
-  }, [campaign]);
+  }, [campaign, loading, error]);
+
+  // Listen for open message from parent
+  useEffect(() => {
+    const handler = (event) => {
+      if (event.data && event.data.type === 'open') {
+        // do nothing
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
 
   if (loading) {
     return (
@@ -106,12 +116,10 @@ export default function CampaignEmbed() {
   return (
     <div style={styles.container}>
       {isLive && <span style={styles.liveIndicator} title="Live updates active" />}
-      
+
       <h1 style={styles.title}>{campaign.title}</h1>
-      
-      {campaign.description && (
-        <p style={styles.description}>{campaign.description}</p>
-      )}
+
+      {campaign.description && <p style={styles.description}>{campaign.description}</p>}
 
       <div style={styles.progressSection}>
         <div style={styles.amounts}>
@@ -122,12 +130,10 @@ export default function CampaignEmbed() {
             <span style={styles.asset}>{campaign.asset_type}</span>
             <span style={styles.label}> raised</span>
           </div>
-          <div style={styles.target}>
-            {progressPct.toFixed(1)}%
-          </div>
+          <div style={styles.target}>{progressPct.toFixed(1)}%</div>
         </div>
 
-        <div style={styles.progressBar}>
+        <div style={styles.progressBar} role="progressbar" aria-valuenow={Math.round(progressPct)} aria-valuemin={0} aria-valuemax={100}>
           <div
             style={{
               ...styles.progressFill,
@@ -141,8 +147,14 @@ export default function CampaignEmbed() {
             <strong>{campaign.backer_count}</strong> backer{campaign.backer_count !== 1 ? 's' : ''}
           </span>
           <span>
-            Goal: <strong>{Number(campaign.target_amount).toLocaleString()}</strong> {campaign.asset_type}
+            Goal: <strong>{Number(campaign.target_amount).toLocaleString()}</strong>{' '}
+            {campaign.asset_type}
           </span>
+          {campaign.days_remaining !== null && campaign.days_remaining !== undefined && (
+            <span>
+              <strong>{campaign.days_remaining}</strong> day{campaign.days_remaining !== 1 ? 's' : ''} left
+            </span>
+          )}
         </div>
       </div>
 
@@ -168,7 +180,7 @@ const styles = {
     padding: '1rem',
     maxWidth: '600px',
     margin: '0 auto',
-    background: '#fff',
+    background: 'var(--color-bg)',
     borderRadius: '8px',
     position: 'relative',
   },
@@ -179,20 +191,20 @@ const styles = {
     width: '8px',
     height: '8px',
     borderRadius: '50%',
-    background: '#10b981',
+    background: 'var(--color-success-text)',
     display: 'block',
     animation: 'pulse 2s infinite',
   },
   title: {
     fontSize: '1.1rem',
     fontWeight: 700,
-    color: '#111',
+    color: 'var(--color-text-primary)',
     marginBottom: '0.5rem',
     lineHeight: 1.3,
   },
   description: {
     fontSize: '0.85rem',
-    color: '#555',
+    color: 'var(--color-text-secondary)',
     lineHeight: 1.5,
     marginBottom: '1rem',
   },
@@ -208,32 +220,32 @@ const styles = {
   raisedAmount: {
     fontSize: '1.25rem',
     fontWeight: 800,
-    color: '#111',
+    color: 'var(--color-text-primary)',
   },
   asset: {
     fontSize: '0.85rem',
     fontWeight: 600,
-    color: '#7c3aed',
+    color: 'var(--color-accent)',
     marginLeft: '0.25rem',
   },
   label: {
     fontSize: '0.85rem',
-    color: '#666',
+    color: 'var(--color-text-hint)',
   },
   target: {
     fontSize: '0.9rem',
     fontWeight: 700,
-    color: '#7c3aed',
+    color: 'var(--color-accent)',
   },
   progressBar: {
-    background: '#f0f0f0',
+    background: 'var(--color-surface)',
     borderRadius: '99px',
     height: '8px',
     marginBottom: '0.75rem',
     overflow: 'hidden',
   },
   progressFill: {
-    background: 'linear-gradient(90deg, #7c3aed 0%, #a855f7 100%)',
+    background: 'linear-gradient(90deg, var(--color-accent) 0%, var(--color-accent-light) 100%)',
     height: '100%',
     borderRadius: '99px',
     transition: 'width 0.5s ease',
@@ -242,13 +254,13 @@ const styles = {
     display: 'flex',
     justifyContent: 'space-between',
     fontSize: '0.8rem',
-    color: '#666',
+    color: 'var(--color-text-hint)',
   },
   ctaButton: {
     display: 'block',
     width: '100%',
     padding: '0.75rem',
-    background: '#7c3aed',
+    background: 'var(--color-accent)',
     color: '#fff',
     textAlign: 'center',
     borderRadius: '6px',
@@ -260,7 +272,7 @@ const styles = {
   skeleton: {
     height: '20px',
     width: '70%',
-    background: '#e0e0e0',
+    background: 'var(--color-border)',
     borderRadius: '4px',
     marginBottom: '0.5rem',
     animation: 'pulse 1.5s infinite',
@@ -268,7 +280,7 @@ const styles = {
   skeletonShort: {
     height: '14px',
     width: '90%',
-    background: '#e0e0e0',
+    background: 'var(--color-border)',
     borderRadius: '4px',
     marginBottom: '1rem',
     animation: 'pulse 1.5s infinite',
@@ -276,12 +288,12 @@ const styles = {
   skeletonBar: {
     height: '8px',
     width: '100%',
-    background: '#e0e0e0',
+    background: 'var(--color-border)',
     borderRadius: '99px',
     animation: 'pulse 1.5s infinite',
   },
   error: {
-    color: '#dc2626',
+    color: 'var(--color-status-error)',
     fontSize: '0.85rem',
     textAlign: 'center',
     padding: '1rem',
