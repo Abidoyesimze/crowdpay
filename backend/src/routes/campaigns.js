@@ -3,6 +3,7 @@ const multer = require('multer');
 const Sentry = require('@sentry/node');
 const db = require('../config/database');
 const logger = require('../config/logger');
+const { MILESTONE_LIMIT } = require('../config/constants');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const {
   createCampaignWallet,
@@ -135,7 +136,6 @@ const upload = multer({
 
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
 const MILESTONE_PERCENT_SCALE = 10000;
-const MILESTONE_LIMIT = 5;
 
 function normalizeMilestonesInput(input) {
   if (input === null || input === undefined) return [];

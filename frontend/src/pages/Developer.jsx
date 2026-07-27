@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import * as Sentry from '@sentry/react';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { api } from '../services/api';
 
 const EVENT_OPTIONS = [
@@ -16,6 +18,7 @@ const V1_API_BASE = `${(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/,
 
 export default function Developer() {
   const { user } = useAuth();
+  const toast = useToast();
   const [keys, setKeys] = useState([]);
   const [hooks, setHooks] = useState([]);
   const [deliveries, setDeliveries] = useState([]);
@@ -104,7 +107,8 @@ export default function Developer() {
         setExplorerEndpoint(endpoints[0].id);
       }
     } catch (err) {
-      console.error('Failed to load OpenAPI spec', err);
+      toast?.('Failed to load API spec. Please try again.', 'error');
+      Sentry.captureException(err);
     }
   }
 
