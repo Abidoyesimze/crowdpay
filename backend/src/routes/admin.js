@@ -17,8 +17,7 @@ const {
 } = require('../services/webhookDispatcher');
 const cache = require('../utils/cache');
 const { parsePagination } = require('../utils/pagination');
-
-const IMPERSONATION_TTL_SECONDS = 15 * 60;
+const { IMPERSONATION_TTL_SECONDS, ADMIN_AUDIT_LOG_MAX_LIMIT } = require('../config/constants');
 
 /**
  * Log admin action to audit table
@@ -676,7 +675,7 @@ router.patch('/users/:id/unban', async (req, res) => {
 router.get('/audit-log', async (req, res) => {
   try {
     const { limit = 100, offset = 0 } = req.query;
-    const limitNum = Math.min(parseInt(limit) || 100, 1000);
+    const limitNum = Math.min(parseInt(limit) || 100, ADMIN_AUDIT_LOG_MAX_LIMIT);
     const offsetNum = parseInt(offset) || 0;
 
     const { rows } = await db.query(
