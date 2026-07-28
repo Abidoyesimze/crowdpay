@@ -1,4 +1,5 @@
 const db = require('../config/database');
+const { evaluateBadges } = require('./badgeService');
 
 async function listCreatorCampaigns(userId, options = {}) {
   const page = Math.max(1, parseInt(options.page, 10) || 1);
@@ -63,42 +64,6 @@ async function listUserContributions(userId) {
 const ACTIVE_CAMPAIGN_STATUSES = new Set(['active', 'funded']);
 const COMPLETED_CAMPAIGN_STATUSES = new Set(['completed', 'funded', 'withdrawn']);
 
-const BADGE_DEFINITIONS = [
-  {
-    id: 'first_contribution',
-    label: 'First contribution',
-    earned: (stats) => stats.campaigns_backed >= 1,
-  },
-  {
-    id: 'backed_5_campaigns',
-    label: 'Backed 5 campaigns',
-    earned: (stats) => stats.campaigns_backed >= 5,
-  },
-  {
-    id: 'backed_10_campaigns',
-    label: 'Backed 10 campaigns',
-    earned: (stats) => stats.campaigns_backed >= 10,
-  },
-  {
-    id: 'contributed_1000',
-    label: 'Contributed 1,000+',
-    earned: (stats) => stats.total_contributed >= 1000,
-  },
-  {
-    id: 'backed_completed_campaign',
-    label: 'Backed a completed campaign',
-    earned: (stats) => stats.campaigns_completed >= 1,
-  },
-];
-
-function computeBadges(stats) {
-  return BADGE_DEFINITIONS.map((def) => ({
-    id: def.id,
-    label: def.label,
-    earned: def.earned(stats),
-  }));
-}
-
 async function getContributorDashboard(userId) {
   const { rows: userRows } = await db.query(
     'SELECT wallet_public_key FROM users WHERE id = $1',
@@ -130,7 +95,7 @@ async function getContributorDashboard(userId) {
       avg_contribution: 0,
     };
     return {
-      stats: { ...emptyStats, badges: computeBadges(emptyStats) },
+      stats: { ...emptyStats, badges: await evaluateBadges(userId) },
       campaigns: [],
     };
   }
@@ -218,7 +183,7 @@ async function getContributorDashboard(userId) {
   };
 
   return {
-    stats: { ...stats, badges: computeBadges(stats) },
+    stats: { ...stats, badges: await evaluateBadges(userId) },
     campaigns: allCampaigns,
   };
 }

@@ -30,6 +30,7 @@ const HowItWorks = lazy(() => import('./pages/HowItWorks'));
 const Pricing = lazy(() => import('./pages/Pricing'));
 const About = lazy(() => import('./pages/About'));
 const Resources = lazy(() => import('./pages/Resources'));
+const Leaderboard = lazy(() => import('./pages/Leaderboard'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 
 function PrivateRoute({ children }) {
@@ -60,6 +61,7 @@ export default function App() {
                 <Route path="/pricing" element={<Pricing />} />
                 <Route path="/about" element={<About />} />
                 <Route path="/resources" element={<Resources />} />
+                <Route path="/leaderboard" element={<Leaderboard />} />
                 <Route
                   path="/campaigns/new"
                   element={

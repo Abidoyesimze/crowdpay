@@ -66,7 +66,7 @@ test('GET /api/stellar/transactions lists rows for campaign creator', async () =
   });
 
   const res = await request(app)
-    .get('/api/stellar/transactions?campaign_id=camp-1')
+    .get('/api/stellar/transactions?campaign_id=11111111-1111-1111-1111-111111111111')
     .set('Authorization', 'Bearer t');
 
   assert.equal(res.status, 200);
@@ -85,10 +85,26 @@ test('GET /api/stellar/transactions rejects invalid status filter', async () => 
   });
 
   const res = await request(app)
-    .get('/api/stellar/transactions?campaign_id=camp-1&status=bad')
+    .get('/api/stellar/transactions?campaign_id=11111111-1111-1111-1111-111111111111&status=bad')
     .set('Authorization', 'Bearer t');
 
   assert.equal(res.status, 400);
+  assert.match(res.body.error, /status must be one of/);
+});
+
+// #490: campaign_id is a UUID column; passing a non-UUID string previously
+// went straight to the database instead of returning a clean validation error.
+test('GET /api/stellar/transactions rejects a malformed campaign_id', async () => {
+  const app = buildApp({
+    queryImpl: async () => ({ rows: [] }),
+  });
+
+  const res = await request(app)
+    .get('/api/stellar/transactions?campaign_id=not-a-uuid')
+    .set('Authorization', 'Bearer t');
+
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /valid UUID/);
 });
 
 test('GET /api/stellar/transactions/:id denies unrelated users', async () => {

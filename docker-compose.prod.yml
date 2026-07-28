@@ -11,6 +11,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.prod
+      args:
+        - SENTRY_RELEASE=${SENTRY_RELEASE:-unknown}
     ports:
       - "8080:8080"
     depends_on: [backend]

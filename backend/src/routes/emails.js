@@ -1,9 +1,15 @@
 const router = require('express').Router();
 const db = require('../config/database');
 const { verifyUnsubscribeToken } = require('../utils/unsubscribeToken');
+const { isUuid } = require('../utils/validation');
+const asyncHandler = require('../utils/asyncHandler');
 
-router.get('/unsubscribe', async (req, res) => {
+router.get('/unsubscribe', asyncHandler(async (req, res) => {
   const { email, category, sig, campaign_id: campaignId } = req.query;
+
+  if (campaignId !== undefined && !isUuid(campaignId)) {
+    return res.status(400).send('Invalid campaign_id.');
+  }
 
   if (!verifyUnsubscribeToken({ email, category, sig, campaign_id: campaignId })) {
     return res.status(400).send('Invalid or expired unsubscribe link.');
@@ -30,7 +36,7 @@ router.get('/unsubscribe', async (req, res) => {
       `INSERT INTO campaign_update_unsubscribes (email, campaign_id)
        VALUES ($1, $2)
        ON CONFLICT (email, campaign_id) DO NOTHING`,
-      [String(email).toLowerCase(), Number(campaignId)]
+      [String(email).toLowerCase(), campaignId]
     );
     return res.send('You have been unsubscribed from updates for this campaign.');
   }
@@ -43,6 +49,6 @@ router.get('/unsubscribe', async (req, res) => {
   );
 
   res.send('You have been unsubscribed from these emails.');
-});
+}));
 
 module.exports = router;

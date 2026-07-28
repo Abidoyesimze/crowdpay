@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { stellarExpertAccountUrl } from '../config/stellar';
 import VerificationBadge from '../components/VerificationBadge';
 import KycPrompt from '../components/KycPrompt';
+import ContributorBadges from '../components/ContributorBadges';
 import { api } from '../services/api';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
@@ -188,6 +189,8 @@ export default function Profile() {
           </button>
         </form>
       </div>
+
+      <ContributorBadges />
 
       <div className="campaign-card" style={{ marginBottom: '2rem' }}>
         <div
