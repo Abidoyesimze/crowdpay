@@ -21,7 +21,7 @@ import { stellarExpertTxUrl } from '../config/stellar';
 import CampaignQRCode from '../components/CampaignQRCode';
 import { getNetwork, signTransaction } from '@stellar/freighter-api';
 import { isConnected, getPublicKey } from '@stellar/freighter-api';
-import BackerInsightsCard from '../components/BackerInsightsCard';
+const BackerInsightsCard = React.lazy(() => import('../components/BackerInsightsCard'));
 import CampaignComments from '../components/CampaignComments';
 import FollowCampaignButton from '../components/FollowCampaignButton';
 import LanguageToggle from '../components/LanguageToggle';
