@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { sendEmail } = require('./emailService');
+const { isSafeUrl } = require('../utils/ssrfGuard');
 
 const WEBHOOK_EVENTS = {
   CAMPAIGN_FUNDED: 'campaign.funded',
@@ -120,6 +121,18 @@ async function processDelivery(deliveryId) {
   let res;
   let responseText = '';
   try {
+    // Defense-in-depth: re-validate URL at dispatch time to prevent
+    // DNS rebinding attacks where a domain resolves to a safe IP at
+    // creation time but is later changed to point to a private network.
+    const urlCheck = await isSafeUrl(row.url);
+    if (!urlCheck.safe) {
+      await db.query(
+        `UPDATE webhook_deliveries SET status = 'failed', last_error = $2, updated_at = NOW() WHERE id = $1`,
+        [deliveryId, `SSRF guard: ${urlCheck.reason}`]
+      );
+      return;
+    }
+
     res = await fetch(row.url, {
       method: 'POST',
       headers: {
@@ -289,6 +302,18 @@ async function processCampaignWebhookDelivery(deliveryId) {
 
   let res;
   try {
+    // Defense-in-depth: re-validate URL at dispatch time to prevent
+    // DNS rebinding attacks where a domain resolves to a safe IP at
+    // creation time but is later changed to point to a private network.
+    const urlCheck = await isSafeUrl(row.url);
+    if (!urlCheck.safe) {
+      await db.query(
+        `UPDATE campaign_webhook_deliveries SET status = 'failed', last_error = $2, failed_at = NOW(), updated_at = NOW() WHERE id = $1`,
+        [deliveryId, `SSRF guard: ${urlCheck.reason}`]
+      );
+      return;
+    }
+
     res = await fetch(row.url, {
       method: 'POST',
       headers: {
