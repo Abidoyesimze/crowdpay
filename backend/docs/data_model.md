@@ -299,6 +299,22 @@ Tracks per-campaign-wallet Horizon streaming position for the live payment inges
 
 ---
 
+## Campaign Translations (#602)
+
+The `campaign_translations` table allows creators to provide campaign descriptions in multiple languages.
+
+| Column       | Type            | Description                              |
+|-------------|----------------|------------------------------------------|
+| id          | UUID (PK)      | Unique translation identifier            |
+| campaign_id | UUID (FK)      | Reference to campaigns (CASCADE)         |
+| language    | TEXT           | Language code (e.g. es, fr, ja)          |
+| title       | TEXT           | Translated campaign title (max 255)      |
+| description | TEXT           | Translated campaign description          |
+| created_at  | TIMESTAMPTZ    | Creation timestamp                        |
+| updated_at  | TIMESTAMPTZ    | Last update timestamp                     |
+
+**Unique constraint:** `(campaign_id, language)` — one translation per language per campaign.
+
 ## Tables Not Found in Reviewed Migrations
 
 The original documentation request referenced `api_keys` and `feature_flags`/`feature_flag_assignments` tables. These were not located in the migrations reviewed for this update — they may not exist yet, may be planned for a future migration, or may live under different table names. Flagging for a maintainer to confirm rather than guessing at their structure.
