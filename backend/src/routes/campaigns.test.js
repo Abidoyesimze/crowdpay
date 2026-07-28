@@ -11,6 +11,9 @@ if (!process.env.PLATFORM_SECRET_KEY) {
 if (!process.env.USDC_ISSUER) {
   process.env.USDC_ISSUER = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 }
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/crowdpay_test';
+}
 
 function buildApp({
   queryImpl,
@@ -104,9 +107,17 @@ function buildApp({
       getCampaignsValidation: [],
       validateRequest: (_req, _res, next) => next(),
     },
+    '../services/analyticsService': {
+      getCampaignAnalytics: async () => ({ overview: {}, chart: [] }),
+      getCampaignContributors: async () => ([]),
+      getCampaignBackers: async () => ([]),
+    },
     '../utils/asyncHandler': (fn) => (req, res, next) => fn(req, res, next).catch(next),
     '../middleware/auth': {
-      requireAuth: (req, _res, next) => {
+      requireAuth: (req, res, next) => {
+        if (authUser === null) {
+          return res.status(401).json({ error: 'Unauthorized' });
+        }
         req.user = authUser || { userId: 'platform-1', role: 'admin' };
         next();
       },
@@ -508,4 +519,86 @@ test('GET /api/campaigns sort=relevance without search falls back to newest', as
   const listQuery = queries.find((q) => q.text.includes('ORDER BY'));
   assert.match(listQuery.text, /ORDER BY c\.created_at DESC/);
   assert.doesNotMatch(listQuery.text, /ts_rank/);
+});
+
+test('Analytics routes enforce requireAuth and requireCampaignMember', async () => {
+  // 1. Unauthenticated request returns 401
+  const unauthApp = buildApp({ authUser: null });
+  const res1 = await request(unauthApp).get('/api/campaigns/c-123/analytics');
+  assert.equal(res1.status, 401);
+
+  const res1Contrib = await request(unauthApp).get('/api/campaigns/c-123/analytics/contributors');
+  assert.equal(res1Contrib.status, 401);
+
+  const res1Backers = await request(unauthApp).get('/api/campaigns/c-123/analytics/backers');
+  assert.equal(res1Backers.status, 401);
+
+  // 2. Non-member non-owner user returns 403
+  const nonMemberApp = buildApp({
+    authUser: { userId: 'stranger-1', role: 'user' },
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return { rows: [{ creator_id: 'creator-1' }] };
+      }
+      if (text.includes('FROM campaign_members')) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const res2 = await request(nonMemberApp).get('/api/campaigns/c-123/analytics');
+  assert.equal(res2.status, 403);
+
+  const res2Contrib = await request(nonMemberApp).get('/api/campaigns/c-123/analytics/contributors');
+  assert.equal(res2Contrib.status, 403);
+
+  const res2Backers = await request(nonMemberApp).get('/api/campaigns/c-123/analytics/backers');
+  assert.equal(res2Backers.status, 403);
+
+  // 3. Campaign creator returns 200
+  const creatorApp = buildApp({
+    authUser: { userId: 'creator-1', role: 'user' },
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return { rows: [{ creator_id: 'creator-1' }] };
+      }
+      if (text.includes('FROM campaign_members')) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const res3 = await request(creatorApp).get('/api/campaigns/c-123/analytics');
+  assert.equal(res3.status, 200);
+
+  const res3Contrib = await request(creatorApp).get('/api/campaigns/c-123/analytics/contributors');
+  assert.equal(res3Contrib.status, 200);
+
+  const res3Backers = await request(creatorApp).get('/api/campaigns/c-123/analytics/backers');
+  assert.equal(res3Backers.status, 200);
+
+  // 4. Accepted campaign member returns 200
+  const memberApp = buildApp({
+    authUser: { userId: 'member-1', role: 'user' },
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return { rows: [{ creator_id: 'creator-1' }] };
+      }
+      if (text.includes('FROM campaign_members')) {
+        return { rows: [{ role: 'viewer', accepted_at: '2026-01-01' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const res4 = await request(memberApp).get('/api/campaigns/c-123/analytics');
+  assert.equal(res4.status, 200);
+
+  const res4Contrib = await request(memberApp).get('/api/campaigns/c-123/analytics/contributors');
+  assert.equal(res4Contrib.status, 200);
+
+  const res4Backers = await request(memberApp).get('/api/campaigns/c-123/analytics/backers');
+  assert.equal(res4Backers.status, 200);
 });
