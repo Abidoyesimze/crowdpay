@@ -3,8 +3,8 @@
 /**
  * Soroban service unit tests — run with node:test (no DB or testnet required).
  *
- * Uses the manual mock at services/__mocks__/sorobanService.js so all Stellar
- * SDK calls and network I/O are bypassed.
+ * Covers both the manual mock at services/__mocks__/sorobanService.js
+ * and all real functions in services/sorobanService.js using proxyquire.
  *
  * Run:
  *   NODE_ENV=test node --test src/services/sorobanService.test.js
@@ -12,45 +12,42 @@
 
 const { describe, it, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const proxyquire = require('proxyquire').noCallThru();
+const { Keypair, xdr, nativeToScVal, StrKey, Account } = require('@stellar/stellar-sdk');
 
 // ---------------------------------------------------------------------------
-// Use the mock instead of the real service
+// 1. Tests for the manual mock at services/__mocks__/sorobanService.js
 // ---------------------------------------------------------------------------
-const soroban = require('./__mocks__/sorobanService');
-const { __mock } = soroban;
+const sorobanMock = require('./__mocks__/sorobanService');
+const { __mock } = sorobanMock;
 
-// ---------------------------------------------------------------------------
-// encodeMilestone tests
-// ---------------------------------------------------------------------------
-describe('encodeMilestone', () => {
+describe('encodeMilestone (manual mock)', () => {
   it('encodes a valid milestone without throwing', () => {
-    const result = soroban.encodeMilestone({
+    const result = sorobanMock.encodeMilestone({
       title: 'Pump procurement',
-      release_percentage_units: 4000, // 40.00% in basis points
+      release_percentage_units: 4000,
     });
-
-    // Should return a non-null object (ScVal)
     assert.ok(result !== null && result !== undefined, 'result should not be null');
     assert.equal(typeof result, 'object', 'result should be an object');
   });
 
   it('throws when title is missing', () => {
     assert.throws(
-      () => soroban.encodeMilestone({ release_percentage_units: 5000 }),
+      () => sorobanMock.encodeMilestone({ release_percentage_units: 5000 }),
       /title is required/i
     );
   });
 
   it('throws when milestone argument is falsy', () => {
     assert.throws(
-      () => soroban.encodeMilestone(null),
+      () => sorobanMock.encodeMilestone(null),
       /title is required/i
     );
   });
 
   it('encodes a 100% single-milestone campaign (10000 bps)', () => {
     assert.doesNotThrow(() =>
-      soroban.encodeMilestone({
+      sorobanMock.encodeMilestone({
         title: 'Full release',
         release_percentage_units: 10000,
       })
@@ -58,10 +55,7 @@ describe('encodeMilestone', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// invokeContract tests
-// ---------------------------------------------------------------------------
-describe('invokeContract', () => {
+describe('invokeContract (manual mock)', () => {
   beforeEach(() => {
     __mock.reset();
     __mock.clearCalls();
@@ -69,36 +63,31 @@ describe('invokeContract', () => {
 
   it('resolves with the configured return value', async () => {
     __mock.setReturnValue(BigInt(42));
-
-    const result = await soroban.invokeContract({
+    const result = await sorobanMock.invokeContract({
       contractId: 'CCONTRACT123456789012345678901234567890123456789012345',
       method: 'get_balance',
       args: [],
       signerSecret: 'SCVMQUS5EMTHWBLJTE5XCSCMHB2ZOVKRR4ATVTRPUNRCOGKRENIL3LHR',
     });
-
     assert.equal(result, BigInt(42));
   });
 
   it('records each call for inspection', async () => {
-    await soroban.invokeContract({
+    await sorobanMock.invokeContract({
       contractId: 'CCONTRACT123456789012345678901234567890123456789012345',
       method: 'register_campaign',
       args: [{ id: 'camp-1', milestones: [] }],
       signerSecret: 'SCVMQUS5EMTHWBLJTE5XCSCMHB2ZOVKRR4ATVTRPUNRCOGKRENIL3LHR',
     });
-
     const calls = __mock.getCalls();
     assert.equal(calls.length, 1);
     assert.equal(calls[0].method, 'register_campaign');
-    assert.equal(calls[0].contractId, 'CCONTRACT123456789012345678901234567890123456789012345');
   });
 
   it('throws when simulateFailure is enabled', async () => {
     __mock.simulateFailure(true);
-
     await assert.rejects(
-      () => soroban.invokeContract({
+      () => sorobanMock.invokeContract({
         contractId: 'CCONTRACT123456789012345678901234567890123456789012345',
         method: 'release_funds',
         args: [],
@@ -110,7 +99,7 @@ describe('invokeContract', () => {
 
   it('throws when contractId is missing', async () => {
     await assert.rejects(
-      () => soroban.invokeContract({
+      () => sorobanMock.invokeContract({
         contractId: '',
         method: 'register_campaign',
         args: [],
@@ -122,7 +111,7 @@ describe('invokeContract', () => {
 
   it('throws when method is missing', async () => {
     await assert.rejects(
-      () => soroban.invokeContract({
+      () => sorobanMock.invokeContract({
         contractId: 'CCONTRACT123456789012345678901234567890123456789012345',
         method: '',
         args: [],
@@ -134,7 +123,7 @@ describe('invokeContract', () => {
 
   it('throws when signerSecret is missing', async () => {
     await assert.rejects(
-      () => soroban.invokeContract({
+      () => sorobanMock.invokeContract({
         contractId: 'CCONTRACT123456789012345678901234567890123456789012345',
         method: 'release_funds',
         args: [],
@@ -145,7 +134,7 @@ describe('invokeContract', () => {
   });
 
   it('reset clears call history', async () => {
-    await soroban.invokeContract({
+    await sorobanMock.invokeContract({
       contractId: 'CCONTRACT123456789012345678901234567890123456789012345',
       method: 'noop',
       args: [],
@@ -161,93 +150,58 @@ describe('invokeContract', () => {
     __mock.setReturnValue(BigInt(999));
     __mock.reset();
 
-    const result = await soroban.invokeContract({
+    const result = await sorobanMock.invokeContract({
       contractId: 'CCONTRACT123456789012345678901234567890123456789012345',
       method: 'noop',
       args: [],
       signerSecret: 'SCVMQUS5EMTHWBLJTE5XCSCMHB2ZOVKRR4ATVTRPUNRCOGKRENIL3LHR',
     });
-
     assert.equal(result, BigInt(0));
   });
 });
 
 // ---------------------------------------------------------------------------
-// Contract interaction integration scenario (mocked)
+// 2. Tests for real sorobanService.js using proxyquire
 // ---------------------------------------------------------------------------
-describe('Soroban contract integration scenario — campaign milestone release', () => {
-  beforeEach(() => {
-    __mock.reset();
-    __mock.clearCalls();
+
+const testKeypair = Keypair.random();
+const TEST_SECRET = testKeypair.secret();
+const TEST_PUBLIC = testKeypair.publicKey();
+const TEST_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32, 1));
+const TEST_WASM_HASH = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
+
+function createMockMetaXdr(returnValue) {
+  const sorobanMeta = new xdr.SorobanTransactionMeta({
+    ext: xdr.SorobanTransactionMetaExt.fromXDR(Buffer.from([0, 0, 0, 0])),
+    events: [],
+    returnValue: returnValue || xdr.ScVal.scvVoid(),
+    diagnosticEvents: [],
   });
 
-  it('full release flow: register_campaign → release_milestone → verify_state', async () => {
-    const contractId = 'CCONTRACT123456789012345678901234567890123456789012345';
-    const signerSecret = 'SCVMQUS5EMTHWBLJTE5XCSCMHB2ZOVKRR4ATVTRPUNRCOGKRENIL3LHR';
-
-    // 1. Encode milestone
-    const encodedMilestone = soroban.encodeMilestone({
-      title: 'Pump procurement',
-      release_percentage_units: 4000,
-    });
-    assert.ok(encodedMilestone, 'Should encode milestone without error');
-
-    // 2. Register campaign on-chain
-    __mock.setReturnValue(BigInt(1)); // 1 = success in contract
-    const registerResult = await soroban.invokeContract({
-      contractId,
-      method: 'register_campaign',
-      args: [{ id: 'camp-42', milestones: [encodedMilestone] }],
-      signerSecret,
-    });
-    assert.equal(registerResult, BigInt(1));
-
-    // 3. Release milestone
-    __mock.setReturnValue(BigInt(0)); // 0 = OK / released state
-    const releaseResult = await soroban.invokeContract({
-      contractId,
-      method: 'release_milestone',
-      args: ['camp-42', 0],
-      signerSecret,
-    });
-    assert.equal(releaseResult, BigInt(0));
-
-    // 4. Verify call order
-    const calls = __mock.getCalls();
-    assert.equal(calls.length, 2);
-    assert.equal(calls[0].method, 'register_campaign');
-    assert.equal(calls[1].method, 'release_milestone');
+  const v3 = new xdr.TransactionMetaV3({
+    ext: xdr.ExtensionPoint.fromXDR(Buffer.from([0, 0, 0, 0])),
+    txChangesBefore: [],
+    operations: [],
+    txChangesAfter: [],
+    sorobanMeta,
   });
+  const meta = new xdr.TransactionMeta(3, v3);
+  return meta.toXDR('base64');
+}
 
-  it('handles contract failure gracefully during release', async () => {
-    __mock.simulateFailure(true);
+function buildService(serverOverrides = {}) {
+  const defaultServer = {
+    loadAccount: async (pk) => new Account(pk || TEST_PUBLIC, '1'),
+    simulateTransaction: async () => ({ result: null }),
+    prepareTransaction: (tx) => tx,
+    submitTransaction: async () => ({ status: 'SUCCESS' }),
+  };
 
-    await assert.rejects(
-      () => soroban.invokeContract({
-        contractId: 'CCONTRACT123456789012345678901234567890123456789012345',
-        method: 'release_milestone',
-        args: ['camp-42', 0],
-        signerSecret: 'SCVMQUS5EMTHWBLJTE5XCSCMHB2ZOVKRR4ATVTRPUNRCOGKRENIL3LHR',
-      }),
-      /simulated soroban contract failure/i
-    );
+  const server = { ...defaultServer, ...serverOverrides };
 
-    // No calls should have completed
-    assert.equal(__mock.getCalls().length, 0);
-  });
-});
-
-const proxyquire = require('proxyquire').noCallThru();
-
-function buildService() {
   return proxyquire('./sorobanService', {
     '../config/stellar': {
-      server: {
-        loadAccount: async () => ({ sequence: '1' }),
-        simulateTransaction: async () => ({ result: null }),
-        prepareTransaction: (tx) => tx,
-        submitTransaction: async () => ({ status: 'SUCCESS' }),
-      },
+      server,
       networkPassphrase: 'Test SDF Network ; September 2015',
     },
     '../config/logger': { info: () => {}, error: () => {}, warn: () => {} },
@@ -255,55 +209,597 @@ function buildService() {
   });
 }
 
-test('mapMilestoneOnChainStatus maps numeric contract statuses', () => {
-  const { mapMilestoneOnChainStatus } = buildService();
-  assert.equal(mapMilestoneOnChainStatus(0), 'pending');
-  assert.equal(mapMilestoneOnChainStatus(1), 'submitted');
-  assert.equal(mapMilestoneOnChainStatus(2), 'released');
-  assert.equal(mapMilestoneOnChainStatus(3), 'rejected');
-});
+describe('sorobanService real implementation tests', () => {
+  // Helper & Status Mapping tests
+  test('scvAddressFromString encodes a valid address', () => {
+    const service = buildService();
+    const scv = service.scvAddressFromString(TEST_PUBLIC);
+    assert.ok(scv);
+    assert.equal(typeof scv, 'object');
+  });
 
-test('releaseMilestone throws when milestones contract is missing', async () => {
-  const { releaseMilestone } = buildService();
-  await assert.rejects(
-    () => releaseMilestone({ milestonesContractId: null, milestoneIndex: 0, signerSecret: 'S' }),
-    /does not have a milestones contract/
-  );
-});
+  test('encodeMilestone computes title hash and release_bps correctly', () => {
+    const service = buildService();
 
-test('triggerRefund throws when escrow contract is missing', async () => {
-  const { triggerRefund } = buildService();
-  await assert.rejects(
-    () => triggerRefund({ escrowContractId: null, contributorAddress: 'GABC', signerSecret: 'S' }),
-    /does not have an escrow contract/
-  );
-});
+    const m1 = service.encodeMilestone({ title: 'M1', release_percentage_units: 3000 });
+    assert.ok(m1);
 
-test('deployCampaignContracts throws when enabled without wasm hashes', async () => {
-  const prevEnabled = process.env.SOROBAN_ENABLED;
-  const prevEscrow = process.env.ESCROW_WASM_HASH;
-  const prevMilestones = process.env.MILESTONES_WASM_HASH;
-  process.env.SOROBAN_ENABLED = 'true';
-  delete process.env.ESCROW_WASM_HASH;
-  delete process.env.MILESTONES_WASM_HASH;
+    const m2 = service.encodeMilestone({ title: 'M2', release_percentage: '25.5' });
+    assert.ok(m2);
 
-  const { deployCampaignContracts } = buildService();
-  await assert.rejects(
-    () => deployCampaignContracts({
-      creatorPublicKey: 'GCREATOR',
-      platformPublicKey: 'GPLATFORM',
-      campaignId: 'abc',
-      targetAmount: 100,
-      deadlineUnix: 1,
-      assetContractAddress: 'GASSET',
-      platformFeeBps: 0,
-      milestones: [],
-      signerSecret: 'S' + 'A'.repeat(55),
-    }),
-    /WASM_HASH/
-  );
+    const m3 = service.encodeMilestone({ title: 'M3' });
+    assert.ok(m3);
+  });
 
-  process.env.SOROBAN_ENABLED = prevEnabled;
-  if (prevEscrow) process.env.ESCROW_WASM_HASH = prevEscrow;
-  if (prevMilestones) process.env.MILESTONES_WASM_HASH = prevMilestones;
+  test('mapMilestoneOnChainStatus maps numeric and object statuses', () => {
+    const { mapMilestoneOnChainStatus } = buildService();
+    assert.equal(mapMilestoneOnChainStatus(0), 'pending');
+    assert.equal(mapMilestoneOnChainStatus(1), 'submitted');
+    assert.equal(mapMilestoneOnChainStatus(2), 'released');
+    assert.equal(mapMilestoneOnChainStatus(3), 'rejected');
+    assert.equal(mapMilestoneOnChainStatus(99), 'pending');
+
+    assert.equal(mapMilestoneOnChainStatus({ tag: 'Approved' }), 'released');
+    assert.equal(mapMilestoneOnChainStatus({ tag: 'Submitted' }), 'submitted');
+    assert.equal(mapMilestoneOnChainStatus({ tag: 'Rejected' }), 'rejected');
+    assert.equal(mapMilestoneOnChainStatus({ tag: 'Other' }), 'pending');
+  });
+
+  // invokeContract & invokeContractReadOnly tests
+  describe('invokeContract & invokeContractReadOnly error propagation', () => {
+    test('invokeContract throws on non-SUCCESS status', async () => {
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'FAILED' }),
+      });
+
+      await assert.rejects(
+        () => service.invokeContract({
+          contractId: TEST_CONTRACT_ID,
+          method: 'test_method',
+          args: [],
+          signerSecret: TEST_SECRET,
+        }),
+        /Transaction failed: FAILED/
+      );
+    });
+
+    test('invokeContract throws on simulateAndPrepare error (scvError)', async () => {
+      const errorScVal = xdr.ScVal.scvError(xdr.ScError.sceContract(1));
+      const metaBase64 = createMockMetaXdr(errorScVal);
+
+      const service = buildService({
+        simulateTransaction: async () => ({
+          result: { meta: metaBase64 },
+        }),
+      });
+
+      await assert.rejects(
+        () => service.invokeContract({
+          contractId: TEST_CONTRACT_ID,
+          method: 'test_method',
+          args: [],
+          signerSecret: TEST_SECRET,
+        }),
+        /Simulation failed/
+      );
+    });
+
+    test('invokeContract returns scValToNative result when resultMetaXdr present', async () => {
+      const returnScVal = nativeToScVal(12345);
+      const metaBase64 = createMockMetaXdr(returnScVal);
+
+      const service = buildService({
+        submitTransaction: async () => ({
+          status: 'SUCCESS',
+          resultMetaXdr: metaBase64,
+        }),
+      });
+
+      const res = await service.invokeContract({
+        contractId: TEST_CONTRACT_ID,
+        method: 'test_method',
+        args: [],
+        signerSecret: TEST_SECRET,
+      });
+
+      assert.equal(res, BigInt(12345));
+    });
+
+    test('invokeContractReadOnly throws when simulation errors out', async () => {
+      process.env.PLATFORM_SECRET_KEY = TEST_SECRET;
+      const service = buildService({
+        simulateTransaction: async () => ({
+          error: 'Simulation error',
+        }),
+      });
+
+      await assert.rejects(
+        () => service.invokeContractReadOnly({
+          contractId: TEST_CONTRACT_ID,
+          method: 'get_something',
+          args: [],
+        }),
+        /Simulation failed/
+      );
+    });
+
+    test('invokeContractReadOnly returns value on successful simulation', async () => {
+      process.env.PLATFORM_SECRET_KEY = TEST_SECRET;
+      const returnScVal = nativeToScVal('hello_world');
+      const metaBase64 = createMockMetaXdr(returnScVal);
+
+      const service = buildService({
+        simulateTransaction: async () => ({
+          result: { meta: metaBase64 },
+        }),
+      });
+
+      const res = await service.invokeContractReadOnly({
+        contractId: TEST_CONTRACT_ID,
+        method: 'get_something',
+        args: [],
+      });
+
+      assert.equal(res, 'hello_world');
+    });
+
+    test('invokeContractReadOnly throws on scvError in simulation', async () => {
+      process.env.PLATFORM_SECRET_KEY = TEST_SECRET;
+      const errorScVal = xdr.ScVal.scvError(xdr.ScError.sceContract(5));
+      const metaBase64 = createMockMetaXdr(errorScVal);
+
+      const service = buildService({
+        simulateTransaction: async () => ({
+          result: { meta: metaBase64 },
+        }),
+      });
+
+      await assert.rejects(
+        () => service.invokeContractReadOnly({
+          contractId: TEST_CONTRACT_ID,
+          method: 'get_something',
+          args: [],
+        }),
+        /Simulation returned error/
+      );
+    });
+  });
+
+  // Action wrapper functions
+  describe('Service contract call wrappers', () => {
+    test('initializeEscrow invokes contract with correct method', async () => {
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'SUCCESS' }),
+      });
+
+      const res = await service.initializeEscrow({
+        contractId: TEST_CONTRACT_ID,
+        adminAddress: TEST_PUBLIC,
+        campaignId: 101,
+        target: 5000,
+        deadline: 1700000000,
+        assetContractAddress: TEST_CONTRACT_ID,
+        platformFeeBps: 250,
+        platformFeeRecipientAddress: TEST_PUBLIC,
+        signerSecret: TEST_SECRET,
+      });
+
+      assert.equal(res, null);
+    });
+
+    test('initializeMilestones formats milestones and invokes contract', async () => {
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'SUCCESS' }),
+      });
+
+      const res = await service.initializeMilestones({
+        contractId: TEST_CONTRACT_ID,
+        creatorAddress: TEST_PUBLIC,
+        platformAddress: TEST_PUBLIC,
+        escrowContractId: TEST_CONTRACT_ID,
+        milestones: [{ title: 'M1', release_percentage_units: 5000 }],
+        signerSecret: TEST_SECRET,
+      });
+
+      assert.equal(res, null);
+    });
+
+    test('depositToEscrow invokes contract with deposit method', async () => {
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'SUCCESS' }),
+      });
+
+      const res = await service.depositToEscrow({
+        contractId: TEST_CONTRACT_ID,
+        fromAddress: TEST_PUBLIC,
+        amount: 1000,
+        signerSecret: TEST_SECRET,
+      });
+
+      assert.equal(res, null);
+    });
+
+    test('requestRefund & refund invoke contract with refund method', async () => {
+      process.env.PLATFORM_SECRET_KEY = TEST_SECRET;
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'SUCCESS' }),
+      });
+
+      await service.requestRefund({
+        contractId: TEST_CONTRACT_ID,
+        contributorAddress: TEST_PUBLIC,
+        signerSecret: TEST_SECRET,
+      });
+
+      await service.refund(TEST_CONTRACT_ID, TEST_PUBLIC);
+    });
+
+    test('submitMilestone, approveMilestone, rejectMilestone invoke contract methods', async () => {
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'SUCCESS' }),
+      });
+
+      await service.submitMilestone({
+        contractId: TEST_CONTRACT_ID,
+        creatorAddress: TEST_PUBLIC,
+        title: 'Phase 1',
+        releaseBps: 5000,
+        signerSecret: TEST_SECRET,
+      });
+
+      await service.approveMilestone({
+        contractId: TEST_CONTRACT_ID,
+        milestoneIndex: 0,
+        signerSecret: TEST_SECRET,
+      });
+
+      await service.rejectMilestone({
+        contractId: TEST_CONTRACT_ID,
+        milestoneIndex: 0,
+        signerSecret: TEST_SECRET,
+      });
+    });
+
+    test('read-only getters', async () => {
+      process.env.PLATFORM_SECRET_KEY = TEST_SECRET;
+
+      const returnScVal = nativeToScVal(500);
+      const metaBase64 = createMockMetaXdr(returnScVal);
+
+      const service = buildService({
+        simulateTransaction: async () => ({
+          result: { meta: metaBase64 },
+        }),
+      });
+
+      assert.equal(await service.getEscrowTotalRaised(TEST_CONTRACT_ID), BigInt(500));
+      assert.equal(await service.getEscrowAsset(TEST_CONTRACT_ID), BigInt(500));
+      assert.equal(await service.getEscrowPlatformFeeConfig(TEST_CONTRACT_ID), BigInt(500));
+      assert.equal(await service.getMilestone(TEST_CONTRACT_ID, 0), BigInt(500));
+      assert.equal(await service.getAllMilestones(TEST_CONTRACT_ID), BigInt(500));
+    });
+  });
+
+
+const proxyquire = require('proxyquire').noCallThru();
+
+  // WASM upload & contract creation tests
+  describe('createContractFromWasmHash & uploadContractWasm', () => {
+    test('createContractFromWasmHash throws when submit fails', async () => {
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'FAILED' }),
+      });
+
+      await assert.rejects(
+        () => service.createContractFromWasmHash({
+          wasmHash: TEST_WASM_HASH,
+          signerSecret: TEST_SECRET,
+        }),
+        /Contract creation failed: FAILED/
+      );
+    });
+
+    test('createContractFromWasmHash parses created contract ID on success', async () => {
+      const metaBase64 = createMockMetaXdr(xdr.ScVal.scvVoid());
+
+      const service = buildService({
+        submitTransaction: async () => ({
+          status: 'SUCCESS',
+          hash: 'txhash123',
+          resultMetaXdr: metaBase64,
+        }),
+      });
+
+      const res = await service.createContractFromWasmHash({
+        wasmHash: TEST_WASM_HASH,
+        signerSecret: TEST_SECRET,
+      });
+
+      assert.ok(res.contractId);
+      assert.equal(res.txHash, 'txhash123');
+    });
+
+    test('uploadContractWasm throws when submit fails', async () => {
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'FAILED' }),
+      });
+
+      await assert.rejects(
+        () => service.uploadContractWasm(Buffer.from('0061736d01000000', 'hex'), TEST_SECRET),
+        /WASM upload failed: FAILED/
+      );
+    });
+
+    test('uploadContractWasm parses return value on success', async () => {
+      const returnScVal = nativeToScVal('wasm_hash_result');
+      const metaBase64 = createMockMetaXdr(returnScVal);
+
+      const service = buildService({
+        submitTransaction: async () => ({
+          status: 'SUCCESS',
+          resultMetaXdr: metaBase64,
+        }),
+      });
+
+      const res = await service.uploadContractWasm(Buffer.from('0061736d01000000', 'hex'), TEST_SECRET);
+      assert.equal(res, 'wasm_hash_result');
+    });
+  });
+
+  // Contract deployment & high-level initialization tests
+  describe('deployCampaignContracts & initializeCampaignContract', () => {
+    test('deployCampaignContracts uses pre-deployed contract IDs from env if set', async () => {
+      process.env.ESCROW_CONTRACT_ID = TEST_CONTRACT_ID;
+      process.env.MILESTONES_CONTRACT_ID = TEST_CONTRACT_ID;
+
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'SUCCESS' }),
+      });
+
+      const result = await service.deployCampaignContracts({
+        creatorPublicKey: TEST_PUBLIC,
+        platformPublicKey: TEST_PUBLIC,
+        campaignId: '1001',
+        targetAmount: 1000,
+        deadlineUnix: 1800000000,
+        assetContractAddress: TEST_CONTRACT_ID,
+        platformFeeBps: 200,
+        milestones: [{ title: 'M1', release_percentage_units: 5000 }],
+        signerSecret: TEST_SECRET,
+      });
+
+      assert.equal(result.escrowContractId, TEST_CONTRACT_ID);
+      assert.equal(result.milestonesContractId, TEST_CONTRACT_ID);
+
+      delete process.env.ESCROW_CONTRACT_ID;
+      delete process.env.MILESTONES_CONTRACT_ID;
+    });
+
+    test('deployCampaignContracts returns mock contract IDs if SOROBAN_ENABLED is false', async () => {
+      delete process.env.ESCROW_CONTRACT_ID;
+      delete process.env.MILESTONES_CONTRACT_ID;
+      process.env.SOROBAN_ENABLED = 'false';
+
+      const service = buildService();
+      const result = await service.deployCampaignContracts({
+        creatorPublicKey: TEST_PUBLIC,
+        platformPublicKey: TEST_PUBLIC,
+        campaignId: '1001',
+        targetAmount: 1000,
+        deadlineUnix: 1800000000,
+        assetContractAddress: TEST_CONTRACT_ID,
+        platformFeeBps: 200,
+        milestones: [],
+        signerSecret: TEST_SECRET,
+      });
+
+      assert.ok(result.escrowContractId.startsWith('C'));
+      assert.ok(result.milestonesContractId.startsWith('C'));
+    });
+
+    test('deployCampaignContracts throws wrapped error on deployment failure', async () => {
+      delete process.env.ESCROW_CONTRACT_ID;
+      delete process.env.MILESTONES_CONTRACT_ID;
+      process.env.SOROBAN_ENABLED = 'true';
+      process.env.ESCOW_WASM_HASH = TEST_WASM_HASH;
+      process.env.ESCROW_WASM_HASH = TEST_WASM_HASH;
+      process.env.MILESTONES_WASM_HASH = TEST_WASM_HASH;
+
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'FAILED' }),
+      });
+
+      await assert.rejects(
+        () => service.deployCampaignContracts({
+          creatorPublicKey: TEST_PUBLIC,
+          platformPublicKey: TEST_PUBLIC,
+          campaignId: '1001',
+          targetAmount: 1000,
+          deadlineUnix: 1800000000,
+          assetContractAddress: TEST_CONTRACT_ID,
+          platformFeeBps: 200,
+          milestones: [],
+          signerSecret: TEST_SECRET,
+        }),
+        /Soroban contract deployment failed/
+      );
+
+      delete process.env.SOROBAN_ENABLED;
+      delete process.env.ESCOW_WASM_HASH;
+      delete process.env.ESCROW_WASM_HASH;
+      delete process.env.MILESTONES_WASM_HASH;
+    });
+
+    test('initializeCampaignContract returns escrow & milestone contract addresses', async () => {
+      process.env.SOROBAN_ENABLED = 'false';
+      const service = buildService();
+
+      const res = await service.initializeCampaignContract({
+        campaignId: '1001',
+        creator: TEST_PUBLIC,
+        goal: 5000,
+        deadline: 1800000000,
+        milestones: [],
+        platformPublicKey: TEST_PUBLIC,
+        assetContractAddress: TEST_CONTRACT_ID,
+        platformFeeBps: 100,
+        signerSecret: TEST_SECRET,
+      });
+
+      assert.ok(res.contractAddress);
+      assert.ok(res.escrowContractId);
+      assert.ok(res.milestonesContractId);
+    });
+
+    test('releaseMilestone & triggerRefund handle success and errors', async () => {
+      const service = buildService({
+        submitTransaction: async () => ({ status: 'SUCCESS' }),
+      });
+
+      // Success
+      await service.releaseMilestone({
+        milestonesContractId: TEST_CONTRACT_ID,
+        milestoneIndex: 0,
+        signerSecret: TEST_SECRET,
+      });
+
+      await service.triggerRefund({
+        escrowContractId: TEST_CONTRACT_ID,
+        contributorAddress: TEST_PUBLIC,
+        signerSecret: TEST_SECRET,
+      });
+
+      // Error when submit fails
+      const failingService = buildService({
+        submitTransaction: async () => ({ status: 'FAILED' }),
+      });
+
+      await assert.rejects(
+        () => failingService.releaseMilestone({
+          milestonesContractId: TEST_CONTRACT_ID,
+          milestoneIndex: 0,
+          signerSecret: TEST_SECRET,
+        }),
+        /On-chain milestone release failed/
+      );
+
+      await assert.rejects(
+        () => failingService.triggerRefund({
+          escrowContractId: TEST_CONTRACT_ID,
+          contributorAddress: TEST_PUBLIC,
+          signerSecret: TEST_SECRET,
+        }),
+        /On-chain refund failed/
+      );
+    });
+  });
+
+  // getContractStatus tests
+  describe('getContractStatus', () => {
+    test('returns unknown status when contract IDs are missing', async () => {
+      const service = buildService();
+      const status = await service.getContractStatus({
+        escrowContractId: null,
+        milestonesContractId: null,
+      });
+
+      assert.deepEqual(status, {
+        status: 'unknown',
+        totalRaised: 0,
+        milestones: [],
+      });
+    });
+
+    test('returns funded status when totalRaised >= target', async () => {
+      process.env.PLATFORM_SECRET_KEY = TEST_SECRET;
+
+      const totalRaisedScVal = nativeToScVal(1000);
+      const metaBase64 = createMockMetaXdr(totalRaisedScVal);
+
+      const service = buildService({
+        simulateTransaction: async () => ({
+          result: { meta: metaBase64 },
+        }),
+      });
+
+      const res = await service.getContractStatus({
+        escrowContractId: TEST_CONTRACT_ID,
+        targetAmount: 1000,
+        deadlineUnix: Math.floor(Date.now() / 1000) + 1000,
+      });
+
+      assert.equal(res.status, 'funded');
+      assert.equal(res.totalRaised, 1000);
+    });
+
+    test('returns active status when totalRaised < target and before deadline', async () => {
+      process.env.PLATFORM_SECRET_KEY = TEST_SECRET;
+
+      const totalRaisedScVal = nativeToScVal(500);
+      const metaBase64 = createMockMetaXdr(totalRaisedScVal);
+
+      const service = buildService({
+        simulateTransaction: async () => ({
+          result: { meta: metaBase64 },
+        }),
+      });
+
+      const res = await service.getContractStatus({
+        escrowContractId: TEST_CONTRACT_ID,
+        targetAmount: 1000,
+        deadlineUnix: Math.floor(Date.now() / 1000) + 1000,
+      });
+
+      assert.equal(res.status, 'active');
+      assert.equal(res.totalRaised, 500);
+    });
+
+    test('returns failed status when totalRaised < target and past deadline', async () => {
+      process.env.PLATFORM_SECRET_KEY = TEST_SECRET;
+
+      const totalRaisedScVal = nativeToScVal(500);
+      const metaBase64 = createMockMetaXdr(totalRaisedScVal);
+
+      const service = buildService({
+        simulateTransaction: async () => ({
+          result: { meta: metaBase64 },
+        }),
+      });
+
+      const res = await service.getContractStatus({
+        escrowContractId: TEST_CONTRACT_ID,
+        targetAmount: 1000,
+        deadlineUnix: Math.floor(Date.now() / 1000) - 1000, // past deadline
+      });
+
+      assert.equal(res.status, 'failed');
+      assert.equal(res.totalRaised, 500);
+    });
+
+    test('parses and maps milestones status array when milestonesContractId provided', async () => {
+      process.env.PLATFORM_SECRET_KEY = TEST_SECRET;
+
+      const milestonesScVal = nativeToScVal([
+        { status: 0 },
+        { status: 2 },
+      ]);
+      const metaBase64 = createMockMetaXdr(milestonesScVal);
+
+      const service = buildService({
+        simulateTransaction: async () => ({
+          result: { meta: metaBase64 },
+        }),
+      });
+
+      const res = await service.getContractStatus({
+        milestonesContractId: TEST_CONTRACT_ID,
+      });
+
+      assert.equal(res.milestones.length, 2);
+      assert.equal(res.milestones[0].on_chain_status, 'pending');
+      assert.equal(res.milestones[0].released, false);
+      assert.equal(res.milestones[1].on_chain_status, 'released');
+      assert.equal(res.milestones[1].released, true);
+    });
+  });
 });

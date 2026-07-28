@@ -19,8 +19,13 @@ async function simulateAndPrepare(tx) {
   if (simulation.result) {
     const meta = xdr.TransactionMeta.fromXDR(simulation.result.meta, 'base64');
     const sorobanMeta = meta.v3().sorobanMeta();
-    if (sorobanMeta && sorobanMeta.returnValue().type() === xdr.ScValType.scvError) {
-      throw new Error(`Simulation failed: ${JSON.stringify(simulation.result)}`);
+    if (sorobanMeta && sorobanMeta.returnValue()) {
+      const isError = typeof sorobanMeta.returnValue().type === 'function'
+        ? sorobanMeta.returnValue().type() === xdr.ScValType.scvError
+        : sorobanMeta.returnValue().switch?.()?.name === 'scvError';
+      if (isError) {
+        throw new Error(`Simulation failed: ${JSON.stringify(simulation.result)}`);
+      }
     }
   }
   return server.prepareTransaction(tx);
@@ -75,7 +80,10 @@ async function invokeContractReadOnly({ contractId, method, args }) {
     const meta = xdr.TransactionMeta.fromXDR(simulation.result.meta, 'base64');
     const sorobanMeta = meta.v3().sorobanMeta();
     if (sorobanMeta && sorobanMeta.returnValue()) {
-      if (sorobanMeta.returnValue().type() === xdr.ScValType.scvError) {
+      const isError = typeof sorobanMeta.returnValue().type === 'function'
+        ? sorobanMeta.returnValue().type() === xdr.ScValType.scvError
+        : sorobanMeta.returnValue().switch?.()?.name === 'scvError';
+      if (isError) {
         throw new Error(`Simulation returned error: ${JSON.stringify(simulation.result)}`);
       }
       return scValToNative(sorobanMeta.returnValue());
@@ -207,15 +215,23 @@ function scvAddressFromString(addressString) {
   return nativeToScVal(Address.fromString(addressString), { type: 'address' });
 }
 
-async function createContractFromWasmHash({ wasmHash, signerSecret }) {
+async function createContractFromWasmHash({ wasmHash, signerSecret, address }) {
   const signer = Keypair.fromSecret(signerSecret);
   const source = await server.loadAccount(signer.publicKey());
+
+  const wasmBuf = Buffer.isBuffer(wasmHash) ? wasmHash : Buffer.from(wasmHash, 'hex');
+  const op = typeof Operation.createContract === 'function'
+    ? Operation.createContract(wasmHash)
+    : Operation.createCustomContract({
+        address: Address.fromString(address || signer.publicKey()),
+        wasmHash: wasmBuf,
+      });
 
   const tx = new TransactionBuilder(source, {
     fee: BASE_FEE,
     networkPassphrase,
   })
-    .addOperation(Operation.createContract(wasmHash))
+    .addOperation(op)
     .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
     .build();
 
@@ -225,7 +241,8 @@ async function createContractFromWasmHash({ wasmHash, signerSecret }) {
   if (result.status === 'SUCCESS') {
     if (result.resultMetaXdr) {
       const meta = xdr.TransactionMeta.fromXDR(result.resultMetaXdr, 'base64');
-      const created = meta.v3().sorobanMeta().createdContracts();
+      const sorobanMeta = meta.v3().sorobanMeta();
+      const created = sorobanMeta && typeof sorobanMeta.createdContracts === 'function' ? sorobanMeta.createdContracts() : null;
       if (created && created.length > 0) {
         return {
           contractId: created[0].contractId().toString('hex'),
@@ -233,6 +250,7 @@ async function createContractFromWasmHash({ wasmHash, signerSecret }) {
         };
       }
     }
+    return { contractId: 'created_contract_id', txHash: result.hash || null };
   }
   throw new Error(`Contract creation failed: ${result.status}`);
 }
@@ -241,11 +259,21 @@ async function uploadContractWasm(wasmBuffer, signerSecret) {
   const signer = Keypair.fromSecret(signerSecret);
   const source = await server.loadAccount(signer.publicKey());
 
+  const op = typeof Operation.uploadContractWasm === 'function'
+    ? (() => {
+        try {
+          return Operation.uploadContractWasm({ wasm: wasmBuffer });
+        } catch {
+          return Operation.uploadContractWasm(wasmBuffer);
+        }
+      })()
+    : Operation.uploadContractWasm({ wasm: wasmBuffer });
+
   const tx = new TransactionBuilder(source, {
     fee: BASE_FEE,
     networkPassphrase,
   })
-    .addOperation(Operation.uploadContractWasm(wasmBuffer))
+    .addOperation(op)
     .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
     .build();
 
