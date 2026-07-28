@@ -8,7 +8,7 @@ const { evaluateBadges } = require('./badgeService');
 // Key scheme: "campaigns:<userId>" and "contributions:<userId>"
 const dashboardCache = new TtlCache(60_000);
 
-async function listCreatorCampaigns(userId) {
+async function listCreatorCampaignsCached(userId) {
   const key = `campaigns:${userId}`;
   return dashboardCache.wrap(key, async () => {
     const { rows } = await db.query(
@@ -30,6 +30,7 @@ async function listCreatorCampaigns(userId) {
     );
     return rows;
   });
+}
 
 async function listCreatorCampaigns(userId, options = {}) {
   const page = Math.max(1, parseInt(options.page, 10) || 1);
