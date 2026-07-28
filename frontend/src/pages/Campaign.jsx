@@ -1365,6 +1365,7 @@ export default function Campaign() {
             }}
             onClick={async () => {
               try {
+                api.trackShare(campaign.id, 'native').catch(() => {});
                 await navigator.share({
                   title: campaign.title,
                   text: campaign.description,
@@ -1393,6 +1394,7 @@ export default function Campaign() {
             gap: '0.5rem',
           }}
           onClick={() => {
+            api.trackShare(campaign.id, 'twitter').catch(() => {});
             const shareUrl = referralUrl || window.location.href;
             const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
             const daysLeft = Math.max(0, Math.ceil((new Date(campaign.end_date) - new Date()) / (1000 * 60 * 60 * 24)));
@@ -1415,6 +1417,7 @@ export default function Campaign() {
             gap: '0.5rem',
           }}
           onClick={() => {
+            api.trackShare(campaign.id, 'whatsapp').catch(() => {});
             const shareUrl = referralUrl || window.location.href;
             const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
             const text = encodeURIComponent(`Hey! Check out this campaign on CrowdPay: ${campaign.title}. They're ${pct}% funded and need your help. ${shareUrl}`);
@@ -1436,6 +1439,7 @@ export default function Campaign() {
             gap: '0.5rem',
           }}
           onClick={() => {
+            api.trackShare(campaign.id, 'linkedin').catch(() => {});
             const shareUrl = referralUrl || window.location.href;
             const linkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`;
             window.open(linkedInUrl, '_blank');
@@ -1443,6 +1447,48 @@ export default function Campaign() {
           aria-label="Share on LinkedIn"
         >
           LinkedIn
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{
+            flex: 1,
+            fontSize: '0.85rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '0.5rem',
+          }}
+          onClick={() => {
+            api.trackShare(campaign.id, 'telegram').catch(() => {});
+            const shareUrl = referralUrl || window.location.href;
+            const text = encodeURIComponent(`Check out this campaign: ${campaign.title}`);
+            window.open(`https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${text}`, '_blank');
+          }}
+          aria-label="Share on Telegram"
+        >
+          Telegram
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{
+            flex: 1,
+            fontSize: '0.85rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '0.5rem',
+          }}
+          onClick={() => {
+            api.trackShare(campaign.id, 'discord').catch(() => {});
+            navigator.clipboard.writeText(referralUrl || window.location.href);
+            toast?.('Link copied! Paste it in Discord to share.', 'success');
+            setTimeout(() => window.open('https://discord.com/app', '_blank'), 1500);
+          }}
+          aria-label="Share on Discord"
+        >
+          Discord
         </button>
         <div style={{ position: 'relative', flex: 1 }}>
           <button
@@ -1461,6 +1507,7 @@ export default function Campaign() {
               transition: 'all 0.2s ease',
             }}
             onClick={() => {
+              api.trackShare(campaign.id, 'copy').catch(() => {});
               navigator.clipboard.writeText(referralUrl || window.location.href);
               setLinkCopied(true);
               setTimeout(() => setLinkCopied(false), 2000);

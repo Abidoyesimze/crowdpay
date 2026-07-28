@@ -357,9 +357,38 @@ app.get("/health/ledger", async (_req, res) => {
 if (ff.isEnabled("serve-frontend")) {
   const dist = path.join(__dirname, "../../frontend/dist");
   app.use(express.static(dist));
-  app.get("*", (req, res, next) => {
+  app.get("*", async (req, res, next) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/health"))
       return next();
+
+    const campaignMatch = req.path.match(/^\/campaigns\/([a-f0-9\-]+)$/);
+    if (campaignMatch) {
+      try {
+        const campaignId = campaignMatch[1];
+        const { rows } = await db.query('SELECT title, description FROM campaigns WHERE id = $1', [campaignId]);
+        if (rows.length > 0) {
+          const campaign = rows[0];
+          const fs = require("fs");
+          let html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
+          const title = (campaign.title || '').replace(/"/g, '&quot;');
+          const desc = (campaign.description || '').replace(/"/g, '&quot;');
+          const url = `${process.env.FRONTEND_URL || 'http://localhost:5173'}${req.path}`;
+          const ogTags = `
+            <meta property="og:title" content="${title}" />
+            <meta property="og:description" content="${desc}" />
+            <meta property="og:url" content="${url}" />
+            <meta name="twitter:card" content="summary_large_image" />
+            <meta name="twitter:title" content="${title}" />
+            <meta name="twitter:description" content="${desc}" />
+          `;
+          html = html.replace('</head>', `${ogTags}</head>`);
+          return res.send(html);
+        }
+      } catch (err) {
+        // Fallback to sending standard index.html
+      }
+    }
+
     res.sendFile(path.join(dist, "index.html"));
   });
 }

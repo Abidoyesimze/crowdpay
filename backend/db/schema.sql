@@ -56,6 +56,7 @@ CREATE TABLE campaigns (
   is_flagged_fraud    BOOLEAN DEFAULT FALSE,
   fraud_score         INTEGER DEFAULT 0,
   fraud_signals       JSONB DEFAULT '{}'::jsonb,
+  share_count         INTEGER NOT NULL DEFAULT 0,
   created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS campaign_updates (

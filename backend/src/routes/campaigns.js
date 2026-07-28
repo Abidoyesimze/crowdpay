@@ -2036,4 +2036,14 @@ router.get('/:id/referrals', requireAuth, requireCampaignMember('owner'), asyncH
   res.json(rows);
 }));
 
+// POST /campaigns/:id/share — increment share_count
+router.post('/:id/share', asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    'UPDATE campaigns SET share_count = share_count + 1 WHERE id = $1 RETURNING share_count',
+    [req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
+  res.json({ share_count: rows[0].share_count });
+}));
+
 module.exports = router;
