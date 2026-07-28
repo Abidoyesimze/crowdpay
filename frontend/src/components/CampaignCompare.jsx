@@ -139,7 +139,7 @@ export default function CampaignCompare() {
       {selected.length === 0 ? (
         <div className="text-center py-16 text-gray-400">
           <p className="text-lg">Select campaigns to compare</p>
-          <p className="text-sm mt-1">Click "Add Campaign" above to get started</p>
+          <p className="text-sm mt-1">Click &ldquo;Add Campaign&rdquo; above to get started</p>
         </div>
       ) : (
         <>
