@@ -600,6 +600,7 @@ export const api = {
     request('POST', `/campaigns/${campaignId}/thank-you`, { message }),
   sendContributionThankYou: (contributionId, message) =>
     request('POST', `/contributions/${contributionId}/thank-you`, { message }),
+  trackShare: (campaignId, platform) => request('POST', `/campaigns/${campaignId}/share`, { platform }),
 
   // ── Contribution Pools (#600) ──────────────────────────────────────
   listCampaignPools: (campaignId) =>
