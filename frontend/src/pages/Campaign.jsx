@@ -22,6 +22,7 @@ import { isConnected, getPublicKey } from '@stellar/freighter-api';
 import BackerInsightsCard from '../components/BackerInsightsCard';
 import CampaignComments from '../components/CampaignComments';
 import FollowCampaignButton from '../components/FollowCampaignButton';
+import LanguageToggle from '../components/LanguageToggle';
 import { addRecentlyViewed } from '../lib/recentlyViewed';
 
 
@@ -290,6 +291,7 @@ export default function Campaign() {
   const toast = useToast();
 
   const [campaign, setCampaign] = useState(null);
+  const [translation, setTranslation] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [contributions, setContributions] = useState(null);
   const [totalContributions, setTotalContributions] = useState(0);
@@ -906,9 +908,10 @@ export default function Campaign() {
 
   useEffect(() => {
     if (!campaign) return;
-    document.title = `${campaign.title} | CrowdPay`;
+    const tTitle = translation?.title || campaign.title;
+    const tDesc = translation?.description || campaign.description || '';
+    document.title = `${tTitle} | CrowdPay`;
 
-    // Basic meta tag updates (SPA approach)
     const updateMeta = (name, content, property = false) => {
       let el = document.querySelector(
         property ? `meta[property="${name}"]` : `meta[name="${name}"]`
@@ -922,18 +925,18 @@ export default function Campaign() {
       el.setAttribute('content', content);
     };
 
-    updateMeta('description', campaign.description || '');
-    updateMeta('og:title', campaign.title, true);
-    updateMeta('og:description', campaign.description || '', true);
+    updateMeta('description', tDesc);
+    updateMeta('og:title', tTitle, true);
+    updateMeta('og:description', tDesc, true);
     updateMeta('og:url', window.location.href, true);
     if (campaign.cover_image_url) {
       updateMeta('og:image', campaign.cover_image_url, true);
       updateMeta('twitter:image', campaign.cover_image_url);
     }
     updateMeta('twitter:card', 'summary_large_image');
-    updateMeta('twitter:title', campaign.title);
-    updateMeta('twitter:description', campaign.description || '');
-  }, [campaign]);
+    updateMeta('twitter:title', tTitle);
+    updateMeta('twitter:description', tDesc);
+  }, [campaign, translation]);
 
   if (loadError && !campaign) {
     return (
@@ -1192,12 +1195,19 @@ export default function Campaign() {
             </span>
           )}
         </div>
-        <h1 style={styles.title}>{campaign.title}</h1>
+        <LanguageToggle
+          campaignId={campaign.id}
+          defaultLanguage="en"
+          defaultTitle={campaign.title}
+          defaultDescription={campaign.description || ''}
+          onTranslationChange={setTranslation}
+        />
+        <h1 style={styles.title}>{translation?.title || campaign.title}</h1>
         {campaign.creator_name && <p style={styles.creator}>by {campaign.creator_name}</p>}
         <div
           style={{ ...styles.desc, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
           dangerouslySetInnerHTML={{
-            __html: DOMPurify.sanitize(markdownToHtml(campaign.description)),
+            __html: DOMPurify.sanitize(markdownToHtml(translation?.description || campaign.description)),
           }}
         />
       </div>

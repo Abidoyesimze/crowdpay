@@ -258,6 +258,7 @@ app.use("/api/campaigns", require("./routes/campaignUpdates"));
 app.use("/api/campaigns", require("./routes/campaignComments"));
 app.use("/api/campaigns", require("./routes/campaignFollowers"));
 app.use("/api/campaigns", require("./routes/campaigns"));
+app.use("/api/campaigns", require("./routes/translations"));
 app.use("/api/anchor", require("./routes/anchor"));
 app.use("/api/contributions", require("./routes/contributions"));
 app.use("/api/withdrawals", require("./routes/withdrawals"));

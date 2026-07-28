@@ -550,4 +550,12 @@ export const api = {
     request('POST', `/campaigns/${campaignId}/thank-you`, { message }),
   sendContributionThankYou: (contributionId, message) =>
     request('POST', `/contributions/${contributionId}/thank-you`, { message }),
+
+  // ── Campaign Translations (#602) ──────────────────────────────────
+  getCampaignTranslations: (campaignId) =>
+    request('GET', `/campaigns/${campaignId}/translations`),
+  upsertTranslation: (campaignId, language, title, description) =>
+    request('POST', `/campaigns/${campaignId}/translations`, { language, title, description }),
+  deleteTranslation: (campaignId, language) =>
+    request('DELETE', `/campaigns/${campaignId}/translations/${language}`),
 };
