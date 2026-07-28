@@ -465,6 +465,8 @@ export const api = {
 
   getWithdrawalCapabilities: () => request('GET', '/withdrawals/capabilities'),
   listWithdrawals: (campaignId) => request('GET', `/withdrawals/campaign/${campaignId}`),
+  getContributorWithdrawalHistory: (campaignId, options = {}) =>
+    request('GET', `/withdrawals/campaign/${campaignId}/contributor-history`, null, { query: options }),
   requestWithdrawal: (body) => request('POST', '/withdrawals/request', body),
   approveWithdrawalCreator: (id, body) =>
     request('POST', `/withdrawals/${id}/approve/creator`, body || {}),
