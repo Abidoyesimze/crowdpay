@@ -422,33 +422,25 @@ async function decryptWalletSecretToBuffer(secret, contextInput = {}) {
   }
 
   const envelope = parseEnvelope(secret);
-  if (envelope) {
-    const expectedContext = buildEncryptionContext(contextInput);
-    const envelopeContext = envelope.context || {};
-
-    if (
-      expectedContext.wallet_public_key &&
-      envelopeContext.wallet_public_key !== expectedContext.wallet_public_key
-    ) {
-      throw new Error('Wallet secret context mismatch');
-    }
-
-    if (expectedContext.user_id && envelopeContext.user_id && envelopeContext.user_id !== expectedContext.user_id) {
-      throw new Error('Wallet secret owner mismatch');
-    }
-
-    return decryptWithProvider(envelope);
+  if (!envelope) {
+    throw new Error('Wallet secret has invalid format: encrypted envelope required');
   }
 
-  if (!isLegacyPlaintextWalletSecret(secret)) {
-    throw new Error('Wallet secret has invalid format');
+  const expectedContext = buildEncryptionContext(contextInput);
+  const envelopeContext = envelope.context || {};
+
+  if (
+    expectedContext.wallet_public_key &&
+    envelopeContext.wallet_public_key !== expectedContext.wallet_public_key
+  ) {
+    throw new Error('Wallet secret context mismatch');
   }
 
-  if (isProduction()) {
-    throw new Error('Legacy plaintext wallet secret detected; run npm run rotate-wallet-secrets before production startup');
+  if (expectedContext.user_id && envelopeContext.user_id && envelopeContext.user_id !== expectedContext.user_id) {
+    throw new Error('Wallet secret owner mismatch');
   }
 
-  return Buffer.from(secret, 'utf8');
+  return decryptWithProvider(envelope);
 }
 
 async function withDecryptedWalletSecret(secret, contextInput, fn) {

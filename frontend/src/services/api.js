@@ -422,6 +422,8 @@ export const api = {
     return uploadFormData(`/milestones/${encodeURIComponent(id)}/upload-evidence`, formData);
   },
   getMilestoneEvents: (id) => request('GET', `/milestones/${id}/events`),
+  getMilestoneVotes: (id) => request('GET', `/milestones/${id}/votes`),
+  voteMilestone: (id, body) => request('POST', `/milestones/${id}/votes`, body || {}),
   approveMilestone: (id, body) => request('POST', `/milestones/${id}/release`, body || {}),
   rejectMilestone: (id, body) => request('POST', `/milestones/${id}/reject`, body || {}),
   contribute: (body) => request('POST', '/contributions', body),
@@ -447,6 +449,14 @@ export const api = {
   getContributorDashboard: () => request('GET', '/contributions/dashboard'),
   exportContributionsCsv: () =>
     downloadFile('/contributions/dashboard/export.csv', 'contributions.csv'),
+  getTaxReceipts: () => request('GET', '/contributions/tax-receipts'),
+  downloadTaxReceiptsPdf: () =>
+    downloadFile('/contributions/tax-receipts/download', 'crowdpay-tax-receipts.pdf'),
+  downloadTaxReceiptPdf: (id) =>
+    downloadFile(
+      `/contributions/tax-receipts/${encodeURIComponent(id)}/download`,
+      `crowdpay-tax-receipt-${id}.pdf`
+    ),
 
   getFavorites: () => request('GET', '/users/me/favorites'),
   addFavorite: (campaignId) => request('POST', `/campaigns/${campaignId}/favorite`, {}),
@@ -465,6 +475,8 @@ export const api = {
 
   getWithdrawalCapabilities: () => request('GET', '/withdrawals/capabilities'),
   listWithdrawals: (campaignId) => request('GET', `/withdrawals/campaign/${campaignId}`),
+  getContributorWithdrawalHistory: (campaignId, options = {}) =>
+    request('GET', `/withdrawals/campaign/${campaignId}/contributor-history`, null, { query: options }),
   requestWithdrawal: (body) => request('POST', '/withdrawals/request', body),
   approveWithdrawalCreator: (id, body) =>
     request('POST', `/withdrawals/${id}/approve/creator`, body || {}),
@@ -550,4 +562,29 @@ export const api = {
     request('POST', `/campaigns/${campaignId}/thank-you`, { message }),
   sendContributionThankYou: (contributionId, message) =>
     request('POST', `/contributions/${contributionId}/thank-you`, { message }),
+
+  // ── Contribution Pools (#600) ──────────────────────────────────────
+  listCampaignPools: (campaignId) =>
+    request('GET', `/contribution-pools/campaign/${campaignId}`),
+  listMyPools: () =>
+    request('GET', '/contribution-pools/mine'),
+  getPool: (poolId) =>
+    request('GET', `/contribution-pools/${poolId}`),
+  createPool: (body) =>
+    request('POST', '/contribution-pools', body),
+  joinPool: (poolId, share_amount, display_name) =>
+    request('POST', `/contribution-pools/${poolId}/join`, { share_amount, display_name }),
+  leavePool: (poolId) =>
+    request('POST', `/contribution-pools/${poolId}/leave`),
+  updatePool: (poolId, body) =>
+    request('PATCH', `/contribution-pools/${poolId}`, body),
+  submitPool: (poolId) =>
+    request('POST', `/contribution-pools/${poolId}/submit`),
+  // ── Campaign Translations (#602) ──────────────────────────────────
+  getCampaignTranslations: (campaignId) =>
+    request('GET', `/campaigns/${campaignId}/translations`),
+  upsertTranslation: (campaignId, language, title, description) =>
+    request('POST', `/campaigns/${campaignId}/translations`, { language, title, description }),
+  deleteTranslation: (campaignId, language) =>
+    request('DELETE', `/campaigns/${campaignId}/translations/${language}`),
 };

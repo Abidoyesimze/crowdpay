@@ -22,6 +22,7 @@ const { sendWithdrawalApprovedEmail, sendWithdrawalRejectedEmail } = require('..
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { withDecryptedWalletSecret } = require('../services/walletSecrets');
 const { createNotification } = require('../services/notifications');
+const { notifyContributorFundRelease } = require('../services/fundReleaseNotifications');
 const { parsePagination } = require('../utils/pagination');
 const asyncHandler = require('../utils/asyncHandler');
 
@@ -558,6 +559,17 @@ const platformApproveHandler = async (req, res) => {
           body: `Your withdrawal of ${updatedWithdrawalRow.amount} was approved and submitted on-chain.`,
           link: `/campaigns/${updatedWithdrawalRow.campaign_id}`,
         }).catch(() => {});
+
+        notifyContributorFundRelease({
+          campaignId: updatedWithdrawalRow.campaign_id,
+          campaignTitle: cRows[0].title,
+          amount: updatedWithdrawalRow.amount,
+          asset: cRows[0].asset_type,
+          txHash,
+          usage: 'Creator withdrawal approved by the platform and submitted on-chain.',
+          recipient: updatedWithdrawalRow.destination_key,
+          excludeUserIds: [cRows[0].creator_id],
+        }).catch((err) => logger.error('Contributor withdrawal release notification failed', { error: err.message }));
       }
 
       setImmediate(() => {
@@ -776,6 +788,55 @@ router.get('/campaign/:campaignId', requireAuth, asyncHandler(async (req, res) =
     [req.params.campaignId, limit, offset]
   );
   res.json({ data: rows, total, limit, offset });
+}));
+
+router.get('/campaign/:campaignId/contributor-history', requireAuth, asyncHandler(async (req, res) => {
+  const status = String(req.query.status || 'all').toLowerCase();
+  const sort = String(req.query.sort || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  const { limit, offset } = parsePagination(req.query, { limit: 50, max: 100 });
+
+  const { rows: backed } = await db.query(
+    `SELECT 1
+     FROM contributions c
+     JOIN users u ON u.wallet_public_key = c.sender_public_key
+     WHERE c.campaign_id = $1 AND u.id = $2
+     LIMIT 1`,
+    [req.params.campaignId, req.user.userId]
+  );
+  const ownerAccess = await checkOwnerAccess(req, req.params.campaignId);
+  if (!backed.length && !ownerAccess && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Only contributors can view withdrawal history for this campaign' });
+  }
+
+  const filters = ['wr.campaign_id = $1'];
+  const params = [req.params.campaignId];
+  if (status !== 'all') {
+    params.push(status);
+    filters.push(`wr.status = $${params.length}`);
+  }
+
+  const count = await db.query(
+    `SELECT COUNT(*)::int AS total
+     FROM withdrawal_requests wr
+     WHERE ${filters.join(' AND ')}`,
+    params
+  );
+
+  params.push(limit, offset);
+  const { rows } = await db.query(
+    `SELECT wr.id, wr.campaign_id, wr.amount, wr.destination_key, wr.status,
+            wr.tx_hash, wr.created_at, wr.updated_at, wr.milestone_id,
+            c.asset_type, m.title AS milestone_title
+     FROM withdrawal_requests wr
+     JOIN campaigns c ON c.id = wr.campaign_id
+     LEFT JOIN milestones m ON m.id = wr.milestone_id
+     WHERE ${filters.join(' AND ')}
+     ORDER BY wr.created_at ${sort}
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+
+  res.json({ data: rows, total: count.rows[0]?.total || 0, limit, offset });
 }));
 
 // Get a single withdrawal request (including unsigned_xdr) for authorized users
