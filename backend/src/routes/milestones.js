@@ -131,6 +131,70 @@ async function assertCanSubmitMilestone(milestone, userId, userRole) {
   }
 }
 
+async function getMilestoneVoteContext(milestoneId, userId) {
+  const { rows } = await db.query(
+    `SELECT m.id, m.campaign_id, m.title, m.status,
+            c.creator_id, c.title AS campaign_title,
+            u.wallet_public_key
+     FROM milestones m
+     JOIN campaigns c ON c.id = m.campaign_id
+     JOIN users u ON u.id = $2
+     WHERE m.id = $1`,
+    [milestoneId, userId]
+  );
+  if (!rows.length) return null;
+
+  const milestone = rows[0];
+  const { rows: contributorRows } = await db.query(
+    `SELECT 1
+     FROM contributions
+     WHERE campaign_id = $1 AND sender_public_key = $2
+     LIMIT 1`,
+    [milestone.campaign_id, milestone.wallet_public_key]
+  );
+
+  return {
+    milestone,
+    isContributor: contributorRows.length > 0,
+    isCreator: milestone.creator_id === userId,
+  };
+}
+
+async function getMilestoneVoteTally(milestoneId, userId) {
+  const { rows } = await db.query(
+    `SELECT
+       COUNT(*) FILTER (WHERE vote = 'approve')::int AS approve_count,
+       COUNT(*) FILTER (WHERE vote = 'reject')::int AS reject_count,
+       COUNT(*)::int AS total_votes
+     FROM milestone_votes
+     WHERE milestone_id = $1`,
+    [milestoneId]
+  );
+  const tally = rows[0] || {};
+  const approveCount = Number(tally.approve_count || 0);
+  const rejectCount = Number(tally.reject_count || 0);
+  const totalVotes = Number(tally.total_votes || 0);
+  let userVote = null;
+
+  if (userId) {
+    const { rows: userRows } = await db.query(
+      `SELECT vote, note, created_at, updated_at
+       FROM milestone_votes
+       WHERE milestone_id = $1 AND user_id = $2`,
+      [milestoneId, userId]
+    );
+    userVote = userRows[0] || null;
+  }
+
+  return {
+    approve_count: approveCount,
+    reject_count: rejectCount,
+    total_votes: totalVotes,
+    approval_ratio: totalVotes ? approveCount / totalVotes : null,
+    user_vote: userVote,
+  };
+}
+
 async function logWithdrawalEvent(client, { withdrawalRequestId, actorUserId, action, note, metadata }) {
   await client.query(
     `INSERT INTO withdrawal_approval_events
@@ -456,6 +520,64 @@ router.get('/:id/events', requireAuth, asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+router.get('/:id/votes', requireAuth, asyncHandler(async (req, res) => {
+  const context = await getMilestoneVoteContext(req.params.id, req.user.userId);
+  if (!context) return res.status(404).json({ error: 'Milestone not found' });
+
+  const canPlatform = canPerformPlatformSignature(req.user.userId);
+  if (!context.isContributor && !context.isCreator && !canPlatform && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Not authorized to view milestone votes' });
+  }
+
+  const tally = await getMilestoneVoteTally(req.params.id, req.user.userId);
+  res.json({
+    milestone_id: req.params.id,
+    ...tally,
+  });
+}));
+
+router.post('/:id/votes', requireAuth, asyncHandler(async (req, res) => {
+  const vote = String(req.body?.vote || '').trim().toLowerCase();
+  const note = String(req.body?.note || '').trim() || null;
+  if (!['approve', 'reject'].includes(vote)) {
+    return res.status(400).json({ error: 'vote must be approve or reject' });
+  }
+
+  const context = await getMilestoneVoteContext(req.params.id, req.user.userId);
+  if (!context) return res.status(404).json({ error: 'Milestone not found' });
+  if (!context.isContributor) {
+    return res.status(403).json({ error: 'Only contributors can vote on milestone approval' });
+  }
+  if (context.isCreator) {
+    return res.status(403).json({ error: 'Campaign creators cannot vote on their own milestone approval' });
+  }
+  if (context.milestone.status !== 'pending_review') {
+    return res.status(409).json({ error: 'Milestone voting is only open while evidence is awaiting review' });
+  }
+
+  await db.query(
+    `INSERT INTO milestone_votes (milestone_id, user_id, vote, note)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (milestone_id, user_id)
+     DO UPDATE SET vote = EXCLUDED.vote, note = EXCLUDED.note, updated_at = NOW()`,
+    [req.params.id, req.user.userId, vote, note]
+  );
+
+  await logMilestoneEvent(null, {
+    milestoneId: req.params.id,
+    actorUserId: req.user.userId,
+    action: 'contributor_voted',
+    note,
+    metadata: { vote },
+  });
+
+  const tally = await getMilestoneVoteTally(req.params.id, req.user.userId);
+  res.json({
+    milestone_id: req.params.id,
+    ...tally,
+  });
+}));
+
 router.post('/:id/reject', requireAuth, async (req, res) => {
   if (!canPerformPlatformSignature(req.user.userId)) {
     return res.status(403).json({ error: 'Only the designated platform approver can reject milestones' });
@@ -558,6 +680,17 @@ const approveMilestoneReleaseHandler = async (req, res) => {
   }
   if (milestone.status === 'released') {
     return res.status(409).json({ error: 'Milestone already released' });
+  }
+
+  const contributorTally = await getMilestoneVoteTally(milestone.id);
+  if (
+    contributorTally.total_votes > 0 &&
+    contributorTally.approve_count <= contributorTally.reject_count
+  ) {
+    return res.status(409).json({
+      error: 'Contributor vote threshold has not been met for this milestone release',
+      contributor_votes: contributorTally,
+    });
   }
 
   const releaseAmount = toReleaseAmount(milestone.raised_amount, milestone.release_percentage);
