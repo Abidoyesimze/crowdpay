@@ -48,6 +48,8 @@ const swaggerUi = require("swagger-ui-express");
 const swaggerJsdoc = require("swagger-jsdoc");
 const rateLimit = require("express-rate-limit");
 
+const { csrfProtection } = require('./middleware/csrf');
+
 const app = express();
 
 const connectSrcDirectives = ["'self'"];
@@ -93,6 +95,10 @@ app.post(
 );
 app.use(express.json({ limit: "50kb" }));
 app.use(cookieParser());
+
+// CSRF protection: validates X-CSRF-Token header on state-changing requests
+// and ensures a CSRF cookie exists on all requests.
+app.use(csrfProtection);
 app.use(
   Sentry.sentryRequestMiddleware
     ? Sentry.sentryRequestMiddleware()

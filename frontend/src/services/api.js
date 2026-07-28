@@ -3,6 +3,12 @@ const BASE = `${API_BASE_URL}/api`;
 let refreshPromise = null;
 const retryQueue = [];
 
+// --- CSRF double-submit cookie helpers ---
+function getCsrfToken() {
+  const match = document.cookie.match(/(?:^|;\s*)cp_csrf=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 const IDEMPOTENT_METHODS = new Set(['GET']);
 
 function isNetworkError(err) {
@@ -34,14 +40,24 @@ const TIMEOUTS = {
 };
 
 function jsonHeaders() {
-  return {
+  const headers = {
     'Content-Type': 'application/json',
   };
+  const csrf = getCsrfToken();
+  if (csrf) headers['X-CSRF-Token'] = csrf;
+  return headers;
 }
 
 async function request(method, path, body, options = {}) {
   const { query, _retry = false } = options || {};
   let url = `${BASE}${path}`;
+
+  // Ensure CSRF cookie exists before state-changing requests
+  if (method !== 'GET' && method !== 'HEAD' && !getCsrfToken()) {
+    try {
+      await fetch(`${BASE}/auth/csrf-token`, { credentials: 'include' });
+    } catch { /* best-effort */ }
+  }
 
   if (query && Object.keys(query).length) {
     const params = new URLSearchParams();
@@ -134,12 +150,24 @@ async function request(method, path, body, options = {}) {
 async function uploadFormData(path, formData) {
   const url = `${BASE}${path}`;
 
+  // Ensure CSRF cookie exists before state-changing requests
+  if (!getCsrfToken()) {
+    try {
+      await fetch(`${BASE}/auth/csrf-token`, { credentials: 'include' });
+    } catch { /* best-effort */ }
+  }
+
+  const csrfHeaders = {};
+  const csrf = getCsrfToken();
+  if (csrf) csrfHeaders['X-CSRF-Token'] = csrf;
+
   let res;
   try {
     res = await fetch(url, {
       method: 'POST',
       body: formData,
       credentials: 'include',
+      headers: csrfHeaders,
     });
   } catch (err) {
     if (isNetworkError(err)) {
@@ -185,9 +213,14 @@ async function refresh() {
   }
 
   refreshPromise = (async () => {
+    const refreshHeaders = {};
+    const csrf = getCsrfToken();
+    if (csrf) refreshHeaders['X-CSRF-Token'] = csrf;
+
     const res = await fetch(`${BASE}/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
+      headers: refreshHeaders,
     });
 
     if (!res.ok) {
@@ -283,9 +316,14 @@ async function downloadFile(path, fallbackFilename, options = {}) {
 }
 
 async function logout() {
+  const logoutHeaders = {};
+  const csrf = getCsrfToken();
+  if (csrf) logoutHeaders['X-CSRF-Token'] = csrf;
+
   const res = await fetch(`${BASE}/auth/logout`, {
     method: 'POST',
     credentials: 'include',
+    headers: logoutHeaders,
   });
 
   if (!res.ok) {
