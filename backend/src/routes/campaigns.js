@@ -44,6 +44,10 @@ const {
   getCampaignsValidation,
   validateRequest,
 } = require('../middleware/validation');
+const { TtlCache } = require('../utils/TtlCache');
+
+// Shared cache for the static-ish discovery endpoints
+const campaignsCache = new TtlCache(60_000);
 const asyncHandler = require('../utils/asyncHandler');
 const {
   createCampaignInvite,
@@ -192,7 +196,80 @@ function normalizeMilestonesInput(input) {
 }
 
 // List campaigns with optional search, filtering, sorting, and pagination
-router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req, res) => {
+
+/**
+ * GET /api/campaigns/featured
+ * Returns up to 6 active campaigns ranked by contribution count.
+ * Cached for 60 s with Cache-Control header so CDNs / proxies can also cache.
+ */
+router.get('/featured', async (req, res) => {
+  try {
+    const rows = await campaignsCache.wrap('featured', async () => {
+      const { rows: featured } = await db.query(
+        `SELECT
+           c.id, c.title, c.description, c.target_amount, c.raised_amount,
+           c.asset_type, c.deadline, c.created_at, c.cover_image_url,
+           u.name AS creator_name,
+           (
+             SELECT COUNT(DISTINCT sender_public_key)
+             FROM contributions
+             WHERE campaign_id = c.id
+           )::int AS backer_count,
+           ROUND(
+             (c.raised_amount / NULLIF(c.target_amount, 0)) * 100, 1
+           ) AS progress_pct
+         FROM campaigns c
+         JOIN users u ON u.id = c.creator_id
+         WHERE c.status = 'active'
+           AND c.deleted_at IS NULL
+           AND c.deadline > NOW()
+         ORDER BY backer_count DESC, c.raised_amount DESC
+         LIMIT 6`
+      );
+      return featured;
+    });
+
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
+    res.json(rows);
+  } catch (err) {
+    logger.error('Error fetching featured campaigns', { error: err.message });
+    res.status(500).json({ error: 'Failed to fetch featured campaigns' });
+  }
+});
+
+/**
+ * GET /api/campaigns/categories
+ * Returns campaigns grouped by asset_type with counts.
+ * This data rarely changes — cached for 5 minutes.
+ */
+router.get('/categories', async (req, res) => {
+  try {
+    const rows = await campaignsCache.wrap('categories', async () => {
+      const { rows: cats } = await db.query(
+        `SELECT
+           asset_type                       AS category,
+           COUNT(*)::int                    AS total_campaigns,
+           COUNT(*) FILTER (WHERE status = 'active')::int AS active_campaigns,
+           COALESCE(SUM(raised_amount), 0)  AS total_raised
+         FROM campaigns
+         WHERE deleted_at IS NULL
+         GROUP BY asset_type
+         ORDER BY active_campaigns DESC`,
+        [],
+        { ttlMs: 5 * 60_000 }
+      );
+      return cats;
+    }, 5 * 60_000);
+
+    res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
+    res.json(rows);
+  } catch (err) {
+    logger.error('Error fetching campaign categories', { error: err.message });
+    res.status(500).json({ error: 'Failed to fetch categories' });
+  }
+});
+
+router.get('/', getCampaignsValidation, validateRequest, async (req, res) => {
   /**
    * @openapi
    * /api/campaigns:
