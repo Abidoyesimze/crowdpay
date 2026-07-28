@@ -11,6 +11,7 @@ import DisputeModal from '../components/DisputeModal';
 import TransactionHistory from '../components/TransactionHistory';
 import WithdrawalHistoryTimeline from '../components/WithdrawalHistoryTimeline';
 import MilestoneTracker from '../components/MilestoneTracker';
+import MilestoneVotePanel from '../components/MilestoneVotePanel';
 import WithdrawalsSection from '../components/WithdrawalsSection';
 import CampaignDetailSkeleton from '../components/skeletons/CampaignDetailSkeleton';
 import ContributionListSkeleton from '../components/skeletons/ContributionListSkeleton';
@@ -1823,6 +1824,7 @@ export default function Campaign() {
       <WithdrawalHistoryTimeline campaignId={campaign.id} token={token} />
 
       <MilestoneTracker milestones={milestones} assetType={campaign.asset_type} />
+      <MilestoneVotePanel milestones={milestones} />
       {canManageTeam && (
         <div style={{ marginBottom: '2rem' }} data-no-print>
           <div

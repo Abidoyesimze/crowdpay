@@ -422,6 +422,8 @@ export const api = {
     return uploadFormData(`/milestones/${encodeURIComponent(id)}/upload-evidence`, formData);
   },
   getMilestoneEvents: (id) => request('GET', `/milestones/${id}/events`),
+  getMilestoneVotes: (id) => request('GET', `/milestones/${id}/votes`),
+  voteMilestone: (id, body) => request('POST', `/milestones/${id}/votes`, body || {}),
   approveMilestone: (id, body) => request('POST', `/milestones/${id}/release`, body || {}),
   rejectMilestone: (id, body) => request('POST', `/milestones/${id}/reject`, body || {}),
   contribute: (body) => request('POST', '/contributions', body),
