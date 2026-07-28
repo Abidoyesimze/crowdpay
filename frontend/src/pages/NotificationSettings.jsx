@@ -13,6 +13,7 @@ const CHANNELS = [
 const EVENT_TYPES = [
   { id: 'campaign_update', label: 'Campaign updates', description: 'New updates posted on campaigns you support' },
   { id: 'milestone_completion', label: 'Milestone completions', description: 'Milestones reached or approved' },
+  { id: 'funds_released', label: 'Fund release transparency', description: 'When backed campaign funds are released with usage details' },
   { id: 'withdrawal', label: 'Withdrawal notifications', description: 'Withdrawal requests, approvals, and rejections' },
   { id: 'dispute', label: 'Dispute notifications', description: 'Disputes opened, updated, or resolved' },
   { id: 'referral_reward', label: 'Referral rewards', description: 'When a referral contribution is confirmed' },
