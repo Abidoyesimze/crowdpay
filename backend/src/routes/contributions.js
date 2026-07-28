@@ -33,6 +33,7 @@ const {
   getContributorDashboard,
   getContributorDashboardCsv,
 } = require('../services/userDashboardService');
+const { buildTaxReceiptPdf } = require('../services/taxReceiptPdf');
 const { triggerRefund } = require('../services/sorobanService');
 const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { assertUserKycVerified } = require('../services/kycService');
@@ -144,6 +145,39 @@ function validateSubmittedContributionXdr({ signedXdr, unsignedXdr, senderPublic
   }
 }
 
+async function getTaxReceiptRows(userId, contributionId = null) {
+  const params = [userId];
+  let contributionFilter = '';
+  if (contributionId) {
+    params.push(contributionId);
+    contributionFilter = 'AND ctr.id = $2';
+  }
+
+  const { rows } = await db.query(
+    `SELECT
+       ctr.id, ctr.amount, ctr.asset, ctr.tx_hash, ctr.created_at,
+       ctr.sender_public_key,
+       c.id AS campaign_id, c.title AS campaign_title, c.status AS campaign_status,
+       creator.name AS campaign_creator_name,
+       u.name AS contributor_name, u.email AS contributor_email
+     FROM users u
+     JOIN contributions ctr ON ctr.sender_public_key = u.wallet_public_key
+     JOIN campaigns c ON c.id = ctr.campaign_id
+     LEFT JOIN users creator ON creator.id = c.creator_id
+     WHERE u.id = $1 ${contributionFilter}
+     ORDER BY ctr.created_at DESC`,
+    params
+  );
+  return rows;
+}
+
+function taxReceiptFilename(receipts, fallback = 'crowdpay-tax-receipts.pdf') {
+  if (receipts.length === 1) {
+    return `crowdpay-tax-receipt-${receipts[0].id}.pdf`;
+  }
+  return fallback;
+}
+
 router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
   const rows = await listUserContributions(req.user.userId);
   if (rows === null) return res.status(404).json({ error: 'User not found' });
@@ -162,6 +196,42 @@ router.get('/dashboard/export.csv', requireAuth, asyncHandler(async (req, res) =
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="contributions.csv"');
   res.send(csv);
+}));
+
+router.get('/tax-receipts', requireAuth, asyncHandler(async (req, res) => {
+  const rows = await getTaxReceiptRows(req.user.userId);
+  res.json({
+    receipts: rows.map((row) => ({
+      id: row.id,
+      amount: row.amount,
+      asset: row.asset,
+      tx_hash: row.tx_hash,
+      created_at: row.created_at,
+      campaign_id: row.campaign_id,
+      campaign_title: row.campaign_title,
+      campaign_status: row.campaign_status,
+    })),
+  });
+}));
+
+router.get('/tax-receipts/download', requireAuth, asyncHandler(async (req, res) => {
+  const rows = await getTaxReceiptRows(req.user.userId);
+  if (!rows.length) return res.status(404).json({ error: 'No contribution receipts found' });
+
+  const pdf = buildTaxReceiptPdf(rows);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${taxReceiptFilename(rows)}"`);
+  res.send(pdf);
+}));
+
+router.get('/tax-receipts/:id/download', requireAuth, asyncHandler(async (req, res) => {
+  const rows = await getTaxReceiptRows(req.user.userId, req.params.id);
+  if (!rows.length) return res.status(404).json({ error: 'Tax receipt not found' });
+
+  const pdf = buildTaxReceiptPdf(rows);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${taxReceiptFilename(rows)}"`);
+  res.send(pdf);
 }));
 
 router.get('/campaign/:campaignId', asyncHandler(async (req, res) => {

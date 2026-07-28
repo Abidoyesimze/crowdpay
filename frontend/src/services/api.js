@@ -449,6 +449,14 @@ export const api = {
   getContributorDashboard: () => request('GET', '/contributions/dashboard'),
   exportContributionsCsv: () =>
     downloadFile('/contributions/dashboard/export.csv', 'contributions.csv'),
+  getTaxReceipts: () => request('GET', '/contributions/tax-receipts'),
+  downloadTaxReceiptsPdf: () =>
+    downloadFile('/contributions/tax-receipts/download', 'crowdpay-tax-receipts.pdf'),
+  downloadTaxReceiptPdf: (id) =>
+    downloadFile(
+      `/contributions/tax-receipts/${encodeURIComponent(id)}/download`,
+      `crowdpay-tax-receipt-${id}.pdf`
+    ),
 
   getFavorites: () => request('GET', '/users/me/favorites'),
   addFavorite: (campaignId) => request('POST', `/campaigns/${campaignId}/favorite`, {}),
