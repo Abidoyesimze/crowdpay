@@ -23,6 +23,7 @@ const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhook
 const { invokeContract, nativeToScVal, releaseMilestone } = require('../services/sorobanService');
 const { uploadMilestoneEvidence } = require('../services/storage');
 const { createNotification } = require('../services/notifications');
+const { notifyFollowers } = require('../services/campaignFollowService');
 const { evaluateCampaign } = require('../services/fraudService');
 const {
   sendMilestoneReleasedCreatorEmail,
@@ -375,6 +376,18 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
         })
       )
       .catch((err) => logger.error('Milestone evidence admin notify failed', { error: err.message }));
+
+    notifyFollowers(
+      milestone.campaign_id,
+      'notify_milestones',
+      {
+        type: 'milestone_evidence_submitted',
+        title: `${milestone.campaign_title}: evidence submitted for "${milestone.title}"`,
+        body: 'The milestone is awaiting platform review.',
+        link: `/campaigns/${milestone.campaign_id}`,
+      },
+      req.user.userId
+    ).catch((err) => logger.error('Milestone follower notify failed', { error: err.message }));
   });
 
   evaluateCampaign(milestone.campaign_id).catch(err => logger.error('Fraud evaluate failed in milestone submit', { error: err.message }));
@@ -766,8 +779,20 @@ const approveMilestoneReleaseHandler = async (req, res) => {
          WHERE c.campaign_id = $1 AND u.email IS NOT NULL
          ORDER BY u.id, c.created_at ASC`,
         [milestone.campaign_id]
-      ).then(({ rows: contributors }) =>
-        Promise.all(
+      ).then(({ rows: contributors }) => {
+        notifyFollowers(
+          milestone.campaign_id,
+          'notify_milestones',
+          {
+            type: 'milestone_released',
+            title: `${milestone.campaign_title}: "${milestone.title}" released`,
+            body: `${releaseAmount} ${milestone.asset_type} has been released to the creator.`,
+            link: `/campaigns/${milestone.campaign_id}`,
+          },
+          [req.user.userId, ...contributors.map((contributor) => contributor.id)]
+        ).catch((e) => logger.error('Milestone follower notify failed', { error: e.message }));
+
+        return Promise.all(
           contributors.map((contributor) =>
             sendMilestoneReleasedContributorEmail({
               to: contributor.email,
@@ -778,8 +803,8 @@ const approveMilestoneReleaseHandler = async (req, res) => {
               milestoneTitle: milestone.title,
             })
           )
-        )
-      ).catch((e) => logger.error('Milestone contributor email failed', { error: e.message }));
+        );
+      }).catch((e) => logger.error('Milestone contributor email failed', { error: e.message }));
     });
 
     evaluateCampaign(milestone.campaign_id).catch(err => logger.error('Fraud evaluate failed in milestone approve', { error: err.message }));
