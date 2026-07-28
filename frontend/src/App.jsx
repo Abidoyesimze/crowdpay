@@ -23,6 +23,7 @@ const ResetPassword = lazy(() => import('./pages/ResetPassword'));
 const AdminDashboard = lazy(() => import('./pages/AdminDashboard'));
 const AcceptInvite = lazy(() => import('./pages/AcceptInvite'));
 const Developer = lazy(() => import('./pages/Developer'));
+const CampaignCompare = lazy(() => import('./components/CampaignCompare'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Profile = lazy(() => import('./pages/Profile'));
 const NotificationSettings = lazy(() => import('./pages/NotificationSettings'));
@@ -30,6 +31,7 @@ const HowItWorks = lazy(() => import('./pages/HowItWorks'));
 const Pricing = lazy(() => import('./pages/Pricing'));
 const About = lazy(() => import('./pages/About'));
 const Resources = lazy(() => import('./pages/Resources'));
+const Leaderboard = lazy(() => import('./pages/Leaderboard'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 
 function PrivateRoute({ children }) {
@@ -56,10 +58,12 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<Landing />} />
                 <Route path="/discover" element={<Home />} />
+                <Route path="/compare" element={<CampaignCompare />} />
                 <Route path="/how-it-works" element={<HowItWorks />} />
                 <Route path="/pricing" element={<Pricing />} />
                 <Route path="/about" element={<About />} />
                 <Route path="/resources" element={<Resources />} />
+                <Route path="/leaderboard" element={<Leaderboard />} />
                 <Route
                   path="/campaigns/new"
                   element={

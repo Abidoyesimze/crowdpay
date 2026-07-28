@@ -10,7 +10,7 @@
  *   NODE_ENV=test node --test src/services/sorobanService.test.js
  */
 
-const { describe, it, beforeEach, afterEach } = require('node:test');
+const { describe, it, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 // ---------------------------------------------------------------------------
@@ -236,7 +236,7 @@ describe('Soroban contract integration scenario — campaign milestone release',
     assert.equal(__mock.getCalls().length, 0);
   });
 });
-const test = require('node:test');
+
 const proxyquire = require('proxyquire').noCallThru();
 
 function buildService() {

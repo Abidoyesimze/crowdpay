@@ -43,6 +43,20 @@ describe('embed-widget script', () => {
     expect(document.querySelector('iframe').src).toContain('theme=light');
   });
 
+  it('passes the requested widget size through to the iframe', () => {
+    createScript({ 'data-campaign': '7', 'data-size': 'large' });
+    initCrowdPayEmbed(script);
+    const iframe = document.querySelector('iframe');
+    expect(iframe.src).toContain('size=large');
+    expect(iframe.style.minHeight).toBe('300px');
+  });
+
+  it('falls back to the medium size for an unknown data-size', () => {
+    createScript({ 'data-campaign': '7', 'data-size': 'enormous' });
+    initCrowdPayEmbed(script);
+    expect(document.querySelector('iframe').src).toContain('size=medium');
+  });
+
   it('adds sandbox and payment allow', () => {
     createScript({ 'data-campaign': '7' });
     initCrowdPayEmbed(script);

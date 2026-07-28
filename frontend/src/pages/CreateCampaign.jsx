@@ -8,6 +8,9 @@ import { useAuth } from '../context/AuthContext';
 import OnboardingCallout from '../components/OnboardingCallout';
 import KycPrompt from '../components/KycPrompt';
 import { isCreatorOnboardingVisible, dismissCreatorOnboarding } from '../lib/onboarding';
+import { saveDraft, loadDraft, clearDraft, hasDraftContent } from '../lib/campaignDraft';
+
+const DRAFT_SAVE_DEBOUNCE_MS = 800;
 
 const ASSETS = [
   {
@@ -77,6 +80,61 @@ export default function CreateCampaign() {
   const [duplicateWarning, setDuplicateWarning] = useState(null);
   const today = new Date().toISOString().split('T')[0];
   const [showCreatorTips, setShowCreatorTips] = useState(isCreatorOnboardingVisible);
+  // A draft found in storage on load. Auto-save stays paused until the creator
+  // restores or discards it, so an untouched form cannot overwrite it.
+  const [pendingDraft, setPendingDraft] = useState(() =>
+    location.state?.prefill ? null : loadDraft()
+  );
+  const [draftSavedAt, setDraftSavedAt] = useState(null);
+  const [draftSaving, setDraftSaving] = useState(false);
+
+  useEffect(() => {
+    if (pendingDraft) return undefined;
+    if (!hasDraftContent(form)) return undefined;
+
+    setDraftSaving(true);
+    const timer = setTimeout(() => {
+      const draft = saveDraft(form, step);
+      setDraftSaving(false);
+      if (draft) setDraftSavedAt(draft.saved_at);
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+
+    return () => clearTimeout(timer);
+  }, [form, step, pendingDraft]);
+
+  function restoreDraft() {
+    setForm(pendingDraft.form);
+    setStep(pendingDraft.step || 1);
+    setDraftSavedAt(pendingDraft.saved_at);
+    setPendingDraft(null);
+  }
+
+  function discardDraft() {
+    clearDraft();
+    setPendingDraft(null);
+    setDraftSavedAt(null);
+  }
+
+  function discardCurrentDraft() {
+    clearDraft();
+    setDraftSavedAt(null);
+    setForm({
+      title: '',
+      description: '',
+      target_amount: '',
+      asset_type: 'USDC',
+      deadline: '',
+      category: '',
+      min_contribution: '',
+      max_contribution: '',
+      max_per_user: '',
+      show_backer_amounts: true,
+      milestones: [],
+      reward_tiers: [],
+    });
+    setStep(1);
+    setError('');
+  }
 
   useEffect(() => {
     if (ready && !user) {
@@ -360,6 +418,8 @@ export default function CreateCampaign() {
           : undefined,
       });
 
+      clearDraft();
+
       let coverUploadError = '';
       if (coverImageFile) {
         try {
@@ -440,13 +500,13 @@ export default function CreateCampaign() {
           }}
         >
           <li aria-current={step === 1 ? 'step' : undefined}>
-            <span style={{ color: step === 1 ? '#7c3aed' : '#999' }}>
+            <span style={{ color: step === 1 ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>
               {t('createCampaign.steps.goalAsset')}
             </span>
           </li>
           <li aria-hidden="true">→</li>
           <li aria-current={step === 2 ? 'step' : undefined}>
-            <span style={{ color: step === 2 ? '#7c3aed' : '#999' }}>
+            <span style={{ color: step === 2 ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>
               {t('createCampaign.steps.detailsLaunch')}
             </span>
           </li>
@@ -481,6 +541,62 @@ export default function CreateCampaign() {
             <li>{t('createCampaign.tip3')}</li>
           </ul>
         </OnboardingCallout>
+      )}
+
+      {pendingDraft && (
+        <div className="alert alert--info" style={{ marginBottom: '1.25rem' }} role="status">
+          <p>
+            You have an unsaved draft from{' '}
+            <strong>{new Date(pendingDraft.saved_at).toLocaleString()}</strong>.
+          </p>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.65rem' }}>
+            <button type="button" className="btn-primary" onClick={restoreDraft}>
+              Restore draft
+            </button>
+            <button type="button" className="btn-secondary" onClick={discardDraft}>
+              Discard draft
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!pendingDraft && (draftSaving || draftSavedAt) && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.65rem',
+            flexWrap: 'wrap',
+            marginBottom: '1rem',
+            fontSize: '0.8rem',
+            color: 'var(--color-text-hint)',
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          <span>
+            {draftSaving
+              ? 'Saving draft…'
+              : `Draft saved ${new Date(draftSavedAt).toLocaleTimeString()}`}
+          </span>
+          {draftSavedAt && (
+            <button
+              type="button"
+              onClick={discardCurrentDraft}
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                color: 'var(--color-accent)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontSize: '0.8rem',
+              }}
+            >
+              Discard draft
+            </button>
+          )}
+        </div>
       )}
 
       <form onSubmit={handleSubmit}>
@@ -650,8 +766,8 @@ export default function CreateCampaign() {
                 flexWrap: 'wrap',
                 alignItems: 'center',
                 gap: '0.75rem',
-                background: '#f8fafc',
-                border: '1px solid #d1d5db',
+                background: 'var(--color-surface)',
+                border: '1px solid var(--color-border-lightest)',
                 borderRadius: '12px',
                 padding: '1rem',
                 marginBottom: '1rem',
@@ -712,10 +828,10 @@ export default function CreateCampaign() {
                 onDragLeave={() => setIsDragOverCover(false)}
                 onDrop={handleCoverImageDrop}
                 style={{
-                  border: `2px dashed ${isDragOverCover ? '#7c3aed' : '#d4d4d8'}`,
+                  border: `2px dashed ${isDragOverCover ? 'var(--color-accent)' : 'var(--color-border-lightest)'}`,
                   borderRadius: '12px',
                   padding: '0.9rem',
-                  background: isDragOverCover ? '#f5f3ff' : '#fafafa',
+                  background: isDragOverCover ? 'var(--color-accent-lightest)' : 'var(--color-surface)',
                 }}
               >
                 <input
@@ -728,7 +844,7 @@ export default function CreateCampaign() {
                   style={{
                     marginTop: '0.45rem',
                     marginBottom: 0,
-                    color: '#666',
+                    color: 'var(--color-text-hint)',
                     fontSize: '0.8rem',
                   }}
                 >

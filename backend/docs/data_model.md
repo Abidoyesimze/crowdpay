@@ -352,6 +352,21 @@ The `contribution_pools` and `pool_members` tables enable group contributions wh
 4. When the pool reaches its target, the leader submits it.
 5. The backend records the pooled contribution as a single transaction from the leader,
    with each member's share tracked via `pool_id` and `pool_share_amount`.
+## Campaign Translations (#602)
+
+The `campaign_translations` table allows creators to provide campaign descriptions in multiple languages.
+
+| Column       | Type            | Description                              |
+|-------------|----------------|------------------------------------------|
+| id          | UUID (PK)      | Unique translation identifier            |
+| campaign_id | UUID (FK)      | Reference to campaigns (CASCADE)         |
+| language    | TEXT           | Language code (e.g. es, fr, ja)          |
+| title       | TEXT           | Translated campaign title (max 255)      |
+| description | TEXT           | Translated campaign description          |
+| created_at  | TIMESTAMPTZ    | Creation timestamp                        |
+| updated_at  | TIMESTAMPTZ    | Last update timestamp                     |
+
+**Unique constraint:** `(campaign_id, language)` — one translation per language per campaign.
 
 ## Tables Not Found in Reviewed Migrations
 

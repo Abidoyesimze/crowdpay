@@ -5,6 +5,8 @@ const { requireAuth } = require('../middleware/auth');
 const { isKycRequiredForCampaigns } = require('../services/kycProvider');
 const { startKycForUser } = require('../services/kycService');
 const { listCreatorCampaigns, listUserContributions } = require('../services/userDashboardService');
+const { listFollowedCampaigns } = require('../services/campaignFollowService');
+const { evaluateBadges, getLeaderboard } = require('../services/badgeService');
 const { ensureCustodialAccountFundedAndTrusted } = require('../services/stellarService');
 const { withDecryptedWalletSecret } = require('../services/walletSecrets');
 const { sendWalletFundingFailedEmail } = require('../services/emailService');
@@ -180,6 +182,23 @@ router.get('/me/favorites', requireAuth, asyncHandler(async (req, res) => {
     [req.user.userId]
   );
   res.json(rows);
+}));
+
+// Public contributor leaderboard (#597). Declared before /me routes so the
+// literal path is not shadowed by a parameterised one.
+router.get('/leaderboard', asyncHandler(async (req, res) => {
+  const leaderboard = await getLeaderboard({ limit: req.query.limit });
+  res.json(leaderboard);
+}));
+
+router.get('/me/badges', requireAuth, asyncHandler(async (req, res) => {
+  const badges = await evaluateBadges(req.user.userId);
+  res.json(badges);
+}));
+
+router.get('/me/following', requireAuth, asyncHandler(async (req, res) => {
+  const campaigns = await listFollowedCampaigns(req.user.userId);
+  res.json(campaigns);
 }));
 
 router.get('/me/notification-preferences', requireAuth, asyncHandler(async (req, res) => {
