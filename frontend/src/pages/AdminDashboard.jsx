@@ -1006,9 +1006,9 @@ function MilestonesQueue() {
                   fontSize: '0.75rem',
                   padding: '0.35rem 0.8rem',
                   borderRadius: '6px',
-                  border: '1px solid #86efac',
-                  background: '#dcfce7',
-                  color: '#166534',
+                  border: '1px solid var(--color-success-border)',
+                  background: 'var(--color-success-bg)',
+                  color: 'var(--color-success-text)',
                   cursor: 'pointer',
                 }}
               >
@@ -1146,7 +1146,7 @@ function CampaignsQueue() {
                     padding: '0.25rem 0.7rem',
                     borderRadius: '6px',
                     cursor: 'pointer',
-                    background: '#10b981',
+                    background: 'var(--color-teal)',
                     color: '#fff',
                     border: 'none',
                   }}
@@ -1320,7 +1320,7 @@ function FraudQueue() {
                       padding: '0.35rem 0.8rem',
                       borderRadius: '6px',
                       cursor: 'pointer',
-                      background: '#10b981',
+                      background: 'var(--color-teal)',
                       color: '#fff',
                       border: 'none',
                     }}
@@ -1384,7 +1384,7 @@ export default function AdminDashboard() {
               ...badgeStyle,
               cursor: 'pointer',
               background: tab === t.id ? 'var(--color-accent)' : 'var(--color-accent-soft)',
-              color: tab === t.id ? '#fff' : 'var(--color-accent)',
+              color: tab === t.id ? 'var(--color-bg)' : 'var(--color-accent)',
             }}
           >
             {t.label}

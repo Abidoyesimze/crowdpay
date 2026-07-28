@@ -5,11 +5,11 @@ import VerificationBadge from './VerificationBadge';
 import CampaignStatusBadge from './CampaignStatusBadge';
 
 function progressColor(pct, status) {
-  if (status === 'funded' || pct >= 100) return '#10b981';
+  if (status === 'funded' || pct >= 100) return 'var(--color-teal)';
   if (status === 'closed' || status === 'withdrawn' || status === 'refunded' || status === 'failed')
-    return '#6b7280';
-  if (pct >= 75) return '#4f83f1';
-  return '#2563eb';
+    return 'var(--color-text-hint)';
+  if (pct >= 75) return 'var(--color-accent-light)';
+  return 'var(--color-accent)';
 }
 
 function daysLeft(deadline) {
@@ -178,7 +178,7 @@ const styles = {
     display: 'block',
   },
   placeholder: {
-    background: 'linear-gradient(135deg, #e0e7ff 0%, #ccfbf1 100%)',
+    background: 'linear-gradient(135deg, var(--color-accent-lighter) 0%, var(--color-teal-light) 100%)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',

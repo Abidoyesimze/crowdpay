@@ -625,7 +625,7 @@ export default function Dashboard() {
               fontWeight: 600,
               fontSize: '0.9rem',
               background: activeTab === tab.id ? 'var(--color-accent)' : 'transparent',
-              color: activeTab === tab.id ? '#fff' : 'var(--color-text-secondary)',
+              color: activeTab === tab.id ? 'var(--color-bg)' : 'var(--color-text-secondary)',
             }}
           >
             {tab.label ? tab.label : t(tab.labelKey)}
