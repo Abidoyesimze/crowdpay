@@ -9,6 +9,7 @@ import ContributeModal from '../components/ContributeModal';
 import RelativeTime from '../components/RelativeTime';
 import DisputeModal from '../components/DisputeModal';
 import TransactionHistory from '../components/TransactionHistory';
+import WithdrawalHistoryTimeline from '../components/WithdrawalHistoryTimeline';
 import MilestoneTracker from '../components/MilestoneTracker';
 import WithdrawalsSection from '../components/WithdrawalsSection';
 import CampaignDetailSkeleton from '../components/skeletons/CampaignDetailSkeleton';
@@ -1818,6 +1819,8 @@ export default function Campaign() {
         campaignId={campaign.id}
         isCreator={!!(user?.id && campaign.creator_id === user.id)}
       />
+
+      <WithdrawalHistoryTimeline campaignId={campaign.id} token={token} />
 
       <MilestoneTracker milestones={milestones} assetType={campaign.asset_type} />
       {canManageTeam && (
