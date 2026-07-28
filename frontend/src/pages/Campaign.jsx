@@ -21,6 +21,7 @@ import { getNetwork, signTransaction } from '@stellar/freighter-api';
 import { isConnected, getPublicKey } from '@stellar/freighter-api';
 import BackerInsightsCard from '../components/BackerInsightsCard';
 import CampaignComments from '../components/CampaignComments';
+import FollowCampaignButton from '../components/FollowCampaignButton';
 import { addRecentlyViewed } from '../lib/recentlyViewed';
 
 
@@ -1171,6 +1172,7 @@ export default function Campaign() {
           <CampaignStatusBadge status={campaign.status} />
           <VerificationBadge status={campaign.creator_kyc_status} />
           {user && <FavoriteToggle campaignId={campaign.id} />}
+          {user && <FollowCampaignButton campaignId={campaign.id} />}
           {campaign.contract_address && (
             <span
               title="This campaign is backed by a Soroban smart contract"

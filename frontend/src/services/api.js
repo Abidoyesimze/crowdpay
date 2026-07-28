@@ -452,6 +452,17 @@ export const api = {
   addFavorite: (campaignId) => request('POST', `/campaigns/${campaignId}/favorite`, {}),
   removeFavorite: (campaignId) => request('DELETE', `/campaigns/${campaignId}/favorite`),
 
+  getCampaignFollow: (campaignId) => request('GET', `/campaigns/${campaignId}/follow`),
+  followCampaign: (campaignId, preferences) =>
+    request('POST', `/campaigns/${campaignId}/follow`, preferences || {}),
+  updateCampaignFollow: (campaignId, preferences) =>
+    request('PATCH', `/campaigns/${campaignId}/follow`, preferences),
+  unfollowCampaign: (campaignId) => request('DELETE', `/campaigns/${campaignId}/follow`),
+  getFollowedCampaigns: () => request('GET', '/users/me/following'),
+
+  getMyBadges: () => request('GET', '/users/me/badges'),
+  getLeaderboard: (limit) => request('GET', '/users/leaderboard', null, { query: { limit } }),
+
   getWithdrawalCapabilities: () => request('GET', '/withdrawals/capabilities'),
   listWithdrawals: (campaignId) => request('GET', `/withdrawals/campaign/${campaignId}`),
   requestWithdrawal: (body) => request('POST', '/withdrawals/request', body),

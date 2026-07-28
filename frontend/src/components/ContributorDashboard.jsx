@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { stellarExpertTxUrl } from '../config/stellar';
 import CampaignStatusBadge from './CampaignStatusBadge';
+import { BadgeChip } from './ContributorBadges';
 import { useToast } from '../context/ToastContext';
 
 function milestoneStatusLabel(status) {
@@ -275,23 +276,14 @@ function BadgesRow({ badges }) {
   return (
     <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
       {badges.map((badge) => (
-        <span
-          key={badge.id}
-          title={badge.label}
-          style={{
-            fontSize: '0.78rem',
-            fontWeight: 600,
-            padding: '0.3rem 0.65rem',
-            borderRadius: '99px',
-            border: '1px solid var(--color-border-lighter)',
-            color: badge.earned ? 'var(--color-accent)' : 'var(--color-text-hint)',
-            background: badge.earned ? 'var(--color-accent-bg, rgba(99,102,241,0.1))' : 'transparent',
-            opacity: badge.earned ? 1 : 0.5,
-          }}
-        >
-          {badge.label}
-        </span>
+        <BadgeChip key={badge.id} badge={badge} />
       ))}
+      <Link
+        to="/leaderboard"
+        style={{ alignSelf: 'center', color: 'var(--color-accent)', fontWeight: 600, fontSize: '0.78rem' }}
+      >
+        Leaderboard
+      </Link>
     </div>
   );
 }
