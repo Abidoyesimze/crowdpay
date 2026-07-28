@@ -56,6 +56,7 @@ module.exports = [
         EventSource: 'readonly',
         MessageEvent: 'readonly',
         CustomEvent: 'readonly',
+        ResizeObserver: 'readonly',
         confirm: 'readonly',
       },
     },
