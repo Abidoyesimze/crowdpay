@@ -269,7 +269,7 @@ router.get('/categories', async (req, res) => {
   }
 });
 
-router.get('/', getCampaignsValidation, validateRequest, async (req, res) => {
+router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req, res) => {
   /**
    * @openapi
    * /api/campaigns:
@@ -1958,31 +1958,20 @@ router.patch('/:id/visibility', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // GET /campaigns/:id/analytics — full contribution analytics
-router.get('/:id/analytics', asyncHandler(async (req, res) => {
+router.get('/:id/analytics', requireAuth, requireCampaignMember(), asyncHandler(async (req, res) => {
   const data = await getCampaignAnalytics(req.params.id);
   if (!data) return res.status(404).json({ error: 'Campaign not found' });
   res.json(data);
 }));
 
 // GET /campaigns/:id/analytics/contributors — country breakdown, repeat vs first-time
-router.get('/:id/analytics/contributors', requireAuth, asyncHandler(async (req, res) => {
-  // verify campaign exists and requester is owner or admin
-  const { rows } = await db.query('SELECT creator_id FROM campaigns WHERE id = $1', [req.params.id]);
-  if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
-  if (req.user.role !== 'admin' && rows[0].creator_id !== req.user.userId) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
+router.get('/:id/analytics/contributors', requireAuth, requireCampaignMember(), asyncHandler(async (req, res) => {
   const data = await getCampaignContributors(req.params.id);
   res.json(data);
 }));
 
 // GET /campaigns/:id/analytics/backers — backer growth, leaderboard, repeat rate
-router.get('/:id/analytics/backers', requireAuth, asyncHandler(async (req, res) => {
-  const { rows } = await db.query('SELECT creator_id FROM campaigns WHERE id = $1', [req.params.id]);
-  if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
-  if (req.user.role !== 'admin' && rows[0].creator_id !== req.user.userId) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
+router.get('/:id/analytics/backers', requireAuth, requireCampaignMember(), asyncHandler(async (req, res) => {
   const data = await getCampaignBackers(req.params.id);
   res.json(data);
 }));
