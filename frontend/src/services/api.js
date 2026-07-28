@@ -539,4 +539,22 @@ export const api = {
     request('POST', `/campaigns/${campaignId}/thank-you`, { message }),
   sendContributionThankYou: (contributionId, message) =>
     request('POST', `/contributions/${contributionId}/thank-you`, { message }),
+
+  // ── Contribution Pools (#600) ──────────────────────────────────────
+  listCampaignPools: (campaignId) =>
+    request('GET', `/contribution-pools/campaign/${campaignId}`),
+  listMyPools: () =>
+    request('GET', '/contribution-pools/mine'),
+  getPool: (poolId) =>
+    request('GET', `/contribution-pools/${poolId}`),
+  createPool: (body) =>
+    request('POST', '/contribution-pools', body),
+  joinPool: (poolId, share_amount, display_name) =>
+    request('POST', `/contribution-pools/${poolId}/join`, { share_amount, display_name }),
+  leavePool: (poolId) =>
+    request('POST', `/contribution-pools/${poolId}/leave`),
+  updatePool: (poolId, body) =>
+    request('PATCH', `/contribution-pools/${poolId}`, body),
+  submitPool: (poolId) =>
+    request('POST', `/contribution-pools/${poolId}/submit`),
 };
