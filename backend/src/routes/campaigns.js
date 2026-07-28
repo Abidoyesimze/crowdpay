@@ -1532,17 +1532,28 @@ router.patch('/:id', requireAuth, asyncHandler(async (req, res) => {
   const setClause = updateParams.map(([field, , placeholder]) => `${field} = ${placeholder}`).join(', ');
   const values = updateParams.map(([, value]) => value);
   values.push(campaignId);
+  values.push(currentStatus);
+  const statusParamIndex = paramIndex + 1;
 
   const query = `
     UPDATE campaigns
     SET ${setClause}
-    WHERE id = $${paramIndex}
+    WHERE id = $${paramIndex} AND status = $${statusParamIndex}
     RETURNING *
   `;
 
   const { rows: updatedRows } = await db.query(query, values);
   if (!updatedRows.length) {
-    return res.status(404).json({ error: 'Campaign not found' });
+    const { rows: checkRows } = await db.query(
+      'SELECT status FROM campaigns WHERE id = $1',
+      [campaignId]
+    );
+    if (!checkRows.length) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    return res.status(422).json({
+      error: `Cannot edit a campaign with status: ${checkRows[0].status}`,
+    });
   }
 
   res.json(updatedRows[0]);
