@@ -14,6 +14,8 @@ describe('Admin Module Load (issue #559)', () => {
     // If there is a duplicate const declaration, require() will throw:
     //   SyntaxError: Identifier 'IMPERSONATION_TTL_SECONDS' has already been declared
     try {
+      // Clear module cache to ensure we re-evaluate admin.js from scratch
+      delete require.cache[require.resolve('./admin')];
       require('./admin');
     } catch (err) {
       if (err instanceof SyntaxError) {
