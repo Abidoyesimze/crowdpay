@@ -61,6 +61,12 @@ test('listUserContributions returns null when user missing', async () => {
   assert.equal(rows, null);
 });
 
+// Badge criteria live in badgeService and are covered by badgeService.test.js;
+// the dashboard only has to surface whatever that service returns.
+function badgeServiceStub(badges = [{ id: 'first_contribution', label: 'First contribution', earned: true }]) {
+  return { evaluateBadges: async () => badges };
+}
+
 // Builds a mocked database whose query() routes by SQL text and records every
 // milestone query it receives. `campaignCount` controls how many distinct
 // campaigns the contributor has backed.
@@ -118,6 +124,7 @@ test('getContributorDashboard batches milestones into a single query (no N+1)', 
   const { db, milestoneQueries } = buildDashboardDb(100);
   const { getContributorDashboard } = proxyquire('./userDashboardService', {
     '../config/database': db,
+    './badgeService': badgeServiceStub(),
   });
 
   const dashboard = await getContributorDashboard('user-1');
@@ -136,9 +143,11 @@ test('getContributorDashboard milestone query count is fixed regardless of campa
 
   const { getContributorDashboard: dashSmall } = proxyquire('./userDashboardService', {
     '../config/database': small.db,
+    './badgeService': badgeServiceStub(),
   });
   const { getContributorDashboard: dashLarge } = proxyquire('./userDashboardService', {
     '../config/database': large.db,
+    './badgeService': badgeServiceStub(),
   });
 
   await dashSmall('user-1');
@@ -152,6 +161,7 @@ test('getContributorDashboard maps batched milestones onto the right campaigns',
   const { db } = buildDashboardDb(3);
   const { getContributorDashboard } = proxyquire('./userDashboardService', {
     '../config/database': db,
+    './badgeService': badgeServiceStub(),
   });
 
   const dashboard = await getContributorDashboard('user-1');
@@ -172,6 +182,9 @@ test('getContributorDashboard returns empty shape when there are no contribution
         return { rows: [] };
       },
     },
+    './badgeService': badgeServiceStub([
+      { id: 'first_contribution', label: 'First contribution', earned: false },
+    ]),
   });
 
   const dashboard = await getContributorDashboard('user-1');
@@ -190,6 +203,11 @@ test('getContributorDashboard computes campaigns_backed, avg_contribution, and b
   const { db } = buildDashboardDb(5);
   const { getContributorDashboard } = proxyquire('./userDashboardService', {
     '../config/database': db,
+    './badgeService': badgeServiceStub([
+      { id: 'first_contribution', label: 'First contribution', earned: true },
+      { id: 'backed_5_campaigns', label: 'Backed 5 campaigns', earned: true },
+      { id: 'backed_10_campaigns', label: 'Backed 10 campaigns', earned: false },
+    ]),
   });
 
   const dashboard = await getContributorDashboard('user-1');
@@ -200,13 +218,13 @@ test('getContributorDashboard computes campaigns_backed, avg_contribution, and b
   assert.equal(dashboard.stats.badges.find((b) => b.id === 'first_contribution').earned, true);
   assert.equal(dashboard.stats.badges.find((b) => b.id === 'backed_5_campaigns').earned, true);
   assert.equal(dashboard.stats.badges.find((b) => b.id === 'backed_10_campaigns').earned, false);
-  assert.equal(dashboard.stats.badges.find((b) => b.id === 'contributed_1000').earned, false);
 });
 
 test('getContributorDashboardCsv builds a CSV with one row per contribution', async () => {
   const { db } = buildDashboardDb(2);
   const { getContributorDashboardCsv } = proxyquire('./userDashboardService', {
     '../config/database': db,
+    './badgeService': badgeServiceStub(),
   });
 
   const csv = await getContributorDashboardCsv('user-1');

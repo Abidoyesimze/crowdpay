@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const crypto = require('crypto');
+const { lookupIp } = require('./geoipService');
 
 const MAX_SESSIONS_PER_USER = 5;
 
@@ -18,14 +19,13 @@ function generateDeviceFingerprint(req) {
 }
 
 /**
- * Get location info from IP address (stub - would integrate with GeoIP service).
- * @param {string} _ip - IP address (unused in stub)
- * @returns {Promise<{country: string|null, city: string|null}>}
+ * Format the location columns of a session/alert row for display.
+ * @param {object} row - Row with location_city / location_region / location_country
+ * @returns {string|null} - e.g. "San Francisco, California, US"
  */
-async function getLocationFromIp(_ip) {
-  // In production, this would integrate with a GeoIP service like MaxMind
-  // For now, return null values
-  return { country: null, city: null };
+function formatLocation(row) {
+  const parts = [row.location_city, row.location_region, row.location_country].filter(Boolean);
+  return parts.length ? parts.join(', ') : null;
 }
 
 /**
@@ -39,7 +39,7 @@ async function createUserSession(userId, refreshTokenId, req) {
   const deviceFingerprint = generateDeviceFingerprint(req);
   const ip = req.ip || req.connection?.remoteAddress || null;
   const userAgent = req.headers['user-agent'] || null;
-  const { country, city } = await getLocationFromIp(ip);
+  const { country, region, city } = await lookupIp(ip);
 
   // Check concurrent session limit
   const { rows: existingSessions } = await db.query(
@@ -60,10 +60,10 @@ async function createUserSession(userId, refreshTokenId, req) {
 
   const { rows } = await db.query(
     `INSERT INTO user_sessions
-     (user_id, refresh_token_id, device_fingerprint, ip_address, user_agent, location_country, location_city)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id, user_id, device_fingerprint, ip_address, user_agent, location_country, location_city, created_at, last_seen_at`,
-    [userId, refreshTokenId, deviceFingerprint, ip, userAgent, country, city]
+     (user_id, refresh_token_id, device_fingerprint, ip_address, user_agent, location_country, location_region, location_city)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id, user_id, device_fingerprint, ip_address, user_agent, location_country, location_region, location_city, created_at, last_seen_at`,
+    [userId, refreshTokenId, deviceFingerprint, ip, userAgent, country, region, city]
   );
 
   return rows[0];
@@ -76,7 +76,7 @@ async function createUserSession(userId, refreshTokenId, req) {
  */
 async function listUserSessions(userId) {
   const { rows } = await db.query(
-    `SELECT id, device_fingerprint, ip_address, user_agent, location_country, location_city,
+    `SELECT id, device_fingerprint, ip_address, user_agent, location_country, location_region, location_city,
             created_at, last_seen_at
      FROM user_sessions
      WHERE user_id = $1 AND revoked_at IS NULL
@@ -87,9 +87,7 @@ async function listUserSessions(userId) {
   return rows.map(session => ({
     id: session.id,
     device: session.device_fingerprint ? `Device ${session.device_fingerprint.substring(0, 8)}` : 'Unknown Device',
-    location: session.location_city && session.location_country
-      ? `${session.location_city}, ${session.location_country}`
-      : session.ip_address || 'Unknown Location',
+    location: formatLocation(session) || session.ip_address || 'Unknown Location',
     lastSeen: session.last_seen_at,
     userAgent: session.user_agent,
     ip: session.ip_address,
@@ -137,14 +135,33 @@ async function recordLoginAttempt(options) {
     success,
     failureReason,
     locationCountry,
+    locationRegion,
     locationCity,
   } = options;
 
+  // Resolve the location when the caller did not supply one, so failed
+  // attempts carry the same geo context as sessions do.
+  const location =
+    locationCountry === undefined && locationRegion === undefined && locationCity === undefined
+      ? await lookupIp(ip)
+      : { country: locationCountry ?? null, region: locationRegion ?? null, city: locationCity ?? null };
+
   await db.query(
     `INSERT INTO login_attempts
-     (user_id, email, ip_address, user_agent, device_fingerprint, success, failure_reason, location_country, location_city)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-    [userId, email, ip, userAgent, deviceFingerprint, success, failureReason, locationCountry, locationCity]
+     (user_id, email, ip_address, user_agent, device_fingerprint, success, failure_reason, location_country, location_region, location_city)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [
+      userId,
+      email,
+      ip,
+      userAgent,
+      deviceFingerprint,
+      success,
+      failureReason,
+      location.country,
+      location.region,
+      location.city,
+    ]
   );
 }
 
@@ -159,7 +176,7 @@ async function checkLoginAnomalies(userId, email, req) {
   const ip = req.ip || req.connection?.remoteAddress;
   const userAgent = req.headers['user-agent'] || null;
   const deviceFingerprint = generateDeviceFingerprint(req);
-  const { country, city } = await getLocationFromIp(ip);
+  const { country, region, city } = await lookupIp(ip);
 
   const alerts = [];
 
@@ -172,9 +189,9 @@ async function checkLoginAnomalies(userId, email, req) {
   if (existingDevices.length === 0) {
     await db.query(
       `INSERT INTO login_alerts
-       (user_id, alert_type, ip_address, device_fingerprint, location_country, location_city, details)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [userId, 'new_device', ip, deviceFingerprint, country, city, JSON.stringify({ userAgent })]
+       (user_id, alert_type, ip_address, device_fingerprint, location_country, location_region, location_city, details)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [userId, 'new_device', ip, deviceFingerprint, country, region, city, JSON.stringify({ userAgent })]
     );
     alerts.push('new_device');
   }
@@ -189,9 +206,9 @@ async function checkLoginAnomalies(userId, email, req) {
     if (existingLocations.length === 0) {
       await db.query(
         `INSERT INTO login_alerts
-         (user_id, alert_type, ip_address, device_fingerprint, location_country, location_city, details)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [userId, 'new_location', ip, deviceFingerprint, country, city, JSON.stringify({ userAgent })]
+         (user_id, alert_type, ip_address, device_fingerprint, location_country, location_region, location_city, details)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [userId, 'new_location', ip, deviceFingerprint, country, region, city, JSON.stringify({ userAgent })]
       );
       alerts.push('new_location');
     }
@@ -217,7 +234,7 @@ async function getUserLoginAlerts(userId, options = {}) {
   }
 
   const { rows: alerts } = await db.query(
-    `SELECT id, alert_type, ip_address, location_country, location_city, details, created_at, acknowledged
+    `SELECT id, alert_type, ip_address, location_country, location_region, location_city, details, created_at, acknowledged
      FROM login_alerts
      ${whereClause}
      ORDER BY created_at DESC
@@ -256,7 +273,7 @@ async function getUserLoginAttempts(userId, options = {}) {
   const { limit = 50, offset = 0 } = options;
 
   const { rows: attempts } = await db.query(
-    `SELECT id, email, ip_address, user_agent, success, failure_reason, location_country, location_city, created_at
+    `SELECT id, email, ip_address, user_agent, success, failure_reason, location_country, location_region, location_city, created_at
      FROM login_attempts
      WHERE user_id = $1
      ORDER BY created_at DESC

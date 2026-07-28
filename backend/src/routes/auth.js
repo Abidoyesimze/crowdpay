@@ -8,7 +8,7 @@ const { Keypair } = require('@stellar/stellar-sdk');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { ensureCustodialAccountFundedAndTrusted } = require('../services/stellarService');
-const { sendEmail, sendWelcomeEmail } = require('../services/emailService');
+const { sendEmail, sendWelcomeEmail, sendWalletFundingFailedEmail } = require('../services/emailService');
 const { requireAuth } = require('../middleware/auth');
 const { encryptWalletSecret } = require('../services/walletSecrets');
 const { isKycRequiredForCampaigns } = require('../services/kycProvider');
@@ -139,7 +139,15 @@ function getFrontendUrl() {
 
 function generateTokens(user) {
   const accessToken = jwt.sign(
-    { userId: user.id, role: user.role },
+    {
+      sub: user.id.toString(),
+      iss: 'https://crowdpay.io',
+      aud: 'crowdpay-api',
+      userId: user.id,
+      email: user.email,
+      is_admin: user.is_admin,
+      role: user.role,
+    },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || '15m' }
   );
@@ -316,11 +324,13 @@ router.post('/register', registerLimiter, registerEmailLimiter, registerValidati
     encryptedSecret = await encryptWalletSecret(secret, { walletPublicKey: publicKey });
   }
 
+  const walletFundedAt = walletType === 'freighter' ? new Date() : null;
+
   const { rows } = await db.query(
-    `INSERT INTO users (email, password_hash, name, wallet_public_key, wallet_secret_encrypted, role, wallet_type)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id, email, name, wallet_public_key, role, kyc_status, kyc_completed_at, wallet_type`,
-    [normalizedEmail, passwordHash, normalizedName, publicKey, encryptedSecret, userRole, walletType]
+    `INSERT INTO users (email, password_hash, name, wallet_public_key, wallet_secret_encrypted, role, wallet_type, wallet_funded_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id, email, name, wallet_public_key, role, kyc_status, kyc_completed_at, wallet_type, wallet_funded_at, wallet_funding_failed_at`,
+    [normalizedEmail, passwordHash, normalizedName, publicKey, encryptedSecret, userRole, walletType, walletFundedAt]
   );
 
   const user = {
@@ -358,12 +368,35 @@ router.post('/register', registerLimiter, registerEmailLimiter, registerValidati
   setImmediate(() => {
     // Only fund and setup trustlines for custodial wallets
     if (walletType === 'custodial' && secret) {
-      ensureCustodialAccountFundedAndTrusted({ publicKey, secret }).catch((err) => {
-        logger.error('Background Stellar funding/trustlines failed', {
-          request_id: requestId,
-          error: err.message,
+      ensureCustodialAccountFundedAndTrusted({ publicKey, secret })
+        .then(async () => {
+          await db.query(
+            'UPDATE users SET wallet_funded_at = NOW(), wallet_funding_failed_at = NULL WHERE id = $1',
+            [user.id]
+          );
+          logger.info('Background Stellar funding/trustlines succeeded', { userId: user.id });
+        })
+        .catch(async (err) => {
+          logger.error('Background Stellar funding/trustlines failed', {
+            request_id: requestId,
+            userId: user.id,
+            error: err.message,
+          });
+          await db.query(
+            'UPDATE users SET wallet_funding_failed_at = NOW() WHERE id = $1',
+            [user.id]
+          );
+          sendWalletFundingFailedEmail({
+            to: normalizedEmail,
+            name: normalizedName,
+            walletPublicKey: publicKey,
+          }).catch((emailErr) => {
+            logger.error('Failed to send wallet funding failed email', {
+              userId: user.id,
+              error: emailErr.message,
+            });
+          });
         });
-      });
     }
 
     sendWelcomeEmail({

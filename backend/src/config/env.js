@@ -1,4 +1,5 @@
 const { validateWalletSecretConfig } = require('../services/walletSecrets');
+const { validateGeoipConfig } = require('../services/geoipService');
 
 const REQUIRED = [
   'DATABASE_URL',
@@ -79,6 +80,13 @@ function validateEnv() {
 
   try {
     validateWalletSecretConfig();
+  } catch (err) {
+    process.stderr.write(`\n[crowdpay] Cannot start: ${err.message}\n\n`);
+    process.exit(1);
+  }
+
+  try {
+    validateGeoipConfig();
   } catch (err) {
     process.stderr.write(`\n[crowdpay] Cannot start: ${err.message}\n\n`);
     process.exit(1);

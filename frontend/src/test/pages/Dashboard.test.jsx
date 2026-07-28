@@ -3,11 +3,14 @@ import { screen, waitFor } from '@testing-library/react';
 import Dashboard from '../../pages/Dashboard';
 import { renderWithProviders } from '../renderWithProviders';
 
+const mockUser = { id: 'user1', role: 'creator' };
+const mockUpdateUser = vi.fn();
+
 vi.mock('../../context/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: 'user1', role: 'creator' },
+    user: mockUser,
     ready: true,
-    updateUser: vi.fn(),
+    updateUser: mockUpdateUser,
   }),
 }));
 
@@ -38,7 +41,6 @@ describe('Dashboard page', () => {
 
     renderWithProviders(<Dashboard />);
 
-    await waitFor(() => expect(apiMocks.getMyStats).toHaveBeenCalled());
-    expect(screen.getByText('Dashboard failed')).toBeInTheDocument();
+    expect(await screen.findByText('Dashboard failed')).toBeInTheDocument();
   });
 });

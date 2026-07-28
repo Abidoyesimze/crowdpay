@@ -1,6 +1,9 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:3001';
+const CAMPAIGN_ID = __ENV.CAMPAIGN_ID || '11111111-1111-1111-1111-111111111111';
+
 export const options = {
   stages: [
     { duration: '30s', target: 100 },  // ramp up to 100 anonymous users
@@ -15,25 +18,30 @@ export const options = {
 
 export default function () {
   // 1. Browse the homepage (campaign list)
-  const homeRes = http.get('https://your-app.com/api/campaigns?page=1&limit=20');
+  const homeRes = http.get(`${BASE_URL}/api/campaigns?page=1&limit=20`);
   check(homeRes, {
     'homepage loaded': (r) => r.status === 200,
-    'campaigns returned': (r) => r.json().length > 0,
+    'campaigns returned': (r) => {
+      try {
+        const body = JSON.parse(r.body);
+        return (Array.isArray(body) && body.length > 0) || (Array.isArray(body.campaigns) && body.campaigns.length > 0);
+      } catch {
+        return false;
+      }
+    },
   });
 
-  // 2. Pick a random campaign ID from the list (or use a fixed one)
-  // For simplicity, we use a fixed campaign ID – you can randomise if needed
-  const campaignId = 'abc-123'; // Replace with a real campaign ID that exists
-
-  // 3. View campaign details
-  const detailRes = http.get(`https://your-app.com/api/campaigns/${campaignId}`);
+  // 2. View campaign details
+  const detailRes = http.get(`${BASE_URL}/api/campaigns/${CAMPAIGN_ID}`);
   check(detailRes, {
     'campaign detail loaded': (r) => r.status === 200,
-    'campaign has title': (r) => r.json('title') !== undefined,
+    'campaign has title': (r) => {
+      try { return typeof JSON.parse(r.body).title === 'string'; } catch { return false; }
+    },
   });
 
-  // 4. Optionally, fetch contributions for that campaign
-  const contribRes = http.get(`https://your-app.com/api/contributions?campaignId=${campaignId}&limit=10`);
+  // 3. Optionally, fetch contributions for that campaign
+  const contribRes = http.get(`${BASE_URL}/api/contributions?campaignId=${CAMPAIGN_ID}&limit=10`);
   check(contribRes, {
     'contributions list loaded': (r) => r.status === 200,
   });
@@ -41,3 +49,4 @@ export default function () {
   // Simulate user thinking / reading
   sleep(2);
 }
+

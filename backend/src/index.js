@@ -5,6 +5,7 @@ const Sentry = require("@sentry/node");
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.NODE_ENV || "development",
+  release: process.env.SENTRY_RELEASE || "unknown",
   tracesSampleRate: process.env.NODE_ENV === "production" ? 0.2 : 1.0,
   enabled: !!process.env.SENTRY_DSN,
   integrations: [Sentry.expressIntegration()],
@@ -255,6 +256,7 @@ app.use("/api/users", require("./routes/users"));
 app.use("/api/invites", require("./routes/invites"));
 app.use("/api/campaigns", require("./routes/campaignUpdates"));
 app.use("/api/campaigns", require("./routes/campaignComments"));
+app.use("/api/campaigns", require("./routes/campaignFollowers"));
 app.use("/api/campaigns", require("./routes/campaigns"));
 app.use("/api/anchor", require("./routes/anchor"));
 app.use("/api/contributions", require("./routes/contributions"));

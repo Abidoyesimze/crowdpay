@@ -5,6 +5,7 @@ const asyncHandler = require("../utils/asyncHandler");
 const logger = require("../config/logger");
 const { sendCampaignUpdatePostedEmail } = require("../services/emailService");
 const { createNotification } = require("../services/notifications");
+const { notifyFollowers } = require("../services/campaignFollowService");
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
@@ -95,8 +96,25 @@ router.post(
          ORDER BY u.id, c.created_at ASC`,
         [req.params.id],
       )
-        .then(({ rows: contributors }) =>
-          Promise.all(
+        .then(({ rows: contributors }) => {
+          notifyFollowers(
+            req.params.id,
+            "notify_updates",
+            {
+              type: "campaign_update",
+              title: `${req.campaign.title}: ${update.title}`,
+              body: updateExcerpt,
+              link: `/campaigns/${req.params.id}`,
+            },
+            [req.user.userId, ...contributors.map((contributor) => contributor.id)],
+          ).catch((err) =>
+            logger.error("Campaign update follower notification failed", {
+              campaignId: req.params.id,
+              error: err.message,
+            }),
+          );
+
+          return Promise.all(
             contributors.map((contributor) => {
               createNotification(contributor.id, {
                 type: "campaign_update",
@@ -122,8 +140,8 @@ router.post(
                 updateBody: update.body,
               });
             }),
-          ),
-        )
+          );
+        })
         .catch((err) => logger.error("Campaign update email failed", { error: err.message }));
     });
 

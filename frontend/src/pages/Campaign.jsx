@@ -1,8 +1,10 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Link, useParams, useLocation, useNavigate } from 'react-router-dom';
 import DOMPurify from 'dompurify';
+import * as Sentry from '@sentry/react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import ContributeModal from '../components/ContributeModal';
 import RelativeTime from '../components/RelativeTime';
 import DisputeModal from '../components/DisputeModal';
@@ -19,6 +21,7 @@ import { getNetwork, signTransaction } from '@stellar/freighter-api';
 import { isConnected, getPublicKey } from '@stellar/freighter-api';
 import BackerInsightsCard from '../components/BackerInsightsCard';
 import CampaignComments from '../components/CampaignComments';
+import FollowCampaignButton from '../components/FollowCampaignButton';
 import { addRecentlyViewed } from '../lib/recentlyViewed';
 
 
@@ -284,6 +287,7 @@ export default function Campaign() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, token } = useAuth();
+  const toast = useToast();
 
   const [campaign, setCampaign] = useState(null);
   const [loadError, setLoadError] = useState('');
@@ -1168,6 +1172,7 @@ export default function Campaign() {
           <CampaignStatusBadge status={campaign.status} />
           <VerificationBadge status={campaign.creator_kyc_status} />
           {user && <FavoriteToggle campaignId={campaign.id} />}
+          {user && <FollowCampaignButton campaignId={campaign.id} />}
           {campaign.contract_address && (
             <span
               title="This campaign is backed by a Soroban smart contract"
@@ -1196,6 +1201,8 @@ export default function Campaign() {
           }}
         />
       </div>
+
+      <CampaignComments campaignId={campaign.id} campaign={campaign} />
 
       {tiers.length > 0 && (
         <div style={{ marginBottom: "1rem" }}>
@@ -1365,7 +1372,8 @@ export default function Campaign() {
                 });
               } catch (err) {
                 if (err.name !== 'AbortError') {
-                  console.error('Share failed:', err);
+                  toast?.('Could not share this campaign. Please try again.', 'error');
+                  Sentry.captureException(err);
                 }
               }
             }}

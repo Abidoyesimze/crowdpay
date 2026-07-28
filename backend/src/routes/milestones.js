@@ -3,6 +3,7 @@ const multer = require('multer');
 const { Keypair } = require('@stellar/stellar-sdk');
 const db = require('../config/database');
 const logger = require('../config/logger');
+const { MILESTONE_LIMIT, MILESTONE_EVIDENCE_MAX_FILE_SIZE } = require('../config/constants');
 const { requireAuth } = require('../middleware/auth');
 const { sendAlert } = require('../services/alerting');
 const {
@@ -22,12 +23,14 @@ const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhook
 const { invokeContract, nativeToScVal, releaseMilestone } = require('../services/sorobanService');
 const { uploadMilestoneEvidence } = require('../services/storage');
 const { createNotification } = require('../services/notifications');
+const { notifyFollowers } = require('../services/campaignFollowService');
 const { evaluateCampaign } = require('../services/fraudService');
 const {
   sendMilestoneReleasedCreatorEmail,
   sendMilestoneReleasedContributorEmail,
   sendMilestoneEvidenceSubmittedAdminEmail,
 } = require('../services/emailService');
+const asyncHandler = require('../utils/asyncHandler');
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -52,11 +55,9 @@ function toReleaseAmount(raisedAmount, releasePercentage) {
   return ((Number(raisedAmount) * Number(releasePercentage)) / 100).toFixed(7);
 }
 
-const MILESTONE_LIMIT = 5;
-
 const evidenceUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: MILESTONE_EVIDENCE_MAX_FILE_SIZE },
   fileFilter: (_req, file, cb) => {
     const allowed = [
       'image/jpeg',
@@ -164,7 +165,7 @@ async function setCampaignStatusFromMilestoneProgress(client, campaignId) {
   return updated[0] || null;
 }
 
-router.get('/campaign/:campaignId', async (req, res) => {
+router.get('/campaign/:campaignId', asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT m.*, 
             (c.milestones_contract_id IS NOT NULL) AS on_chain
@@ -175,7 +176,7 @@ router.get('/campaign/:campaignId', async (req, res) => {
     [req.params.campaignId]
   );
   res.json(rows);
-});
+}));
 
 router.post('/', requireAuth, async (req, res) => {
   const {
@@ -375,6 +376,18 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
         })
       )
       .catch((err) => logger.error('Milestone evidence admin notify failed', { error: err.message }));
+
+    notifyFollowers(
+      milestone.campaign_id,
+      'notify_milestones',
+      {
+        type: 'milestone_evidence_submitted',
+        title: `${milestone.campaign_title}: evidence submitted for "${milestone.title}"`,
+        body: 'The milestone is awaiting platform review.',
+        link: `/campaigns/${milestone.campaign_id}`,
+      },
+      req.user.userId
+    ).catch((err) => logger.error('Milestone follower notify failed', { error: err.message }));
   });
 
   evaluateCampaign(milestone.campaign_id).catch(err => logger.error('Fraud evaluate failed in milestone submit', { error: err.message }));
@@ -415,7 +428,7 @@ router.post('/:id/upload-evidence', requireAuth, evidenceUpload.single('evidence
   }
 });
 
-router.get('/:id/events', requireAuth, async (req, res) => {
+router.get('/:id/events', requireAuth, asyncHandler(async (req, res) => {
   const { rows: milestones } = await db.query(
     `SELECT m.*, c.creator_id
      FROM milestones m
@@ -441,7 +454,7 @@ router.get('/:id/events', requireAuth, async (req, res) => {
     [req.params.id]
   );
   res.json(rows);
-});
+}));
 
 router.post('/:id/reject', requireAuth, async (req, res) => {
   if (!canPerformPlatformSignature(req.user.userId)) {
@@ -766,8 +779,20 @@ const approveMilestoneReleaseHandler = async (req, res) => {
          WHERE c.campaign_id = $1 AND u.email IS NOT NULL
          ORDER BY u.id, c.created_at ASC`,
         [milestone.campaign_id]
-      ).then(({ rows: contributors }) =>
-        Promise.all(
+      ).then(({ rows: contributors }) => {
+        notifyFollowers(
+          milestone.campaign_id,
+          'notify_milestones',
+          {
+            type: 'milestone_released',
+            title: `${milestone.campaign_title}: "${milestone.title}" released`,
+            body: `${releaseAmount} ${milestone.asset_type} has been released to the creator.`,
+            link: `/campaigns/${milestone.campaign_id}`,
+          },
+          [req.user.userId, ...contributors.map((contributor) => contributor.id)]
+        ).catch((e) => logger.error('Milestone follower notify failed', { error: e.message }));
+
+        return Promise.all(
           contributors.map((contributor) =>
             sendMilestoneReleasedContributorEmail({
               to: contributor.email,
@@ -778,8 +803,8 @@ const approveMilestoneReleaseHandler = async (req, res) => {
               milestoneTitle: milestone.title,
             })
           )
-        )
-      ).catch((e) => logger.error('Milestone contributor email failed', { error: e.message }));
+        );
+      }).catch((e) => logger.error('Milestone contributor email failed', { error: e.message }));
     });
 
     evaluateCampaign(milestone.campaign_id).catch(err => logger.error('Fraud evaluate failed in milestone approve', { error: err.message }));
