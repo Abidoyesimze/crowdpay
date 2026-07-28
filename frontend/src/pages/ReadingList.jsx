@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import api from '../services/api';
+import { api } from '../services/api';
 import { useToast } from '../context/ToastContext';
 
 export default function ReadingList() {
