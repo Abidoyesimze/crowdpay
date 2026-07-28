@@ -16,7 +16,7 @@ export function initCrowdPayEmbed(script) {
   }
 
   const iframe = document.createElement('iframe');
-  const params = new URLSearchParams({ theme, size });
+  const params = new URLSearchParams({ theme, size, origin: window.location.origin });
   iframe.src = `${window.location.origin}/embed/campaigns/${campaignId}?${params.toString()}`;
   iframe.style.minHeight = `${MIN_HEIGHTS[size]}px`;
   iframe.style.width = '100%';
