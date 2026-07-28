@@ -22,6 +22,7 @@ import { isConnected, getPublicKey } from '@stellar/freighter-api';
 import BackerInsightsCard from '../components/BackerInsightsCard';
 import CampaignComments from '../components/CampaignComments';
 import FollowCampaignButton from '../components/FollowCampaignButton';
+import LanguageToggle from '../components/LanguageToggle';
 import { addRecentlyViewed } from '../lib/recentlyViewed';
 
 
@@ -50,11 +51,11 @@ function markdownToHtml(markdown) {
 }
 
 function progressColor(pct, status) {
-  if (status === 'funded' || pct >= 100) return '#10b981'; // green — goal reached
+  if (status === 'funded' || pct >= 100) return 'var(--color-teal)';
   if (status === 'closed' || status === 'withdrawn' || status === 'refunded' || status === 'failed')
-    return '#6b7280'; // grey — ended
-  if (pct >= 75) return '#3b82f6'; // blue — nearly there
-  return '#7c3aed'; // default purple
+    return 'var(--color-text-hint)';
+  if (pct >= 75) return 'var(--color-accent-light)';
+  return 'var(--color-accent)';
 }
 
 function FavoriteToggle({ campaignId }) {
@@ -265,7 +266,7 @@ function ContributionRow({ c }) {
               href={stellarExpertTxUrl(c.tx_hash)}
               target="_blank"
               rel="noopener noreferrer"
-              style={{ fontSize: '0.75rem', color: '#7c3aed', fontWeight: 600 }}
+              style={{ fontSize: '0.75rem', color: 'var(--color-accent)', fontWeight: 600 }}
             >
               View on chain ↗
             </a>
@@ -290,6 +291,7 @@ export default function Campaign() {
   const toast = useToast();
 
   const [campaign, setCampaign] = useState(null);
+  const [translation, setTranslation] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [contributions, setContributions] = useState(null);
   const [totalContributions, setTotalContributions] = useState(0);
@@ -906,9 +908,10 @@ export default function Campaign() {
 
   useEffect(() => {
     if (!campaign) return;
-    document.title = `${campaign.title} | CrowdPay`;
+    const tTitle = translation?.title || campaign.title;
+    const tDesc = translation?.description || campaign.description || '';
+    document.title = `${tTitle} | CrowdPay`;
 
-    // Basic meta tag updates (SPA approach)
     const updateMeta = (name, content, property = false) => {
       let el = document.querySelector(
         property ? `meta[property="${name}"]` : `meta[name="${name}"]`
@@ -922,18 +925,18 @@ export default function Campaign() {
       el.setAttribute('content', content);
     };
 
-    updateMeta('description', campaign.description || '');
-    updateMeta('og:title', campaign.title, true);
-    updateMeta('og:description', campaign.description || '', true);
+    updateMeta('description', tDesc);
+    updateMeta('og:title', tTitle, true);
+    updateMeta('og:description', tDesc, true);
     updateMeta('og:url', window.location.href, true);
     if (campaign.cover_image_url) {
       updateMeta('og:image', campaign.cover_image_url, true);
       updateMeta('twitter:image', campaign.cover_image_url);
     }
     updateMeta('twitter:card', 'summary_large_image');
-    updateMeta('twitter:title', campaign.title);
-    updateMeta('twitter:description', campaign.description || '');
-  }, [campaign]);
+    updateMeta('twitter:title', tTitle);
+    updateMeta('twitter:description', tDesc);
+  }, [campaign, translation]);
 
   if (loadError && !campaign) {
     return (
@@ -1138,8 +1141,8 @@ export default function Campaign() {
             disabled={refundBusy}
             onClick={handleInitiateRefund}
             style={{
-              background: refundBusy ? undefined : '#dc2626',
-              borderColor: refundBusy ? undefined : '#dc2626',
+              background: refundBusy ? undefined : 'var(--color-status-error)',
+              borderColor: refundBusy ? undefined : 'var(--color-status-error)',
               fontSize: '0.9rem',
             }}
           >
@@ -1192,12 +1195,19 @@ export default function Campaign() {
             </span>
           )}
         </div>
-        <h1 style={styles.title}>{campaign.title}</h1>
+        <LanguageToggle
+          campaignId={campaign.id}
+          defaultLanguage="en"
+          defaultTitle={campaign.title}
+          defaultDescription={campaign.description || ''}
+          onTranslationChange={setTranslation}
+        />
+        <h1 style={styles.title}>{translation?.title || campaign.title}</h1>
         {campaign.creator_name && <p style={styles.creator}>by {campaign.creator_name}</p>}
         <div
           style={{ ...styles.desc, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
           dangerouslySetInnerHTML={{
-            __html: DOMPurify.sanitize(markdownToHtml(campaign.description)),
+            __html: DOMPurify.sanitize(markdownToHtml(translation?.description || campaign.description)),
           }}
         />
       </div>
@@ -1457,7 +1467,7 @@ export default function Campaign() {
               width: '100%',
               background: linkCopied ? 'var(--color-success-text)' : undefined,
               borderColor: linkCopied ? 'var(--color-success-text)' : undefined,
-              color: linkCopied ? '#fff' : undefined,
+              color: linkCopied ? 'var(--color-bg)' : undefined,
               transition: 'all 0.2s ease',
             }}
             onClick={() => {
@@ -1505,7 +1515,7 @@ export default function Campaign() {
               type="button"
               className="btn-secondary"
               style={{
-                color: '#dc2626',
+                color: 'var(--color-status-error)',
                 fontSize: '0.85rem',
                 display: 'flex',
                 alignItems: 'center',
@@ -1829,7 +1839,7 @@ export default function Campaign() {
               onClick={() => setActiveTab('team')}
               style={{
                 background: activeTab === 'team' ? 'var(--color-accent)' : 'transparent',
-                color: activeTab === 'team' ? '#fff' : 'var(--color-text-primary)',
+                color: activeTab === 'team' ? 'var(--color-bg)' : 'var(--color-text-primary)',
                 border: '1px solid var(--color-border-light)',
                 borderRadius: '6px',
                 padding: '0.4rem 0.9rem',
@@ -1848,7 +1858,7 @@ export default function Campaign() {
                 onClick={() => setActiveTab('analytics')}
                 style={{
                   background: activeTab === 'analytics' ? 'var(--color-accent)' : 'transparent',
-                  color: activeTab === 'analytics' ? '#fff' : 'var(--color-text-primary)',
+                  color: activeTab === 'analytics' ? 'var(--color-bg)' : 'var(--color-text-primary)',
                   border: '1px solid var(--color-border-light)',
                   borderRadius: '6px',
                   padding: '0.4rem 0.9rem',
@@ -2250,7 +2260,7 @@ export default function Campaign() {
               onClick={() => setAnalyticsTab('overview')}
               style={{
                 background: analyticsTab === 'overview' ? 'var(--color-accent)' : 'transparent',
-                color: analyticsTab === 'overview' ? '#fff' : 'var(--color-text-primary)',
+                color: analyticsTab === 'overview' ? 'var(--color-bg)' : 'var(--color-text-primary)',
                 border: '1px solid var(--color-border-light)',
                 borderRadius: '6px',
                 padding: '0.4rem 0.9rem',
@@ -2269,7 +2279,7 @@ export default function Campaign() {
               onClick={() => setAnalyticsTab('backers')}
               style={{
                 background: analyticsTab === 'backers' ? 'var(--color-accent)' : 'transparent',
-                color: analyticsTab === 'backers' ? '#fff' : 'var(--color-text-primary)',
+                color: analyticsTab === 'backers' ? 'var(--color-bg)' : 'var(--color-text-primary)',
                 border: '1px solid var(--color-border-light)',
                 borderRadius: '6px',
                 padding: '0.4rem 0.9rem',
@@ -2517,7 +2527,7 @@ export default function Campaign() {
           <div
             ref={editModalRef}
             style={{
-              background: '#fff',
+              background: 'var(--color-bg)',
               borderRadius: '12px',
               padding: '2rem',
               maxWidth: '500px',
@@ -2542,10 +2552,10 @@ export default function Campaign() {
             {editError && (
               <p
                 style={{
-                  color: '#d32f2f',
+                  color: 'var(--color-status-error)',
                   marginBottom: '1rem',
                   padding: '0.75rem',
-                  background: '#ffebee',
+                  background: 'var(--color-status-error-bg)',
                   borderRadius: '6px',
                 }}
               >
@@ -2571,7 +2581,7 @@ export default function Campaign() {
                 style={{
                   width: '100%',
                   padding: '0.75rem',
-                  border: '1px solid #ddd',
+                  border: '1px solid var(--color-border-lightest)',
                   borderRadius: '6px',
                   fontSize: '1rem',
                   boxSizing: 'border-box',
@@ -2580,7 +2590,7 @@ export default function Campaign() {
               <p
                 style={{
                   fontSize: '0.85rem',
-                  color: '#888',
+                  color: 'var(--color-text-muted)',
                   margin: '0.25rem 0 0',
                 }}
               >
@@ -2611,7 +2621,7 @@ export default function Campaign() {
                 style={{
                   width: '100%',
                   padding: '0.75rem',
-                  border: '1px solid #ddd',
+                  border: '1px solid var(--color-border-lightest)',
                   borderRadius: '6px',
                   fontSize: '1rem',
                   fontFamily: 'inherit',
@@ -2621,7 +2631,7 @@ export default function Campaign() {
               <p
                 style={{
                   fontSize: '0.85rem',
-                  color: '#888',
+                  color: 'var(--color-text-muted)',
                   margin: '0.25rem 0 0',
                 }}
               >
@@ -2646,7 +2656,7 @@ export default function Campaign() {
                 style={{
                   width: '100%',
                   padding: '0.75rem',
-                  border: '1px solid #ddd',
+                  border: '1px solid var(--color-border-lightest)',
                   borderRadius: '6px',
                   fontSize: '1rem',
                   boxSizing: 'border-box',
@@ -2796,8 +2806,8 @@ export default function Campaign() {
                 disabled={deleteLoading || deleteConfirmation !== campaign.title}
                 style={{
                   opacity: deleteLoading || deleteConfirmation !== campaign.title ? 0.6 : 1,
-                  background: '#dc2626',
-                  borderColor: '#dc2626',
+                  background: 'var(--color-status-error)',
+                  borderColor: 'var(--color-status-error)',
                 }}
               >
                 {deleteLoading ? 'Deleting...' : 'Delete Campaign'}
@@ -2819,8 +2829,8 @@ const styles = {
     flexWrap: 'wrap',
   },
   asset: {
-    background: '#ede9fe',
-    color: '#7c3aed',
+    background: 'var(--color-accent-lightest)',
+    color: 'var(--color-accent)',
     fontSize: '0.75rem',
     fontWeight: 700,
     padding: '2px 8px',
@@ -2830,13 +2840,13 @@ const styles = {
     fontSize: '1.8rem',
     fontWeight: 800,
     margin: '0.5rem 0',
-    color: '#111',
+    color: 'var(--color-text-primary)',
   },
-  creator: { color: '#666', fontSize: '0.9rem', marginBottom: '0.5rem' },
-  desc: { color: '#555', fontSize: '1rem', lineHeight: 1.6 },
+  creator: { color: 'var(--color-text-hint)', fontSize: '0.9rem', marginBottom: '0.5rem' },
+  desc: { color: 'var(--color-text-secondary)', fontSize: '1rem', lineHeight: 1.6 },
   card: {
-    background: '#fff',
-    border: '1px solid #e5e5e5',
+    background: 'var(--color-bg)',
+    border: '1px solid var(--color-border-light)',
     borderRadius: '10px',
     padding: '1.5rem',
     marginBottom: '1rem',
@@ -2846,19 +2856,19 @@ const styles = {
     justifyContent: 'space-between',
     marginBottom: '1rem',
   },
-  big: { fontSize: '1.5rem', fontWeight: 800, color: '#111' },
-  small: { fontSize: '0.85rem', color: '#888' },
+  big: { fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-text-primary)' },
+  small: { fontSize: '0.85rem', color: 'var(--color-text-muted)' },
   bar: {
-    background: '#f0f0f0',
+    background: 'var(--color-surface)',
     borderRadius: '99px',
     height: '8px',
     marginBottom: '1.25rem',
     overflow: 'hidden',
   },
-  fill: { background: '#7c3aed', height: '100%', borderRadius: '99px' },
+  fill: { background: 'var(--color-accent)', height: '100%', borderRadius: '99px' },
   cta: { width: '100%', padding: '0.85rem', fontSize: '1rem' },
   walletInfo: {
-    background: '#f8f8f8',
+    background: 'var(--color-surface)',
     borderRadius: '8px',
     padding: '0.75rem 1rem',
     marginBottom: '1.75rem',
@@ -2869,10 +2879,10 @@ const styles = {
   walletLabel: {
     fontSize: '0.75rem',
     fontWeight: 600,
-    color: '#888',
+    color: 'var(--color-text-muted)',
     textTransform: 'uppercase',
   },
-  walletKey: { fontSize: '0.8rem', color: '#555', wordBreak: 'break-all' },
+  walletKey: { fontSize: '0.8rem', color: 'var(--color-text-secondary)', wordBreak: 'break-all' },
   detailCoverImage: {
     width: '100%',
     borderRadius: '14px',
@@ -2885,13 +2895,13 @@ const styles = {
     borderRadius: '14px',
     marginBottom: '1.5rem',
     height: '260px',
-    background: 'linear-gradient(135deg, #ede9fe 0%, #e0e7ff 100%)',
-    border: '1px solid #ddd6fe',
+    background: 'linear-gradient(135deg, var(--color-accent-lighter) 0%, var(--color-accent-lightest) 100%)',
+    border: '1px solid var(--color-purple-light)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  detailCoverPlaceholderText: { color: '#6d28d9', fontWeight: 700 },
+  detailCoverPlaceholderText: { color: 'var(--color-accent-hover)', fontWeight: 700 },
   sectionTitle: {
     fontSize: '1.1rem',
     fontWeight: 700,
@@ -2901,18 +2911,18 @@ const styles = {
   row: {
     display: 'flex',
     justifyContent: 'space-between',
-    background: '#fff',
-    border: '1px solid #eee',
+    background: 'var(--color-bg)',
+    border: '1px solid var(--color-border-lighter)',
     borderRadius: '6px',
     padding: '0.6rem 0.85rem',
   },
-  sender: { fontSize: '0.85rem', color: '#555', fontFamily: 'monospace' },
+  sender: { fontSize: '0.85rem', color: 'var(--color-text-secondary)', fontFamily: 'monospace' },
   amount: { fontSize: '0.85rem', fontWeight: 600, flexShrink: 0 },
-  convHint: { fontSize: '0.72rem', color: '#888', marginTop: '0.15rem' },
+  convHint: { fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '0.15rem' },
   refundTag: {
     marginTop: '0.45rem',
     fontSize: '0.75rem',
-    color: '#7c3aed',
+    color: 'var(--color-accent)',
     fontWeight: 700,
   },
   liveIndicator: {
@@ -2922,7 +2932,7 @@ const styles = {
     marginLeft: '0.5rem',
     fontSize: '0.72rem',
     fontWeight: 600,
-    color: '#16a34a',
+    color: 'var(--color-success-text)',
     verticalAlign: 'middle',
   },
   liveDot: {
@@ -2930,7 +2940,7 @@ const styles = {
     width: '7px',
     height: '7px',
     borderRadius: '50%',
-    background: '#16a34a',
+    background: 'var(--color-success-text)',
     animation: 'pulse 1.5s ease-in-out infinite',
   },
 

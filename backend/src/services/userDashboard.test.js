@@ -15,10 +15,10 @@ test('listCreatorCampaigns queries by creator_id', async () => {
     },
   });
 
-  const rows = await listCreatorCampaigns('user-1');
+  const res = await listCreatorCampaigns('user-1');
   assert.match(sql, /creator_id = \$1/);
-  assert.deepEqual(params, ['user-1']);
-  assert.equal(rows[0].title, 'Mine');
+  assert.deepEqual(params, ['user-1', 20, 0]);
+  assert.equal(res.data[0].title, 'Mine');
 });
 
 test('listUserContributions includes conversion_rate', async () => {

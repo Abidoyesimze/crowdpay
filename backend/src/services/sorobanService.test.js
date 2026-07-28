@@ -10,7 +10,7 @@
  *   NODE_ENV=test node --test src/services/sorobanService.test.js
  */
 
-const { describe, it, test, beforeEach } = require('node:test');
+const { describe, it, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const proxyquire = require('proxyquire').noCallThru();
 const { Keypair, xdr, nativeToScVal, StrKey, Account } = require('@stellar/stellar-sdk');
@@ -479,6 +479,9 @@ describe('sorobanService real implementation tests', () => {
       assert.equal(await service.getAllMilestones(TEST_CONTRACT_ID), BigInt(500));
     });
   });
+
+
+const proxyquire = require('proxyquire').noCallThru();
 
   // WASM upload & contract creation tests
   describe('createContractFromWasmHash & uploadContractWasm', () => {

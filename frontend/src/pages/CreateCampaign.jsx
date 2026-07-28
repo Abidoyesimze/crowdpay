@@ -500,13 +500,13 @@ export default function CreateCampaign() {
           }}
         >
           <li aria-current={step === 1 ? 'step' : undefined}>
-            <span style={{ color: step === 1 ? '#7c3aed' : '#999' }}>
+            <span style={{ color: step === 1 ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>
               {t('createCampaign.steps.goalAsset')}
             </span>
           </li>
           <li aria-hidden="true">→</li>
           <li aria-current={step === 2 ? 'step' : undefined}>
-            <span style={{ color: step === 2 ? '#7c3aed' : '#999' }}>
+            <span style={{ color: step === 2 ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>
               {t('createCampaign.steps.detailsLaunch')}
             </span>
           </li>
@@ -766,8 +766,8 @@ export default function CreateCampaign() {
                 flexWrap: 'wrap',
                 alignItems: 'center',
                 gap: '0.75rem',
-                background: '#f8fafc',
-                border: '1px solid #d1d5db',
+                background: 'var(--color-surface)',
+                border: '1px solid var(--color-border-lightest)',
                 borderRadius: '12px',
                 padding: '1rem',
                 marginBottom: '1rem',
@@ -828,10 +828,10 @@ export default function CreateCampaign() {
                 onDragLeave={() => setIsDragOverCover(false)}
                 onDrop={handleCoverImageDrop}
                 style={{
-                  border: `2px dashed ${isDragOverCover ? '#7c3aed' : '#d4d4d8'}`,
+                  border: `2px dashed ${isDragOverCover ? 'var(--color-accent)' : 'var(--color-border-lightest)'}`,
                   borderRadius: '12px',
                   padding: '0.9rem',
-                  background: isDragOverCover ? '#f5f3ff' : '#fafafa',
+                  background: isDragOverCover ? 'var(--color-accent-lightest)' : 'var(--color-surface)',
                 }}
               >
                 <input
@@ -844,7 +844,7 @@ export default function CreateCampaign() {
                   style={{
                     marginTop: '0.45rem',
                     marginBottom: 0,
-                    color: '#666',
+                    color: 'var(--color-text-hint)',
                     fontSize: '0.8rem',
                   }}
                 >
