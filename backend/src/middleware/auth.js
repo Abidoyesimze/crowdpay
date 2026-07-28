@@ -1,54 +1,223 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const db = require('../config/database');
+const logger = require('../config/logger');
+const Sentry = require('@sentry/node');
+const { authenticateCpkApiKey } = require('../services/apiKeyService');
+
+const ACCESS_TOKEN_COOKIE_NAME = 'cp_token';
+const IMPERSONATION_TOKEN_COOKIE_NAME = 'cp_impersonation_token';
 
 function apiKeyPepper() {
-  return process.env.API_KEY_PEPPER || process.env.JWT_SECRET || 'dev-api-key-pepper';
+  return process.env.API_KEY_PEPPER;
 }
 
 function hashApiKey(rawKey) {
   return crypto.createHmac('sha256', apiKeyPepper()).update(rawKey, 'utf8').digest('hex');
 }
 
-async function authenticate(req) {
+function getRequestPath(req) {
+  return (req.originalUrl || req.url || '').split('?')[0];
+}
+
+function getTokenFromRequest(req) {
   const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
-    throw new Error('Missing token');
-  }
-  const token = header.slice(7).trim();
+  return (
+    req.cookies?.[IMPERSONATION_TOKEN_COOKIE_NAME] ||
+    req.cookies?.[ACCESS_TOKEN_COOKIE_NAME] ||
+    (header && header.startsWith('Bearer ') ? header.slice(7).trim() : null)
+  );
+}
+
+async function authenticate(req) {
+  const token = getTokenFromRequest(req);
   if (!token) throw new Error('Missing token');
+
+  if (token.startsWith('cpk_')) {
+    const auth = await authenticateCpkApiKey(token);
+    if (!auth) throw new Error('Invalid API key');
+    req.user = {
+      userId: auth.userId,
+      role: auth.role,
+      is_admin: auth.is_admin,
+    };
+    req.auth = {
+      kind: 'api_key',
+      apiKeyId: auth.apiKeyId,
+      scopes: auth.scopes,
+    };
+    return;
+  }
 
   if (token.startsWith('cp_live_')) {
     const keyHash = hashApiKey(token);
     const { rows } = await db.query(
       `SELECT id, user_id, scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL`,
-      [keyHash]
+      [keyHash],
     );
     if (!rows.length) throw new Error('Invalid API key');
     await db.query(`UPDATE api_keys SET last_used_at = NOW() WHERE id = $1`, [rows[0].id]);
-    req.user = { userId: rows[0].user_id };
-    req.auth = { kind: 'api_key', apiKeyId: rows[0].id, scopes: rows[0].scopes || [] };
+    const { rows: userRows } = await db.query(
+      'SELECT id, role, is_admin FROM users WHERE id = $1',
+      [rows[0].user_id],
+    );
+    const user = userRows[0] || {};
+    req.user = {
+      userId: rows[0].user_id,
+      role: user.is_admin ? 'admin' : user.role || 'contributor',
+      is_admin: user.is_admin,
+    };
+    req.auth = {
+      kind: 'api_key',
+      apiKeyId: rows[0].id,
+      scopes: rows[0].scopes || [],
+    };
     return;
   }
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = payload;
-    req.auth = { kind: 'jwt', scopes: null };
-    
+    const isImpersonation = Boolean(payload.impersonated_by);
+
+    // Validate JWT standard claims (sub, iss, aud)
+    if (!payload.sub || !payload.iss || !payload.aud) {
+      logger.warn('JWT missing standard claims - re-login required', {
+        userId: payload.userId,
+        hasSub: Boolean(payload.sub),
+        hasIss: Boolean(payload.iss),
+        hasAud: Boolean(payload.aud),
+      });
+      throw new Error('Session expired - please log in again');
+    }
+    if (payload.iss !== 'https://crowdpay.io') {
+      logger.warn('JWT invalid issuer', { iss: payload.iss });
+      throw new Error('Session expired - please log in again');
+    }
+    if (payload.aud !== 'crowdpay-api') {
+      logger.warn('JWT invalid audience', { aud: payload.aud });
+      throw new Error('Session expired - please log in again');
+    }
+
+    req.user = { ...payload };
+    req.auth = { kind: 'jwt', scopes: null, impersonated: isImpersonation };
+    if (isImpersonation) {
+      req.impersonation = {
+        adminUserId: payload.impersonated_by,
+        targetUserId: payload.userId,
+      };
+    }
+
     // Load admin status from database
     if (req.user.userId) {
-      const { rows } = await db.query(
-        'SELECT is_admin, is_banned FROM users WHERE id = $1',
-        [req.user.userId]
-      );
+      const { rows } = await db.query('SELECT role, is_admin, is_banned FROM users WHERE id = $1', [
+        req.user.userId,
+      ]);
       if (rows.length) {
-        req.user.is_admin = rows[0].is_admin;
+        const loadedRole = rows[0].role || req.user.role || 'contributor';
+        req.user.role =
+          isImpersonation && (rows[0].is_admin || loadedRole === 'admin')
+            ? 'contributor'
+            : loadedRole;
+        req.user.is_admin = isImpersonation ? false : rows[0].is_admin;
         req.user.is_banned = rows[0].is_banned;
+        if (!isImpersonation && rows[0].is_admin) {
+          req.user.role = 'admin';
+        }
       }
     }
-  } catch {
+  } catch (err) {
+    if (err.message === 'Session expired - please log in again') {
+      throw err;
+    }
     throw new Error('Invalid token');
+  }
+}
+
+function isImpersonatedRequest(req) {
+  return Boolean(req.auth?.impersonated || req.impersonation || req.user?.impersonated_by);
+}
+
+function isImpersonationExitPath(req) {
+  return req.method === 'POST' && getRequestPath(req) === '/api/admin/impersonate/exit';
+}
+
+function isImpersonatedRestrictedAction(req) {
+  if (!isImpersonatedRequest(req)) return false;
+  if (isImpersonationExitPath(req)) return false;
+
+  const method = String(req.method || '').toUpperCase();
+  const path = getRequestPath(req);
+
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+    return false;
+  }
+
+  if (method === 'DELETE') {
+    return true;
+  }
+
+  if (path.startsWith('/api/admin')) {
+    return true;
+  }
+
+  if (
+    path.startsWith('/api/withdrawals') ||
+    path.startsWith('/api/contributions') ||
+    path.startsWith('/api/anchor') ||
+    path.startsWith('/api/wallets')
+  ) {
+    return true;
+  }
+
+  if (
+    path.startsWith('/api/users/me') ||
+    path.startsWith('/api/auth/2fa') ||
+    path.startsWith('/api/auth/kyc') ||
+    path.startsWith('/api/users/api-keys') ||
+    path.startsWith('/api/api-keys') ||
+    path.startsWith('/api/webhooks')
+  ) {
+    return true;
+  }
+
+  if (
+    path.startsWith('/api/milestones') ||
+    path.includes('/milestones/') ||
+    path.includes('/trigger-refunds') ||
+    path.includes('/refund')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+async function logImpersonatedRequest(req) {
+  if (!isImpersonatedRequest(req) || !req.impersonation?.adminUserId || !req.user?.userId) {
+    return;
+  }
+
+  try {
+    await db.query(
+      `INSERT INTO admin_actions (admin_user_id, action_type, target_type, target_id, details)
+       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [
+        req.impersonation.adminUserId,
+        'impersonated_request',
+        'user',
+        req.user.userId,
+        JSON.stringify({
+          method: req.method,
+          path: getRequestPath(req),
+        }),
+      ],
+    );
+  } catch (err) {
+    logger.error('Failed to log impersonated request', {
+      error: err.message,
+      adminUserId: req.impersonation.adminUserId,
+      targetUserId: req.user.userId,
+    });
   }
 }
 
@@ -84,7 +253,23 @@ function assertApiKeyScopes(req, res) {
   const path = req.originalUrl.split('?')[0];
   const method = req.method;
 
-  if (path.startsWith('/api/api-keys') || path.startsWith('/api/webhooks')) {
+  if (path.startsWith('/api/v1') || path.startsWith('/v1/')) {
+    if (!scopes.includes('read')) {
+      res.status(403).json({ error: 'API key requires read scope' });
+      return false;
+    }
+    if (method !== 'GET' && method !== 'HEAD' && !scopes.includes('write')) {
+      res.status(403).json({ error: 'API key requires write scope' });
+      return false;
+    }
+    return true;
+  }
+
+  if (
+    path.startsWith('/api/api-keys') ||
+    path.startsWith('/api/users/api-keys') ||
+    path.startsWith('/api/webhooks')
+  ) {
     if (!scopes.includes('developer')) {
       res.status(403).json({ error: 'API key requires developer scope for this resource' });
       return false;
@@ -101,7 +286,9 @@ function assertApiKeyScopes(req, res) {
       return true;
     }
     if (!scopes.includes('withdrawals')) {
-      res.status(403).json({ error: 'API key requires withdrawals scope for withdrawal actions' });
+      res.status(403).json({
+        error: 'API key requires withdrawals scope for withdrawal actions',
+      });
       return false;
     }
     return true;
@@ -125,7 +312,19 @@ function assertApiKeyScopes(req, res) {
 function requireAuth(req, res, next) {
   authenticate(req)
     .then(() => {
+      if (req.user?.is_banned) {
+        return res.status(403).json({ error: 'Account suspended' });
+      }
+      return Promise.resolve();
+    })
+    .then(async () => {
       if (!assertApiKeyScopes(req, res)) return;
+      if (req.user?.userId) Sentry.setUser({ id: req.user.userId });
+      await logImpersonatedRequest(req);
+      if (isImpersonatedRestrictedAction(req)) {
+        res.status(403).json({ error: 'Impersonation mode cannot perform this action' });
+        return;
+      }
       next();
     })
     .catch((err) => {
@@ -135,9 +334,12 @@ function requireAuth(req, res, next) {
 }
 
 module.exports = {
+  ACCESS_TOKEN_COOKIE_NAME,
+  IMPERSONATION_TOKEN_COOKIE_NAME,
   requireAuth,
   authenticate,
   assertApiKeyScopes,
+  isImpersonatedRestrictedAction,
   hashApiKey,
   requireAdmin,
   requireRole,

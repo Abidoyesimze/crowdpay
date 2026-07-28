@@ -1,71 +1,142 @@
 const router = require('express').Router();
 const db = require('../config/database');
+const logger = require('../config/logger');
 const { requireAuth } = require('../middleware/auth');
-const { createKycSession, isKycRequiredForCampaigns } = require('../services/kycProvider');
+const { isKycRequiredForCampaigns } = require('../services/kycProvider');
+const { startKycForUser } = require('../services/kycService');
 const { listCreatorCampaigns, listUserContributions } = require('../services/userDashboardService');
+const { listFollowedCampaigns } = require('../services/campaignFollowService');
+const { evaluateBadges, getLeaderboard } = require('../services/badgeService');
+const { ensureCustodialAccountFundedAndTrusted } = require('../services/stellarService');
+const { withDecryptedWalletSecret } = require('../services/walletSecrets');
+const { sendWalletFundingFailedEmail } = require('../services/emailService');
+const asyncHandler = require('../utils/asyncHandler');
 
-router.get('/me', requireAuth, async (req, res) => {
+router.get('/me', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
-    `SELECT id, email, name, wallet_public_key, wallet_type, role, kyc_status, kyc_completed_at, created_at
+    `SELECT id, email, name, wallet_public_key, wallet_type, role, kyc_status, kyc_completed_at, wallet_funded_at, wallet_funding_failed_at, created_at
      FROM users
      WHERE id = $1`,
     [req.user.userId]
   );
   if (!rows.length) return res.status(404).json({ error: 'User not found' });
-  res.json({ ...rows[0], kyc_required_for_campaigns: isKycRequiredForCampaigns() });
-});
+  res.json({
+    ...rows[0],
+    kyc_required_for_campaigns: isKycRequiredForCampaigns(),
+    impersonation: req.impersonation
+      ? {
+          active: true,
+          admin_user_id: req.impersonation.adminUserId,
+        }
+      : null,
+    impersonated_by: req.impersonation?.adminUserId || null,
+  });
+}));
 
-router.post('/me/kyc/start', requireAuth, async (req, res) => {
+async function handleRetryWalletFunding(req, res) {
+  const targetUserId = (req.user.role === 'admin' && req.body?.userId)
+    ? req.body.userId
+    : req.user.userId;
+
   const { rows } = await db.query(
-    `SELECT id, email, name, role, kyc_status
-     FROM users
-     WHERE id = $1`,
-    [req.user.userId]
+    'SELECT id, email, name, wallet_public_key, wallet_secret_encrypted, wallet_type, wallet_funded_at, wallet_funding_failed_at FROM users WHERE id = $1',
+    [targetUserId]
   );
-  if (!rows.length) return res.status(404).json({ error: 'User not found' });
+
+  if (!rows.length) {
+    return res.status(404).json({ error: 'User not found' });
+  }
 
   const user = rows[0];
-  if (user.kyc_status === 'verified') {
-    return res.json({
-      status: 'verified',
-      message: 'Identity verification is already complete.',
-    });
+
+  if (user.wallet_type !== 'custodial') {
+    return res.status(400).json({ error: 'Non-custodial (freighter) wallets do not require background funding' });
+  }
+
+  if (!user.wallet_secret_encrypted) {
+    return res.status(400).json({ error: 'No wallet secret found for user' });
+  }
+
+  let decryptedSecret = null;
+  try {
+    await withDecryptedWalletSecret(
+      user.wallet_secret_encrypted,
+      { userId: user.id, walletPublicKey: user.wallet_public_key },
+      async (secret) => {
+        decryptedSecret = secret;
+      }
+    );
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to decrypt wallet secret', details: err.message });
   }
 
   try {
-    const session = await createKycSession({ user });
-    const { rows: updatedRows } = await db.query(
-      `UPDATE users
-       SET kyc_status = 'pending',
-           kyc_provider_reference = COALESCE($2, kyc_provider_reference),
-           kyc_completed_at = NULL
-       WHERE id = $1
-       RETURNING id, email, name, wallet_public_key, role, kyc_status, kyc_completed_at`,
-      [user.id, session.providerReference || null]
+    await ensureCustodialAccountFundedAndTrusted({
+      publicKey: user.wallet_public_key,
+      secret: decryptedSecret,
+    });
+
+    await db.query(
+      'UPDATE users SET wallet_funded_at = NOW(), wallet_funding_failed_at = NULL WHERE id = $1',
+      [user.id]
     );
 
-    res.status(201).json({
-      status: updatedRows[0].kyc_status,
-      provider: session.provider,
-      provider_reference: session.providerReference,
-      redirect_url: session.redirectUrl,
-      session_token: session.sessionToken,
-      user: {
-        ...updatedRows[0],
-        kyc_required_for_campaigns: isKycRequiredForCampaigns(),
-      },
+    res.json({
+      message: 'Wallet funding and trustlines established successfully',
+      funded: true,
+      user_id: user.id,
+      wallet_public_key: user.wallet_public_key,
     });
   } catch (err) {
+    logger.error('Retry wallet funding failed', { userId: user.id, error: err.message });
+
+    await db.query(
+      'UPDATE users SET wallet_funding_failed_at = NOW() WHERE id = $1',
+      [user.id]
+    );
+
+    sendWalletFundingFailedEmail({
+      to: user.email,
+      name: user.name,
+      walletPublicKey: user.wallet_public_key,
+    }).catch((emailErr) => {
+      logger.error('Failed to send wallet funding failed email on retry', {
+        userId: user.id,
+        error: emailErr.message,
+      });
+    });
+
+    res.status(502).json({
+      error: 'Wallet funding failed. Please check platform funds or try adding funds manually.',
+      details: err.message,
+    });
+  }
+}
+
+router.post('/retry-wallet-funding', requireAuth, asyncHandler(handleRetryWalletFunding));
+router.post('/me/retry-wallet-funding', requireAuth, asyncHandler(handleRetryWalletFunding));
+
+router.post('/me/kyc/start', requireAuth, asyncHandler(async (req, res) => {
+  try {
+    const result = await startKycForUser(req.user.userId);
+    if (result.status === 'verified') {
+      return res.json(result);
+    }
+    res.status(201).json(result);
+  } catch (err) {
+    if (err.statusCode === 404) {
+      return res.status(404).json({ error: err.message });
+    }
     res.status(502).json({ error: err.message || 'Could not start identity verification' });
   }
-});
+}));
 
-router.get('/me/campaigns', requireAuth, async (req, res) => {
+router.get('/me/campaigns', requireAuth, asyncHandler(async (req, res) => {
   const campaigns = await listCreatorCampaigns(req.user.userId);
   res.json(campaigns);
-});
+}));
 
-router.get('/me/stats', requireAuth, async (req, res) => {
+router.get('/me/stats', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT
       COUNT(*)::int AS total_campaigns,
@@ -79,12 +150,160 @@ router.get('/me/stats', requireAuth, async (req, res) => {
     [req.user.userId]
   );
   res.json(rows[0]);
-});
+}));
 
-router.get('/me/contributions', requireAuth, async (req, res) => {
+const { getCampaignBalance } = require('../services/stellarService');
+
+router.get('/me/balance', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    'SELECT wallet_public_key FROM users WHERE id = $1',
+    [req.user.userId]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'User not found' });
+
+  const balance = await getCampaignBalance(rows[0].wallet_public_key);
+  res.json({ balance, public_key: rows[0].wallet_public_key });
+}));
+
+router.get('/me/contributions', requireAuth, asyncHandler(async (req, res) => {
   const rows = await listUserContributions(req.user.userId);
   if (rows === null) return res.status(404).json({ error: 'User not found' });
   res.json(rows);
+}));
+
+router.get('/me/favorites', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT c.id, c.title, c.description, c.target_amount, c.raised_amount,
+            c.asset_type, c.status, c.deadline, cf.created_at AS favorited_at
+     FROM contributor_favorites cf
+     JOIN campaigns c ON c.id = cf.campaign_id
+     WHERE cf.user_id = $1
+     ORDER BY cf.created_at DESC`,
+    [req.user.userId]
+  );
+  res.json(rows);
+}));
+
+// Public contributor leaderboard (#597). Declared before /me routes so the
+// literal path is not shadowed by a parameterised one.
+router.get('/leaderboard', asyncHandler(async (req, res) => {
+  const leaderboard = await getLeaderboard({ limit: req.query.limit });
+  res.json(leaderboard);
+}));
+
+router.get('/me/badges', requireAuth, asyncHandler(async (req, res) => {
+  const badges = await evaluateBadges(req.user.userId);
+  res.json(badges);
+}));
+
+router.get('/me/following', requireAuth, asyncHandler(async (req, res) => {
+  const campaigns = await listFollowedCampaigns(req.user.userId);
+  res.json(campaigns);
+}));
+
+router.get('/me/notification-preferences', requireAuth, asyncHandler(async (req, res) => {
+  const { rows: users } = await db.query(
+    'SELECT email FROM users WHERE id = $1',
+    [req.user.userId]
+  );
+  if (!users.length) return res.status(404).json({ error: 'User not found' });
+
+  const email = String(users[0].email).toLowerCase();
+  const { rows } = await db.query(
+    `SELECT category
+     FROM email_unsubscribes
+     WHERE email = $1
+       AND category IN ('campaign_update', 'weekly_digest')`,
+    [email]
+  );
+  const unsubscribed = new Set(rows.map((row) => row.category));
+
+  res.json({
+    campaign_update_emails: !unsubscribed.has('campaign_update'),
+    weekly_digest_emails: !unsubscribed.has('weekly_digest'),
+  });
+}));
+
+router.patch('/me/notification-preferences', requireAuth, asyncHandler(async (req, res) => {
+  const { rows: users } = await db.query(
+    'SELECT email FROM users WHERE id = $1',
+    [req.user.userId]
+  );
+  if (!users.length) return res.status(404).json({ error: 'User not found' });
+
+  const email = String(users[0].email).toLowerCase();
+  const updates = [];
+  if (typeof req.body?.campaign_update_emails === 'boolean') {
+    updates.push({ category: 'campaign_update', enabled: req.body.campaign_update_emails });
+  }
+  if (typeof req.body?.weekly_digest_emails === 'boolean') {
+    updates.push({ category: 'weekly_digest', enabled: req.body.weekly_digest_emails });
+  }
+  if (!updates.length) {
+    return res.status(400).json({ error: 'At least one notification preference must be provided' });
+  }
+
+  for (const update of updates) {
+    if (update.enabled) {
+      await db.query(
+        'DELETE FROM email_unsubscribes WHERE email = $1 AND category = $2',
+        [email, update.category]
+      );
+    } else {
+      await db.query(
+        `INSERT INTO email_unsubscribes (email, category)
+         VALUES ($1, $2)
+         ON CONFLICT (email, category) DO NOTHING`,
+        [email, update.category]
+      );
+    }
+  }
+
+  const { rows: currentRows } = await db.query(
+    `SELECT category
+     FROM email_unsubscribes
+     WHERE email = $1
+       AND category IN ('campaign_update', 'weekly_digest')`,
+    [email]
+  );
+  const unsubscribed = new Set(currentRows.map((row) => row.category));
+  res.json({
+    campaign_update_emails: !unsubscribed.has('campaign_update'),
+    weekly_digest_emails: !unsubscribed.has('weekly_digest'),
+  });
+}));
+
+const { getUserDashboardAnalytics } = require('../services/analyticsService');
+
+router.get('/me/dashboard/analytics', requireAuth, asyncHandler(async (req, res) => {
+  const data = await getUserDashboardAnalytics(req.user.userId);
+  res.json(data);
+}));
+
+// GET /api/users/me — already proposed in issue #163, implement together
+router.get('/me', requireAuth, async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT id, email, name, wallet_public_key, created_at FROM users WHERE id = $1`,
+    [req.user.userId]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'User not found' });
+  res.json(rows[0]);
 });
+
+// PATCH /api/users/me — update display name only
+router.patch('/me', requireAuth, async (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'name is required' });
+  }
+  const { rows } = await db.query(
+    `UPDATE users SET name = $1 WHERE id = $2
+     RETURNING id, email, name, wallet_public_key, created_at`,
+    [name.trim(), req.user.userId]
+  );
+  res.json(rows[0]);
+});
+
+router.use('/api-keys', require('./apiKeys'));
 
 module.exports = router;

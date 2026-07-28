@@ -1,0 +1,167 @@
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const { authenticator } = require('otplib');
+const qrcode = require('qrcode');
+const db = require('../config/database');
+const logger = require('../config/logger');
+
+const TOTP_WINDOW = 1;
+const BACKUP_CODE_COUNT = 10;
+const DEVICE_TRUST_DAYS = 30;
+
+function generateFingerprint(req) {
+  const raw = [
+    req.headers['user-agent'] || '',
+    req.headers['accept-language'] || '',
+  ].join('|');
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+function parseJwtExpiresIn(value) {
+  const match = String(value).match(/^(\d+)([smhd])$/);
+  if (!match) return 900;
+  const num = parseInt(match[1], 10);
+  const unit = match[2];
+  if (unit === 's') return num;
+  if (unit === 'm') return num * 60;
+  if (unit === 'h') return num * 60 * 60;
+  if (unit === 'd') return num * 24 * 60 * 60;
+  return 900;
+}
+
+function getDeviceTrustTtlMs() {
+  const days = parseInt(process.env.DEVICE_TRUST_DAYS, 10) || DEVICE_TRUST_DAYS;
+  return days * 24 * 60 * 60 * 1000;
+}
+
+function verifyTotp(secret, token) {
+  return authenticator.verify({ token, secret, window: TOTP_WINDOW });
+}
+
+function generateSecret() {
+  return authenticator.generateSecret();
+}
+
+function buildOtpauthUri(email, secret) {
+  return authenticator.keyuri(email, 'CrowdPay', secret);
+}
+
+async function generateQrCode(otpauth) {
+  return qrcode.toDataURL(otpauth);
+}
+
+async function generateBackupCodes() {
+  const raw = Array.from({ length: BACKUP_CODE_COUNT }, () =>
+    crypto.randomBytes(4).toString('hex')
+  );
+  const hashed = await Promise.all(raw.map((code) => bcrypt.hash(code, 10)));
+  return { raw, hashed };
+}
+
+async function verifyBackupCode(backupCodes, code) {
+  for (let i = 0; i < backupCodes.length; i++) {
+    if (await bcrypt.compare(code, backupCodes[i])) {
+      return { valid: true, index: i };
+    }
+  }
+  return { valid: false, index: -1 };
+}
+
+async function removeBackupCode(userId, codes, index) {
+  codes.splice(index, 1);
+  await db.query('UPDATE users SET backup_codes = $1 WHERE id = $2', [
+    codes,
+    userId,
+  ]);
+}
+
+async function logAuditEvent(userId, eventType, req, metadata = {}) {
+  const ip = req.ip || req.connection?.remoteAddress;
+  const userAgent = req.headers?.['user-agent'] || null;
+  await db.query(
+    `INSERT INTO security_audit_log (user_id, event_type, ip_address, user_agent, metadata)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [userId, eventType, ip, userAgent, JSON.stringify(metadata)]
+  );
+  logger.info('2FA audit event', {
+    event: eventType,
+    userId,
+    ip,
+    metadata,
+  });
+}
+
+async function isDeviceTrusted(userId, fingerprint) {
+  const { rows } = await db.query(
+    `SELECT id FROM trusted_devices
+     WHERE user_id = $1 AND device_fingerprint = $2 AND expires_at > NOW()`,
+    [userId, fingerprint]
+  );
+  return rows.length > 0;
+}
+
+async function trustDevice(userId, fingerprint, req) {
+  const deviceName = req.headers['user-agent'] || 'Unknown device';
+  const ip = req.ip || req.connection?.remoteAddress;
+  const expiresAt = new Date(Date.now() + getDeviceTrustTtlMs());
+
+  await db.query(
+    `INSERT INTO trusted_devices (user_id, device_fingerprint, device_name, ip_address, expires_at)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (user_id, device_fingerprint)
+     DO UPDATE SET trusted_at = NOW(), expires_at = $5, ip_address = $4, device_name = $3`,
+    [userId, fingerprint, deviceName, ip, expiresAt]
+  );
+}
+
+async function revokeDevice(userId, deviceId) {
+  const result = await db.query(
+    'DELETE FROM trusted_devices WHERE id = $1 AND user_id = $2',
+    [deviceId, userId]
+  );
+  return result.rowCount > 0;
+}
+
+async function revokeAllDevices(userId) {
+  await db.query('DELETE FROM trusted_devices WHERE user_id = $1', [userId]);
+}
+
+async function getUserDevices(userId) {
+  const { rows } = await db.query(
+    `SELECT id, device_name, ip_address, trusted_at, expires_at
+     FROM trusted_devices
+     WHERE user_id = $1 AND expires_at > NOW()
+     ORDER BY trusted_at DESC`,
+    [userId]
+  );
+  return rows;
+}
+
+async function enforce2faCheck(user) {
+  if (user.enforce_2fa && !user.totp_enabled) {
+    return { enforced: true, message: '2FA is required for your account. Please set up 2FA before continuing.' };
+  }
+  return { enforced: false };
+}
+
+module.exports = {
+  generateFingerprint,
+  verifyTotp,
+  generateSecret,
+  buildOtpauthUri,
+  generateQrCode,
+  generateBackupCodes,
+  verifyBackupCode,
+  removeBackupCode,
+  logAuditEvent,
+  isDeviceTrusted,
+  trustDevice,
+  revokeDevice,
+  revokeAllDevices,
+  getUserDevices,
+  enforce2faCheck,
+  parseJwtExpiresIn,
+  getDeviceTrustTtlMs,
+  TOTP_WINDOW,
+  BACKUP_CODE_COUNT,
+};

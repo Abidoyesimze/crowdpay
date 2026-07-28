@@ -24,6 +24,17 @@ const {
   isTestnet,
   configuredAssets,
 } = require('../config/stellar');
+const Sentry = require("@sentry/node");
+const {
+  TX_TIMEOUT_CONTRIBUTION_S,
+  TX_TIMEOUT_WITHDRAWAL_S,
+  CUSTODIAL_ACCOUNT_BASE_RESERVE_XLM,
+  CUSTODIAL_ACCOUNT_PER_TRUSTLINE_XLM,
+} = require("../config/constants");
+
+const logger = require('../config/logger');
+const db = require('../config/database');
+const { withDecryptedWalletSecret } = require('./walletSecrets');
 
 const PLATFORM_KEYPAIR = Keypair.fromSecret(process.env.PLATFORM_SECRET_KEY);
 
@@ -65,9 +76,10 @@ function accountHasCreditTrustline(account, assetCode) {
 
 /** Minimum starting XLM for a new account that will hold `trustlineCount` trust lines (approximate). */
 function suggestedFundingXlmForCustodialAccount(trustlineCount) {
-  const base = 2.5;
-  const perTrustline = 0.51;
-  return (base + Math.max(0, trustlineCount) * perTrustline).toFixed(7);
+  return (
+    CUSTODIAL_ACCOUNT_BASE_RESERVE_XLM +
+    Math.max(0, trustlineCount) * CUSTODIAL_ACCOUNT_PER_TRUSTLINE_XLM
+  ).toFixed(7);
 }
 
 async function accountExistsOnLedger(publicKey) {
@@ -101,7 +113,7 @@ async function fundCustodialAccountFromPlatformIfNeeded(publicKey) {
         startingBalance,
       })
     )
-    .setTimeout(30)
+    .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
     .build();
 
   tx.sign(PLATFORM_KEYPAIR);
@@ -131,7 +143,7 @@ async function submitMissingTrustlinesForCustodialAccount(signerSecret) {
 
   if (!missing) return null;
 
-  const tx = builder.setTimeout(30).build();
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
   tx.sign(keypair);
   const result = await server.submitTransaction(tx);
   return result.hash;
@@ -175,7 +187,7 @@ async function createCampaignWallet(creatorPublicKey) {
         startingBalance: campaignStartingBalance,
       })
     )
-    .setTimeout(30)
+    .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
     .build();
 
   tx.sign(PLATFORM_KEYPAIR);
@@ -212,7 +224,7 @@ async function createCampaignWallet(creatorPublicKey) {
         highThreshold: 2,
       })
     )
-    .setTimeout(30)
+    .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
     .build();
 
   setupTx.sign(campaignKeypair);
@@ -257,6 +269,7 @@ async function buildUnsignedContributionPayment({
     );
   }
 
+  const tx = builder.build();
   return tx.toXDR();
 }
 
@@ -271,6 +284,7 @@ async function prepareSignedContributionPayment({
   memo,
 }) {
   const senderKeypair = Keypair.fromSecret(senderSecret);
+  const { feeAmount } = calcFee(amount);
   const unsignedXdr = await buildUnsignedContributionPayment({
     senderPublicKey: senderKeypair.publicKey(),
     destinationPublicKey,
@@ -343,6 +357,7 @@ async function buildUnsignedContributionPathPayment({
     );
   }
 
+  const tx = builder.build();
   return tx.toXDR();
 }
 
@@ -359,6 +374,7 @@ async function prepareSignedContributionPathPayment({
   memo,
 }) {
   const senderKeypair = Keypair.fromSecret(senderSecret);
+  const { feeAmount } = calcFee(destAmount);
   const unsignedXdr = await buildUnsignedContributionPathPayment({
     senderPublicKey: senderKeypair.publicKey(),
     destinationPublicKey,
@@ -438,7 +454,39 @@ async function buildWithdrawalTransaction({
         amount: String(amount),
       })
     )
-    .setTimeout(300) // 5 minutes for both parties to sign
+    .setTimeout(TX_TIMEOUT_WITHDRAWAL_S) // platform approver may not be available immediately (see issue #128)
+    .build();
+
+  return tx.toXDR();
+}
+
+/**
+ * Build a batch refund transaction for a campaign wallet returning funds to multiple contributors.
+ * Returns the unsigned XDR.
+ */
+async function buildBatchRefundTransaction({
+  campaignWalletPublicKey,
+  refunds,
+}) {
+  const campaignAccount = await server.loadAccount(campaignWalletPublicKey);
+  const builder = new TransactionBuilder(campaignAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  });
+
+  for (const refund of refunds) {
+    const stellarAsset = toStellarAsset(refund.asset);
+    builder.addOperation(
+      Operation.payment({
+        destination: refund.destinationPublicKey,
+        asset: stellarAsset,
+        amount: String(refund.amount),
+      })
+    );
+  }
+
+  const tx = builder
+    .setTimeout(TX_TIMEOUT_WITHDRAWAL_S) // 7 days
     .build();
 
   return tx.toXDR();
@@ -462,6 +510,20 @@ function signTransactionXdr({ xdr, signerSecret }) {
 function signatureCountFromXdr(xdr) {
   const tx = new Transaction(xdr, networkPassphrase);
   return tx.signatures.length;
+}
+
+/**
+ * Returns true if the XDR transaction's maxTime has already passed.
+ * Returns false if the XDR cannot be parsed or has no time bounds set.
+ */
+function isXdrExpired(xdr) {
+  try {
+    const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase);
+    const { timeBounds } = tx;
+    return !!(timeBounds && Math.floor(Date.now() / 1000) > Number(timeBounds.maxTime));
+  } catch {
+    return false;
+  }
 }
 
 async function submitPreparedTransaction(xdr) {
@@ -551,6 +613,137 @@ async function friendbotFund(publicKey) {
   return response.json();
 }
 
+/**
+ * Revoke platform multisig, sweep non-native/native balances to platform, and close Stellar account.
+ * Used during campaign deletion.
+ * @param {Object} campaign - Campaign database row or object containing wallet_public_key, creator_id, etc.
+ * @returns {Promise<Object>} Status object { cleanedUp: boolean, hash?: string, reason?: string }
+ */
+async function revokeAndCloseCampaignWallet(campaign) {
+  const walletPublicKey = campaign?.wallet_public_key;
+  if (!walletPublicKey) {
+    return { cleanedUp: false, reason: 'no_wallet_public_key' };
+  }
+
+  const exists = await accountExistsOnLedger(walletPublicKey);
+  if (!exists) {
+    return { cleanedUp: false, reason: 'account_not_on_ledger' };
+  }
+
+  const account = await server.loadAccount(walletPublicKey);
+
+  let creatorSecret = null;
+  const creatorId = campaign.creator_id;
+  if (creatorId) {
+    try {
+      const { rows: userRows } = await db.query(
+        'SELECT id, wallet_public_key, wallet_secret_encrypted FROM users WHERE id = $1',
+        [creatorId]
+      );
+      if (userRows.length && userRows[0].wallet_secret_encrypted) {
+        const userRow = userRows[0];
+        await withDecryptedWalletSecret(
+          userRow.wallet_secret_encrypted,
+          { userId: userRow.id, walletPublicKey: userRow.wallet_public_key },
+          async (secret) => {
+            creatorSecret = secret;
+          }
+        );
+      }
+    } catch (err) {
+      logger.warn('Failed to retrieve/decrypt creator secret during campaign deletion', {
+        creatorId,
+        error: err.message,
+      });
+    }
+  }
+
+  let campaignSecret = null;
+  if (campaign.wallet_secret_encrypted) {
+    try {
+      await withDecryptedWalletSecret(
+        campaign.wallet_secret_encrypted,
+        { walletPublicKey: campaign.wallet_public_key },
+        async (secret) => {
+          campaignSecret = secret;
+        }
+      );
+    } catch (_err) {
+      // ignore if campaign wallet secret decryption fails
+    }
+  }
+
+  const builder = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  });
+
+  // 1. Sweep non-native credit assets to platform and remove trustlines (limit 0)
+  for (const b of account.balances) {
+    if (b.asset_type !== 'native') {
+      const asset = new Asset(b.asset_code, b.asset_issuer);
+      const balanceVal = parseFloat(b.balance);
+      if (balanceVal > 0) {
+        builder.addOperation(
+          Operation.payment({
+            destination: PLATFORM_KEYPAIR.publicKey(),
+            asset,
+            amount: b.balance,
+          })
+        );
+      }
+      builder.addOperation(
+        Operation.changeTrust({
+          asset,
+          limit: '0',
+        })
+      );
+    }
+  }
+
+  // 2. Remove Platform Signer
+  builder.addOperation(
+    Operation.setOptions({
+      signer: {
+        ed25519PublicKey: PLATFORM_KEYPAIR.publicKey(),
+        weight: 0,
+      },
+    })
+  );
+
+  // 3. Account Merge (sweeps all native XLM and closes account entry on-chain)
+  builder.addOperation(
+    Operation.accountMerge({
+      destination: PLATFORM_KEYPAIR.publicKey(),
+    })
+  );
+
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
+
+  tx.sign(PLATFORM_KEYPAIR);
+
+  if (creatorSecret) {
+    try {
+      const creatorKeypair = Keypair.fromSecret(creatorSecret);
+      tx.sign(creatorKeypair);
+    } catch (_err) {
+      // ignore invalid creator keypair
+    }
+  }
+
+  if (campaignSecret) {
+    try {
+      const campaignKeypair = Keypair.fromSecret(campaignSecret);
+      tx.sign(campaignKeypair);
+    } catch (_err) {
+      // ignore invalid campaign keypair
+    }
+  }
+
+  const result = await server.submitTransaction(tx);
+  return { cleanedUp: true, hash: result.hash };
+}
+
 module.exports = {
   createCampaignWallet,
   toStellarAsset,
@@ -571,11 +764,14 @@ module.exports = {
   getAccountMultisigConfig,
   signTransactionXdr,
   signatureCountFromXdr,
+  isXdrExpired,
   submitSignedWithdrawal,
   recoverWalletFromSecret,
   getWalletTransactionHistory,
   getWalletPayments,
+  revokeAndCloseCampaignWallet,
 
+  accountExistsOnLedger,
   getCampaignBalance,
   friendbotFund,
   PLATFORM_PUBLIC_KEY: PLATFORM_KEYPAIR.publicKey(),

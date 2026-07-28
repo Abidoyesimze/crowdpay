@@ -3,14 +3,22 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
+const totpService = require('../services/totpService');
 const { Keypair } = require('@stellar/stellar-sdk');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { ensureCustodialAccountFundedAndTrusted } = require('../services/stellarService');
-const { sendEmail } = require('../services/emailService');
+const { sendEmail, sendWelcomeEmail, sendWalletFundingFailedEmail } = require('../services/emailService');
 const { requireAuth } = require('../middleware/auth');
 const { encryptWalletSecret } = require('../services/walletSecrets');
 const { isKycRequiredForCampaigns } = require('../services/kycProvider');
+const { startKycForUser, getKycStatusForUser } = require('../services/kycService');
+const {
+  createUserSession,
+  recordLoginAttempt,
+  checkLoginAnomalies,
+} = require('../services/sessionService');
+const asyncHandler = require('../utils/asyncHandler');
 const {
   registerValidation,
   loginValidation,
@@ -27,21 +35,67 @@ const {
  *     description: User registration and login
  */
 
+const ACCESS_TOKEN_COOKIE_NAME = 'cp_token';
 const REFRESH_TOKEN_COOKIE_NAME = 'cp_refresh_token';
 const REFRESH_TOKEN_COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
 const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
 const FORGOT_PASSWORD_MESSAGE =
   'If that email exists, a password reset link has been sent.';
 
+function parseJwtExpiresIn(value) {
+  const match = String(value).match(/^(\d+)([smhd])$/);
+  if (!match) return 15 * 60;
+  const num = parseInt(match[1], 10);
+  const unit = match[2];
+  if (unit === 's') return num;
+  if (unit === 'm') return num * 60;
+  if (unit === 'h') return num * 60 * 60;
+  if (unit === 'd') return num * 24 * 60 * 60;
+  return 15 * 60;
+}
+
+function setAccessTokenCookie(res, token) {
+  res.cookie(ACCESS_TOKEN_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    maxAge: parseJwtExpiresIn(process.env.JWT_EXPIRES_IN || '15m') * 1000,
+  });
+}
+
+function clearAccessTokenCookie(res) {
+  res.clearCookie(ACCESS_TOKEN_COOKIE_NAME, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+  });
+}
+
 const isTest = process.env.NODE_ENV === 'test';
+
+// Per-IP rate limiter: 5 registration attempts per hour
 const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: isTest ? 100000 : 10,
-  message: { error: 'Too many requests, please try again later.' },
+  max: isTest ? 100000 : 5,
+  message: { error: 'Too many registration attempts from this IP. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => isTest,
 });
+
+// Per-email rate limiter: 3 registrations per 24 hours
+const registerEmailLimiter = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000,
+  max: isTest ? 100000 : 3,
+  message: { error: 'Too many registration attempts for this email. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isTest,
+  keyGenerator: (req) => {
+    return String((req.body?.email || '').trim().toLowerCase());
+  },
+});
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: isTest ? 100000 : 20,
@@ -50,6 +104,30 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
   skip: () => isTest,
 });
+
+// Per-IP: 3 TOTP attempts per 30 seconds.
+const totpChallengeLimiter = rateLimit({
+  windowMs: 30 * 1000,
+  max: isTest ? 100000 : 3,
+  message: { error: 'Too many 2FA attempts, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isTest,
+});
+
+// Per-account (by email): 3 TOTP attempts per 30 seconds, independent of IP.
+const totpChallengeEmailLimiter = rateLimit({
+  windowMs: 30 * 1000,
+  max: isTest ? 100000 : 3,
+  message: { error: 'Too many 2FA attempts, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isTest,
+  keyGenerator: (req) => String((req.body?.email || '').trim().toLowerCase()),
+});
+
+const TOTP_MAX_CONSECUTIVE_FAILURES = 10;
+const TOTP_LOCKOUT_MS = 15 * 60 * 1000;
 
 function hashToken(token) {
   return crypto.createHash('sha256').update(token, 'utf8').digest('hex');
@@ -61,7 +139,15 @@ function getFrontendUrl() {
 
 function generateTokens(user) {
   const accessToken = jwt.sign(
-    { userId: user.id, role: user.role },
+    {
+      sub: user.id.toString(),
+      iss: 'https://crowdpay.io',
+      aud: 'crowdpay-api',
+      userId: user.id,
+      email: user.email,
+      is_admin: user.is_admin,
+      role: user.role,
+    },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || '15m' }
   );
@@ -137,7 +223,7 @@ async function rotateRefreshToken(oldToken, userId) {
   return createRefreshToken(userId);
 }
 
-router.post('/register', registerLimiter, registerValidation, validateRequest, async (req, res) => {
+router.post('/register', registerLimiter, registerEmailLimiter, registerValidation, validateRequest, async (req, res) => {
   /**
    * @openapi
    * /api/auth/register:
@@ -224,7 +310,8 @@ router.post('/register', registerLimiter, registerValidation, validateRequest, a
   // Support freighter (non-custodial) registration where frontend provides wallet_public_key
   let publicKey;
   let encryptedSecret = null;
-  let walletType = req.body.wallet_type || 'custodial';
+  let secret = null;
+  const walletType = req.body.wallet_type || 'custodial';
 
   if (walletType === 'freighter') {
     publicKey = req.body.wallet_public_key;
@@ -233,15 +320,17 @@ router.post('/register', registerLimiter, registerValidation, validateRequest, a
   } else {
     const keypair = Keypair.random();
     publicKey = keypair.publicKey();
-    const secret = keypair.secret();
+    secret = keypair.secret();
     encryptedSecret = await encryptWalletSecret(secret, { walletPublicKey: publicKey });
   }
 
+  const walletFundedAt = walletType === 'freighter' ? new Date() : null;
+
   const { rows } = await db.query(
-    `INSERT INTO users (email, password_hash, name, wallet_public_key, wallet_secret_encrypted, role, wallet_type)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     RETURNING id, email, name, wallet_public_key, role, kyc_status, kyc_completed_at, wallet_type`,
-    [normalizedEmail, passwordHash, normalizedName, publicKey, encryptedSecret, userRole, walletType]
+    `INSERT INTO users (email, password_hash, name, wallet_public_key, wallet_secret_encrypted, role, wallet_type, wallet_funded_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id, email, name, wallet_public_key, role, kyc_status, kyc_completed_at, wallet_type, wallet_funded_at, wallet_funding_failed_at`,
+    [normalizedEmail, passwordHash, normalizedName, publicKey, encryptedSecret, userRole, walletType, walletFundedAt]
   );
 
   const user = {
@@ -251,21 +340,71 @@ router.post('/register', registerLimiter, registerValidation, validateRequest, a
   const { accessToken } = generateTokens(user);
   const { token: refreshToken, expiresAt } = await createRefreshToken(user.id);
 
+  // Get the refresh token ID for session tracking
+  const { rows: rtRows } = await db.query(
+    'SELECT id FROM refresh_tokens WHERE token_hash = $1',
+    [hashToken(refreshToken)]
+  );
+  const refreshTokenId = rtRows[0]?.id;
+
+  // Create user session
+  if (refreshTokenId) {
+    await createUserSession(user.id, refreshTokenId, req);
+  }
+
+  // Record successful login attempt
+  await recordLoginAttempt({
+    userId: user.id,
+    email: normalizedEmail,
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+    success: true,
+  });
+
   setRefreshTokenCookie(res, refreshToken, expiresAt);
+  setAccessTokenCookie(res, accessToken);
 
   const requestId = req.id;
   setImmediate(() => {
-    ensureCustodialAccountFundedAndTrusted({ publicKey, secret }).catch((err) => {
-      logger.error('Background Stellar funding/trustlines failed', {
-        request_id: requestId,
-        error: err.message,
-      });
-    });
+    // Only fund and setup trustlines for custodial wallets
+    if (walletType === 'custodial' && secret) {
+      ensureCustodialAccountFundedAndTrusted({ publicKey, secret })
+        .then(async () => {
+          await db.query(
+            'UPDATE users SET wallet_funded_at = NOW(), wallet_funding_failed_at = NULL WHERE id = $1',
+            [user.id]
+          );
+          logger.info('Background Stellar funding/trustlines succeeded', { userId: user.id });
+        })
+        .catch(async (err) => {
+          logger.error('Background Stellar funding/trustlines failed', {
+            request_id: requestId,
+            userId: user.id,
+            error: err.message,
+          });
+          await db.query(
+            'UPDATE users SET wallet_funding_failed_at = NOW() WHERE id = $1',
+            [user.id]
+          );
+          sendWalletFundingFailedEmail({
+            to: normalizedEmail,
+            name: normalizedName,
+            walletPublicKey: publicKey,
+          }).catch((emailErr) => {
+            logger.error('Failed to send wallet funding failed email', {
+              userId: user.id,
+              error: emailErr.message,
+            });
+          });
+        });
+    }
 
-    sendEmail({
+    sendWelcomeEmail({
       to: normalizedEmail,
-      subject: 'Welcome to CrowdPay!',
-      text: `Welcome ${normalizedName}! Your custodial wallet public key is ${publicKey}.`
+      name: normalizedName,
+      walletPublicKey: publicKey,
+    }).catch((err) => {
+      logger.error('Welcome email failed', { request_id: requestId, error: err.message });
     });
   });
 
@@ -341,14 +480,61 @@ router.post('/login', loginLimiter, loginValidation, validateRequest, async (req
   const { rows } = await db.query('SELECT * FROM users WHERE LOWER(email) = $1', [normalizedEmail]);
 
   if (!rows.length || !(await bcrypt.compare(password, rows[0].password_hash))) {
+    // Record failed login attempt
+    await recordLoginAttempt({
+      email: normalizedEmail,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      success: false,
+      failureReason: 'Invalid credentials',
+    });
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
   const user = rows[0];
+
+  const enforceResult = await totpService.enforce2faCheck(user);
+  if (enforceResult.enforced) {
+    return res.status(403).json({ error: enforceResult.message });
+  }
+
+  if (user.totp_enabled) {
+    const fingerprint = totpService.generateFingerprint(req);
+    const trusted = await totpService.isDeviceTrusted(user.id, fingerprint);
+    if (trusted) {
+      // Skip 2FA for trusted device
+    } else {
+      return res.json({ requires_2fa: true });
+    }
+  }
+
   const { accessToken } = generateTokens(user);
   const { token: refreshToken, expiresAt } = await createRefreshToken(user.id);
 
+  // Get the refresh token ID for session tracking
+  const { rows: rtRows } = await db.query(
+    'SELECT id FROM refresh_tokens WHERE token_hash = $1',
+    [hashToken(refreshToken)]
+  );
+  const refreshTokenId = rtRows[0]?.id;
+
+  // Create user session
+  if (refreshTokenId) {
+    await createUserSession(user.id, refreshTokenId, req);
+  }
+
+  // Check for login anomalies and record attempt
+  await checkLoginAnomalies(user.id, user.email, req);
+  await recordLoginAttempt({
+    userId: user.id,
+    email: normalizedEmail,
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+    success: true,
+  });
+
   setRefreshTokenCookie(res, refreshToken, expiresAt);
+  setAccessTokenCookie(res, accessToken);
 
   res.json({
     token: accessToken,
@@ -364,6 +550,289 @@ router.post('/login', loginLimiter, loginValidation, validateRequest, async (req
       kyc_required_for_campaigns: isKycRequiredForCampaigns(),
     },
   });
+});
+
+router.post('/2fa/challenge', totpChallengeLimiter, totpChallengeEmailLimiter, validateRequest, async (req, res) => {
+  const { email, password, code } = req.body;
+  if (!email || !password || !code) {
+    return res.status(400).json({ error: 'Email, password, and code are required' });
+  }
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const { rows } = await db.query('SELECT * FROM users WHERE LOWER(email) = $1', [normalizedEmail]);
+
+  if (!rows.length || !(await bcrypt.compare(password, rows[0].password_hash))) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  const user = rows[0];
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled for this account' });
+  }
+
+  if (user.totp_locked_until && new Date(user.totp_locked_until) > new Date()) {
+    logger.warn('TOTP challenge blocked: account locked', {
+      event: 'totp_locked',
+      userId: user.id,
+      ip: req.ip,
+    });
+    return res.status(423).json({ error: 'Too many failed 2FA attempts. Try again later.' });
+  }
+
+  let codeValid = false;
+
+  if (code.length === 6) {
+    codeValid = totpService.verifyTotp(user.totp_secret, code);
+  } else if (user.backup_codes && user.backup_codes.length > 0) {
+    const result = await totpService.verifyBackupCode(user.backup_codes, code);
+    if (result.valid) {
+      codeValid = true;
+      await totpService.removeBackupCode(user.id, user.backup_codes, result.index);
+    }
+  }
+
+  if (!codeValid) {
+    const failedAttempts = (user.totp_failed_attempts || 0) + 1;
+    const lockingOut = failedAttempts >= TOTP_MAX_CONSECUTIVE_FAILURES;
+    await db.query(
+      'UPDATE users SET totp_failed_attempts = $1, totp_locked_until = $2 WHERE id = $3',
+      [
+        lockingOut ? 0 : failedAttempts,
+        lockingOut ? new Date(Date.now() + TOTP_LOCKOUT_MS) : null,
+        user.id,
+      ]
+    );
+    await totpService.logAuditEvent(user.id, 'totp_challenge_failed', req, {
+      consecutiveFailures: failedAttempts,
+      lockedOut: lockingOut,
+    });
+    logger.warn('Failed 2FA attempt', {
+      event: 'totp_failed_attempt',
+      userId: user.id,
+      ip: req.ip,
+      consecutiveFailures: failedAttempts,
+      lockedOut: lockingOut,
+    });
+    return res.status(401).json({ error: 'Invalid 2FA code' });
+  }
+
+  if (user.totp_failed_attempts) {
+    await db.query(
+      'UPDATE users SET totp_failed_attempts = 0, totp_locked_until = NULL WHERE id = $1',
+      [user.id]
+    );
+  }
+
+  const fingerprint = totpService.generateFingerprint(req);
+  const wasBackupCode = code.length !== 6;
+  await totpService.logAuditEvent(user.id, 'totp_challenge_success', req, {
+    method: wasBackupCode ? 'backup_code' : 'totp',
+  });
+
+  const { accessToken } = generateTokens(user);
+  const { token: refreshToken, expiresAt } = await createRefreshToken(user.id);
+
+  setRefreshTokenCookie(res, refreshToken, expiresAt);
+  setAccessTokenCookie(res, accessToken);
+
+  res.json({
+    token: accessToken,
+    device_trusted: await totpService.isDeviceTrusted(user.id, fingerprint),
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      wallet_public_key: user.wallet_public_key,
+      wallet_type: user.wallet_type || 'custodial',
+      role: user.role,
+      kyc_status: user.kyc_status,
+      kyc_completed_at: user.kyc_completed_at,
+      kyc_required_for_campaigns: isKycRequiredForCampaigns(),
+    },
+  });
+});
+
+router.post('/2fa/setup', requireAuth, async (req, res) => {
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (user.role !== 'admin' && user.role !== 'creator') {
+    return res.status(403).json({ error: '2FA is only available for creator and admin accounts' });
+  }
+  if (user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is already enabled' });
+  }
+
+  const secret = totpService.generateSecret();
+  const otpauth = totpService.buildOtpauthUri(user.email, secret);
+  const qrCodeDataUrl = await totpService.generateQrCode(otpauth);
+
+  await db.query('UPDATE users SET totp_secret = $1 WHERE id = $2', [secret, user.id]);
+  await totpService.logAuditEvent(user.id, 'totp_setup_initiated', req);
+
+  res.json({
+    secret,
+    qrCodeDataUrl
+  });
+});
+
+router.post('/2fa/verify', requireAuth, async (req, res) => {
+  const { code } = req.body;
+  if (!code) {
+    return res.status(400).json({ error: 'Code is required' });
+  }
+
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_secret) {
+    return res.status(400).json({ error: '2FA setup not initiated' });
+  }
+
+  const isValid = totpService.verifyTotp(user.totp_secret, code);
+  if (!isValid) {
+    return res.status(401).json({ error: 'Invalid 2FA code' });
+  }
+
+  const { raw: rawBackupCodes, hashed: hashedBackupCodes } = await totpService.generateBackupCodes();
+
+  await db.query('UPDATE users SET totp_enabled = true, backup_codes = $1 WHERE id = $2', [hashedBackupCodes, user.id]);
+  await totpService.logAuditEvent(user.id, 'totp_enabled', req);
+
+  res.json({
+    message: '2FA enabled successfully',
+    backupCodes: rawBackupCodes
+  });
+});
+
+router.post('/2fa/disable', requireAuth, async (req, res) => {
+  const { code } = req.body;
+  if (!code) {
+    return res.status(400).json({ error: 'Current 2FA code is required to disable' });
+  }
+
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled' });
+  }
+
+  let codeValid = false;
+  if (code.length === 6) {
+    codeValid = totpService.verifyTotp(user.totp_secret, code);
+  } else if (user.backup_codes && user.backup_codes.length > 0) {
+    const result = await totpService.verifyBackupCode(user.backup_codes, code);
+    if (result.valid) {
+      codeValid = true;
+      await totpService.removeBackupCode(user.id, user.backup_codes, result.index);
+    }
+  }
+
+  if (!codeValid) {
+    return res.status(401).json({ error: 'Invalid 2FA code' });
+  }
+
+  await db.query(
+    'UPDATE users SET totp_enabled = false, totp_secret = NULL, backup_codes = NULL WHERE id = $1',
+    [user.id]
+  );
+  await totpService.revokeAllDevices(user.id);
+  await totpService.logAuditEvent(user.id, 'totp_disabled', req);
+
+  res.json({ message: '2FA disabled successfully' });
+});
+
+router.get('/2fa/backup-codes', requireAuth, async (req, res) => {
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled' });
+  }
+
+  const { raw, hashed } = await totpService.generateBackupCodes();
+  await db.query('UPDATE users SET backup_codes = $1 WHERE id = $2', [hashed, user.id]);
+  await totpService.logAuditEvent(user.id, 'backup_codes_regenerated', req);
+
+  res.json({ backupCodes: raw });
+});
+
+router.post('/2fa/trust-device', requireAuth, async (req, res) => {
+  const { code } = req.body;
+  if (!code) {
+    return res.status(400).json({ error: '2FA code is required to trust device' });
+  }
+
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled' });
+  }
+
+  const isValid = totpService.verifyTotp(user.totp_secret, code);
+  if (!isValid) {
+    return res.status(401).json({ error: 'Invalid 2FA code' });
+  }
+
+  const fingerprint = totpService.generateFingerprint(req);
+  await totpService.trustDevice(user.id, fingerprint, req);
+  await totpService.logAuditEvent(user.id, 'device_trusted', req);
+
+  res.json({ message: 'Device trusted successfully' });
+});
+
+router.get('/2fa/devices', requireAuth, async (req, res) => {
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled' });
+  }
+
+  const devices = await totpService.getUserDevices(user.id);
+  res.json({ devices });
+});
+
+router.delete('/2fa/devices/:deviceId', requireAuth, async (req, res) => {
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled) {
+    return res.status(400).json({ error: '2FA is not enabled' });
+  }
+
+  const removed = await totpService.revokeDevice(user.id, parseInt(req.params.deviceId, 10));
+  if (!removed) {
+    return res.status(404).json({ error: 'Device not found' });
+  }
+
+  await totpService.logAuditEvent(user.id, 'device_revoked', req, {
+    deviceId: parseInt(req.params.deviceId, 10),
+  });
+
+  res.json({ message: 'Device removed' });
+});
+
+router.get('/2fa/audit-log', requireAuth, async (req, res) => {
+  const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [req.user.userId]);
+  const user = rows[0];
+
+  if (!user.totp_enabled && user.role !== 'admin') {
+    return res.status(403).json({ error: '2FA is not enabled' });
+  }
+
+  const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+  const { rows: events } = await db.query(
+    `SELECT id, event_type, ip_address, user_agent, metadata, created_at
+     FROM security_audit_log
+     WHERE user_id = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [user.id, limit]
+  );
+
+  res.json({ events });
 });
 
 router.post('/refresh', async (req, res) => {
@@ -381,9 +850,9 @@ router.post('/refresh', async (req, res) => {
   const { token: newRefreshToken, expiresAt } = await rotateRefreshToken(token, user.id);
 
   setRefreshTokenCookie(res, newRefreshToken, expiresAt);
+  setAccessTokenCookie(res, accessToken);
 
   res.json({
-    token: accessToken,
     user: {
       id: user.id,
       email: user.email,
@@ -398,13 +867,14 @@ router.post('/refresh', async (req, res) => {
   });
 });
 
-router.post('/logout', requireAuth, async (req, res) => {
+router.post('/logout', async (req, res) => {
   const token = req.cookies?.[REFRESH_TOKEN_COOKIE_NAME];
   if (token) {
     await revokeRefreshToken(token);
   }
   clearRefreshTokenCookie(res);
-  res.json({ message: 'Logged out successfully' });
+  clearAccessTokenCookie(res);
+  res.json({ ok: true });
 });
 
 router.post(
@@ -494,5 +964,32 @@ router.post(
     res.json({ message: 'Password reset successfully' });
   }
 );
+
+router.post('/kyc/start', requireAuth, asyncHandler(async (req, res) => {
+  try {
+    const result = await startKycForUser(req.user.userId);
+    if (result.status === 'verified') {
+      return res.json(result);
+    }
+    res.status(201).json(result);
+  } catch (err) {
+    if (err.statusCode === 404) {
+      return res.status(404).json({ error: err.message });
+    }
+    res.status(502).json({ error: err.message || 'Could not start identity verification' });
+  }
+}));
+
+router.get('/kyc/status', requireAuth, asyncHandler(async (req, res) => {
+  try {
+    const status = await getKycStatusForUser(req.user.userId);
+    res.json(status);
+  } catch (err) {
+    if (err.statusCode === 404) {
+      return res.status(404).json({ error: err.message });
+    }
+    throw err;
+  }
+}));
 
 module.exports = router;

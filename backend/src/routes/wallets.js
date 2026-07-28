@@ -1,6 +1,8 @@
 const router = require('express').Router();
+const rateLimit = require('express-rate-limit');
 const db = require('../config/database');
 const { requireAuth } = require('../middleware/auth');
+const { logAdminAction } = require('./admin');
 const {
   getAccountMultisigConfig,
   getWalletTransactionHistory,
@@ -8,62 +10,82 @@ const {
   recoverWalletFromSecret,
 } = require('../services/stellarService');
 const { decryptSecret } = require('../services/walletService');
+const { parsePagination } = require('../utils/pagination');
+const asyncHandler = require('../utils/asyncHandler');
+
+const isTest = process.env.NODE_ENV === 'test';
+const recoverLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: isTest ? 100000 : 3,
+  message: { error: 'Too many requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isTest,
+});
 
 // Get wallet configuration (signers, thresholds)
-router.get('/:campaignId/config', requireAuth, async (req, res) => {
+router.get('/:campaignId/config', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     'SELECT wallet_public_key, creator_id FROM campaigns WHERE id = $1',
     [req.params.campaignId]
   );
   if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
-  if (rows[0].creator_id !== req.user.userId) {
+  if (rows[0].creator_id !== req.user.userId && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Unauthorized' });
   }
 
   const config = await getAccountMultisigConfig(rows[0].wallet_public_key);
   res.json(config);
-});
+}));
 
 // Get wallet transaction history
-router.get('/:campaignId/transactions', requireAuth, async (req, res) => {
+router.get('/:campaignId/transactions', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     'SELECT wallet_public_key, creator_id FROM campaigns WHERE id = $1',
     [req.params.campaignId]
   );
   if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
-  if (rows[0].creator_id !== req.user.userId) {
+  if (rows[0].creator_id !== req.user.userId && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Unauthorized' });
   }
 
-  const limit = parseInt(req.query.limit) || 50;
+  const { limit } = parsePagination(req.query, { limit: 50, max: 100 });
   const txs = await getWalletTransactionHistory(rows[0].wallet_public_key, limit);
   res.json(txs);
-});
+}));
 
 // Get wallet payment history (audit trail)
-router.get('/:campaignId/payments', requireAuth, async (req, res) => {
+router.get('/:campaignId/payments', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     'SELECT wallet_public_key, creator_id FROM campaigns WHERE id = $1',
     [req.params.campaignId]
   );
   if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
-  if (rows[0].creator_id !== req.user.userId) {
+  if (rows[0].creator_id !== req.user.userId && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Unauthorized' });
   }
 
-  const limit = parseInt(req.query.limit) || 100;
+  const { limit } = parsePagination(req.query, { limit: 100, max: 200 });
   const payments = await getWalletPayments(rows[0].wallet_public_key, limit);
   res.json(payments);
-});
+}));
 
-// Recover wallet keypair (admin only - requires encrypted secret)
-router.post('/:campaignId/recover', requireAuth, async (req, res) => {
+// Recover wallet keypair (owner or admin; requires encrypted secret)
+router.post('/:campaignId/recover', recoverLimiter, requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     'SELECT wallet_secret_encrypted, creator_id FROM campaigns WHERE id = $1',
     [req.params.campaignId]
   );
   if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
-  if (rows[0].creator_id !== req.user.userId) {
+
+  const isOwner = rows[0].creator_id === req.user.userId;
+  const isAdmin = req.user.role === 'admin';
+  if (!isOwner && !isAdmin) {
+    await logAdminAction(req.user.userId, 'wallet_recover', 'campaign', req.params.campaignId, {
+      campaignId: req.params.campaignId,
+      outcome: 'denied',
+      requesterId: req.user.userId,
+    });
     return res.status(403).json({ error: 'Unauthorized' });
   }
   if (!rows[0].wallet_secret_encrypted) {
@@ -72,7 +94,12 @@ router.post('/:campaignId/recover', requireAuth, async (req, res) => {
 
   const secret = decryptSecret(rows[0].wallet_secret_encrypted);
   const wallet = recoverWalletFromSecret(secret);
+  await logAdminAction(req.user.userId, 'wallet_recover', 'campaign', req.params.campaignId, {
+    campaignId: req.params.campaignId,
+    outcome: 'success',
+    requesterId: req.user.userId,
+  });
   res.json({ publicKey: wallet.publicKey });
-});
+}));
 
 module.exports = router;
