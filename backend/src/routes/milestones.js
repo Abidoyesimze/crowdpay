@@ -24,10 +24,10 @@ const { invokeContract, nativeToScVal, releaseMilestone } = require('../services
 const { uploadMilestoneEvidence } = require('../services/storage');
 const { createNotification } = require('../services/notifications');
 const { notifyFollowers } = require('../services/campaignFollowService');
+const { notifyContributorFundRelease } = require('../services/fundReleaseNotifications');
 const { evaluateCampaign } = require('../services/fraudService');
 const {
   sendMilestoneReleasedCreatorEmail,
-  sendMilestoneReleasedContributorEmail,
   sendMilestoneEvidenceSubmittedAdminEmail,
 } = require('../services/emailService');
 const asyncHandler = require('../utils/asyncHandler');
@@ -792,19 +792,19 @@ const approveMilestoneReleaseHandler = async (req, res) => {
           [req.user.userId, ...contributors.map((contributor) => contributor.id)]
         ).catch((e) => logger.error('Milestone follower notify failed', { error: e.message }));
 
-        return Promise.all(
-          contributors.map((contributor) =>
-            sendMilestoneReleasedContributorEmail({
-              to: contributor.email,
-              milestoneId: milestone.id,
-              contributorName: contributor.name,
-              campaignTitle: milestone.campaign_title,
-              campaignUrl,
-              milestoneTitle: milestone.title,
-            })
-          )
-        );
-      }).catch((e) => logger.error('Milestone contributor email failed', { error: e.message }));
+        return contributors;
+      }).catch((e) => logger.error('Milestone follower notify failed', { error: e.message }));
+
+      notifyContributorFundRelease({
+        campaignId: milestone.campaign_id,
+        campaignTitle: milestone.campaign_title,
+        amount: releaseAmount,
+        asset: milestone.asset_type,
+        txHash,
+        usage: `Milestone "${milestone.title}" was approved and released.`,
+        recipient: milestone.destination_key,
+        excludeUserIds: [req.user.userId],
+      }).catch((e) => logger.error('Contributor fund release notify failed', { error: e.message }));
     });
 
     evaluateCampaign(milestone.campaign_id).catch(err => logger.error('Fraud evaluate failed in milestone approve', { error: err.message }));

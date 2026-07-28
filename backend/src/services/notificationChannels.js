@@ -6,7 +6,7 @@ const logger = require('../config/logger');
 // (HTTP webhook shape, SMS provider, push provider) from the notification
 // service, which only decides *whether* and *where* to deliver.
 
-const CHANNELS = ['in_app', 'push', 'slack', 'discord', 'sms'];
+const CHANNELS = ['in_app', 'email', 'push', 'slack', 'discord', 'sms'];
 
 // Events important enough to bypass quiet-hours batching and deliver
 // immediately (issue #429: campaign deadline, withdrawal approved, etc).
@@ -16,6 +16,7 @@ const CRITICAL_EVENT_TYPES = new Set([
   'withdrawal_rejected',
   'campaign_failed',
   'refund_available',
+  'funds_released',
   'dispute_opened',
   'dispute_resolved',
 ]);

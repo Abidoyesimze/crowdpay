@@ -22,6 +22,7 @@ const { sendWithdrawalApprovedEmail, sendWithdrawalRejectedEmail } = require('..
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { withDecryptedWalletSecret } = require('../services/walletSecrets');
 const { createNotification } = require('../services/notifications');
+const { notifyContributorFundRelease } = require('../services/fundReleaseNotifications');
 const { parsePagination } = require('../utils/pagination');
 const asyncHandler = require('../utils/asyncHandler');
 
@@ -558,6 +559,17 @@ const platformApproveHandler = async (req, res) => {
           body: `Your withdrawal of ${updatedWithdrawalRow.amount} was approved and submitted on-chain.`,
           link: `/campaigns/${updatedWithdrawalRow.campaign_id}`,
         }).catch(() => {});
+
+        notifyContributorFundRelease({
+          campaignId: updatedWithdrawalRow.campaign_id,
+          campaignTitle: cRows[0].title,
+          amount: updatedWithdrawalRow.amount,
+          asset: cRows[0].asset_type,
+          txHash,
+          usage: 'Creator withdrawal approved by the platform and submitted on-chain.',
+          recipient: updatedWithdrawalRow.destination_key,
+          excludeUserIds: [cRows[0].creator_id],
+        }).catch((err) => logger.error('Contributor withdrawal release notification failed', { error: err.message }));
       }
 
       setImmediate(() => {
