@@ -143,12 +143,21 @@ router.post('/impersonate/:userId', async (req, res) => {
  */
 router.get('/stats', async (req, res) => {
   try {
-    const users = await db.query('SELECT COUNT(*) FROM users WHERE is_banned = false');
-    const bannedUsers = await db.query('SELECT COUNT(*) FROM users WHERE is_banned = true');
-    const campaigns = await db.query('SELECT status, COUNT(*) FROM campaigns WHERE deleted_at IS NULL GROUP BY status');
-    const deletedCampaigns = await db.query('SELECT COUNT(*) FROM campaigns WHERE deleted_at IS NOT NULL');
-    const raised = await db.query('SELECT SUM(raised_amount) as total FROM campaigns WHERE deleted_at IS NULL');
-    const contributions = await db.query('SELECT COUNT(*) FROM contributions');
+    const [
+      users,
+      bannedUsers,
+      campaigns,
+      deletedCampaigns,
+      raised,
+      contributions,
+    ] = await Promise.all([
+      db.query('SELECT COUNT(*) FROM users WHERE is_banned = false'),
+      db.query('SELECT COUNT(*) FROM users WHERE is_banned = true'),
+      db.query('SELECT status, COUNT(*) FROM campaigns WHERE deleted_at IS NULL GROUP BY status'),
+      db.query('SELECT COUNT(*) FROM campaigns WHERE deleted_at IS NOT NULL'),
+      db.query('SELECT SUM(raised_amount) as total FROM campaigns WHERE deleted_at IS NULL'),
+      db.query('SELECT COUNT(*) FROM contributions'),
+    ]);
 
     res.json({
       total_users: parseInt(users.rows[0].count),
