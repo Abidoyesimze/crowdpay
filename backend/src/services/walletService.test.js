@@ -66,3 +66,25 @@ test('decryptSecret throws on malformed input missing the expected iv:authTag:ci
     delete process.env.WALLET_ENCRYPTION_KEY;
   });
 });
+
+test('validateWalletEncryptionKey throws when WALLET_ENCRYPTION_KEY is missing or invalid', (t) => {
+  delete process.env.WALLET_ENCRYPTION_KEY;
+  delete require.cache[require.resolve(MODULE_PATH)];
+  const walletService = require(MODULE_PATH);
+
+  assert.throws(() => walletService.validateWalletEncryptionKey(), {
+    message: 'WALLET_ENCRYPTION_KEY must be set for wallet encryption',
+  });
+
+  process.env.WALLET_ENCRYPTION_KEY = 'not-a-valid-key';
+  delete require.cache[require.resolve(MODULE_PATH)];
+  const walletServiceInvalid = require(MODULE_PATH);
+
+  assert.throws(() => walletServiceInvalid.validateWalletEncryptionKey(), {
+    message: 'WALLET_ENCRYPTION_KEY must be base64 or hex encoded',
+  });
+
+  t.after(() => {
+    delete process.env.WALLET_ENCRYPTION_KEY;
+  });
+});
