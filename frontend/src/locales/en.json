@@ -496,6 +496,7 @@
     "tabs": {
       "campaigns": "My Campaigns",
       "contributions": "My Contributions",
+      "following": "Following",
       "analytics": "Analytics",
       "apiKeys": "API Keys",
       "referrals": "Referrals"

@@ -879,6 +879,52 @@ async function loadPublicCampaignSummary(campaignId) {
   };
 }
 
+// The embed widget speaks in four milestone states (#596). Internally a
+// milestone awaiting platform review is `pending_review`, and a rejected one is
+// back in the creator's hands, so both collapse to a public-facing state.
+const EMBED_MILESTONE_STATUS = {
+  pending: 'pending',
+  rejected: 'pending',
+  pending_review: 'submitted',
+  approved: 'approved',
+  released: 'released',
+};
+
+async function loadPublicCampaignMilestones(campaignId) {
+  const { rows } = await db.query(
+    `SELECT id, title, release_percentage, sort_order, status
+     FROM milestones
+     WHERE campaign_id = $1
+     ORDER BY sort_order ASC, created_at ASC`,
+    [campaignId]
+  );
+
+  return rows.map((milestone) => ({
+    id: milestone.id,
+    title: milestone.title,
+    release_percentage: Number(milestone.release_percentage),
+    sort_order: milestone.sort_order,
+    status: EMBED_MILESTONE_STATUS[milestone.status] || 'pending',
+  }));
+}
+
+function summariseMilestones(milestones) {
+  const released = milestones.filter((milestone) => milestone.status === 'released');
+  const releasedPercentage = released.reduce(
+    (total, milestone) => total + milestone.release_percentage,
+    0
+  );
+
+  return {
+    total: milestones.length,
+    released: released.length,
+    approved: milestones.filter((milestone) => milestone.status === 'approved').length,
+    submitted: milestones.filter((milestone) => milestone.status === 'submitted').length,
+    pending: milestones.filter((milestone) => milestone.status === 'pending').length,
+    released_percentage: Math.round(releasedPercentage * 10) / 10,
+  };
+}
+
 function escapeXml(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -913,14 +959,18 @@ router.get('/:id/embed', asyncHandler(async (req, res) => {
   res.header('Access-Control-Allow-Methods', 'GET');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
 
-  const campaignId = parseInt(req.params.id, 10);
+  const campaignId = req.params.id;
   const summary = await loadPublicCampaignSummary(campaignId);
   if (!summary) return res.status(404).json({ error: 'Campaign not found' });
+
+  const milestones = await loadPublicCampaignMilestones(campaignId);
 
   res.json({
     ...summary,
     description:
       summary.description?.slice(0, 200) + (summary.description?.length > 200 ? '...' : ''),
+    milestones,
+    milestone_summary: summariseMilestones(milestones),
   });
 }));
 
@@ -930,9 +980,11 @@ router.get('/:id/widget', asyncHandler(async (req, res) => {
   res.header('Access-Control-Allow-Methods', 'GET');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
 
-  const campaignId = parseInt(req.params.id, 10);
+  const campaignId = req.params.id;
   const summary = await loadPublicCampaignSummary(campaignId);
   if (!summary) return res.status(404).json({ error: 'Campaign not found' });
+
+  const milestones = await loadPublicCampaignMilestones(campaignId);
 
   res.json({
     id: summary.id,
@@ -945,6 +997,8 @@ router.get('/:id/widget', asyncHandler(async (req, res) => {
     days_remaining: summary.days_remaining,
     progress_percentage: summary.progress_percentage,
     contribution_url: summary.contribution_url,
+    milestones,
+    milestone_summary: summariseMilestones(milestones),
   });
 }));
 
