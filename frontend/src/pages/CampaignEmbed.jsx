@@ -93,6 +93,22 @@ export default function CampaignEmbed() {
     return () => window.removeEventListener('message', handler);
   }, []);
 
+  // Add pulse animation style
+  useEffect(() => {
+    const styleSheet = document.createElement('style');
+    styleSheet.textContent = `
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+    `;
+    document.head.appendChild(styleSheet);
+
+    return () => {
+      document.head.removeChild(styleSheet);
+    };
+  }, []);
+
   if (loading) {
     return (
       <div style={styles.container}>
@@ -299,13 +315,3 @@ const styles = {
     padding: '1rem',
   },
 };
-
-// Add pulse animation
-const styleSheet = document.createElement('style');
-styleSheet.textContent = `
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-  }
-`;
-document.head.appendChild(styleSheet);
