@@ -26,6 +26,7 @@ const Developer = lazy(() => import('./pages/Developer'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Profile = lazy(() => import('./pages/Profile'));
 const NotificationSettings = lazy(() => import('./pages/NotificationSettings'));
+const TaxReceipts = lazy(() => import('./pages/TaxReceipts'));
 const HowItWorks = lazy(() => import('./pages/HowItWorks'));
 const Pricing = lazy(() => import('./pages/Pricing'));
 const About = lazy(() => import('./pages/About'));
@@ -115,6 +116,14 @@ export default function App() {
                   element={
                     <PrivateRoute>
                       <NotificationSettings />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/tax-receipts"
+                  element={
+                    <PrivateRoute>
+                      <TaxReceipts />
                     </PrivateRoute>
                   }
                 />
