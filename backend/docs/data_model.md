@@ -299,6 +299,59 @@ Tracks per-campaign-wallet Horizon streaming position for the live payment inges
 
 ---
 
+## Contribution Pools (#600)
+
+The `contribution_pools` and `pool_members` tables enable group contributions where multiple users pool funds into a single larger contribution.
+
+### `contribution_pools`
+
+| Column         | Type            | Description                                    |
+|---------------|----------------|------------------------------------------------|
+| id            | UUID (PK)      | Unique pool identifier                         |
+| campaign_id   | UUID (FK)      | Target campaign for the pooled contribution    |
+| leader_id     | UUID (FK)      | User who created and manages the pool          |
+| title         | TEXT           | Pool name displayed to members                 |
+| description   | TEXT           | Optional description of the pool goal          |
+| target_amount | NUMERIC(20,7)  | Total contribution goal for the pool           |
+| raised_amount | NUMERIC(20,7)  | Sum of all confirmed member shares             |
+| status        | TEXT           | open, closed, submitted, cancelled             |
+| expires_at    | TIMESTAMPTZ    | Optional deadline for joining the pool         |
+| created_at    | TIMESTAMPTZ    | Creation timestamp                             |
+| updated_at    | TIMESTAMPTZ    | Last update timestamp (auto via trigger)       |
+
+**Indexes:**
+- `idx_contribution_pools_campaign` on `campaign_id`
+- `idx_contribution_pools_leader` on `leader_id`
+- `idx_contribution_pools_status` on `status`
+
+### `pool_members`
+
+| Column         | Type            | Description                                    |
+|---------------|----------------|------------------------------------------------|
+| id            | UUID (PK)      | Unique membership identifier                   |
+| pool_id       | UUID (FK)      | Reference to contribution_pools (CASCADE)      |
+| user_id       | UUID (FK)      | Reference to users                             |
+| share_amount  | NUMERIC(20,7)  | Amount this member pledges to the pool         |
+| display_name  | VARCHAR(50)    | Optional public name shown in pool             |
+| status        | TEXT           | pending, confirmed, declined                   |
+| contributed_at| TIMESTAMPTZ    | When the member's share was confirmed          |
+| created_at    | TIMESTAMPTZ    | Membership creation timestamp                  |
+
+### `contributions` additions
+
+| Column             | Type            | Description                                    |
+|-------------------|----------------|------------------------------------------------|
+| pool_id           | UUID (FK)      | If set, this contribution was made via a pool  |
+| pool_share_amount | NUMERIC(20,7)  | This member's individual share of the pool     |
+
+### Pool Flow
+
+1. A user (pool leader) creates a pool for a campaign with a `target_amount`.
+2. Other users join the pool by pledging a `share_amount` (status: `pending`).
+3. The leader confirms members (status: `confirmed`).
+4. When the pool reaches its target, the leader submits it.
+5. The backend records the pooled contribution as a single transaction from the leader,
+   with each member's share tracked via `pool_id` and `pool_share_amount`.
 ## Campaign Translations (#602)
 
 The `campaign_translations` table allows creators to provide campaign descriptions in multiple languages.

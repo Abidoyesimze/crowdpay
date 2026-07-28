@@ -261,6 +261,7 @@ app.use("/api/campaigns", require("./routes/campaigns"));
 app.use("/api/campaigns", require("./routes/translations"));
 app.use("/api/anchor", require("./routes/anchor"));
 app.use("/api/contributions", require("./routes/contributions"));
+app.use("/api/contribution-pools", require("./routes/contributionPools"));
 app.use("/api/withdrawals", require("./routes/withdrawals"));
 app.use("/api/stellar/transactions", require("./routes/stellarTransactions"));
 app.use("/api/admin", require("./routes/admin"));
