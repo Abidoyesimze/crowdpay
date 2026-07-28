@@ -21,6 +21,8 @@ const campaignUpdatePostedEmail = require("../emails/campaignUpdatePosted");
 const weeklyDigestEmail = require("../emails/weeklyDigest");
 const teamMemberInvitedEmail = require("../emails/teamMemberInvited");
 const thankYouEmail = require("../emails/thankYou");
+const walletFundingFailedEmail = require("../emails/walletFundingFailed");
+const campaignCommentEmail = require("../emails/campaignComment");
 
 let transporter;
 
@@ -310,6 +312,28 @@ async function sendCampaignFraudFlaggedEmail({ to, campaignId, ...params }) {
   await sendIdempotent({ dedupeKey: `campaign_fraud_flagged:${campaignId}:${to}`, to, subject, text, html });
 }
 
+async function sendWalletFundingFailedEmail({ to, ...params }) {
+  if (!to) return;
+  const { subject, text, html } = walletFundingFailedEmail.build(params);
+  await sendIdempotent({ dedupeKey: `wallet_funding_failed:${to}`, to, subject, text, html });
+}
+
+async function sendCampaignCommentEmail({ to, commentId, ...params }) {
+  if (!to) return;
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  const campaignUrl = `${frontendUrl}/campaigns/${params.campaignId}`;
+  const { subject, text, html } = campaignCommentEmail.buildForCreator({ ...params, campaignUrl });
+  await sendIdempotent({ dedupeKey: `campaign_comment:${commentId}:${to}`, to, subject, text, html });
+}
+
+async function sendCommentReplyEmail({ to, commentId, ...params }) {
+  if (!to) return;
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  const campaignUrl = `${frontendUrl}/campaigns/${params.campaignId}`;
+  const { subject, text, html } = campaignCommentEmail.buildForCommenter({ ...params, campaignUrl });
+  await sendIdempotent({ dedupeKey: `comment_reply:${commentId}:${to}`, to, subject, text, html });
+}
+
 module.exports = {
   sendEmail,
   sendIdempotent,
@@ -318,6 +342,7 @@ module.exports = {
   getStellarExpertTxUrl,
   sendContributionReceipt,
   sendWelcomeEmail,
+  sendWalletFundingFailedEmail,
   sendCampaignFundedCreatorEmail,
   sendCampaignFundedContributorEmail,
   sendCampaignFailedCreatorEmail,
@@ -339,4 +364,6 @@ module.exports = {
   isThankYouUnsubscribed,
   sendThankYouEmail,
   sendCampaignFraudFlaggedEmail,
+  sendCampaignCommentEmail,
+  sendCommentReplyEmail,
 };

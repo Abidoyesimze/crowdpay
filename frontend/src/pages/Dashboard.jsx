@@ -7,6 +7,7 @@ import KycPrompt from '../components/KycPrompt';
 import VerificationBadge from '../components/VerificationBadge';
 import CampaignStatusBadge from '../components/CampaignStatusBadge';
 import ContributorDashboard from '../components/ContributorDashboard';
+import FollowedCampaigns from '../components/FollowedCampaigns';
 import DepositModal from '../components/DepositModal';
 import ApiKeysPanel from '../components/ApiKeysPanel';
 import BackerInsightsCard from '../components/BackerInsightsCard';
@@ -25,6 +26,7 @@ import {
 const TABS = [
   { id: 'campaigns', labelKey: 'dashboard.tabs.campaigns' },
   { id: 'contributions', labelKey: 'dashboard.tabs.contributions' },
+  { id: 'following', labelKey: 'dashboard.tabs.following' },
   { id: 'analytics', labelKey: 'dashboard.tabs.analytics' },
   { id: 'api-keys', labelKey: 'dashboard.tabs.apiKeys' },
 ];
@@ -292,13 +294,15 @@ export default function Dashboard() {
   const activeTab =
     tabParam === 'contributions'
       ? 'contributions'
-      : tabParam === 'referrals'
-        ? 'referrals'
-        : tabParam === 'analytics'
-          ? 'analytics'
-          : tabParam === 'api-keys'
-            ? 'api-keys'
-            : 'campaigns';
+      : tabParam === 'following'
+        ? 'following'
+        : tabParam === 'referrals'
+          ? 'referrals'
+          : tabParam === 'analytics'
+            ? 'analytics'
+            : tabParam === 'api-keys'
+              ? 'api-keys'
+              : 'campaigns';
 
   const [stats, setStats] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
@@ -521,6 +525,8 @@ export default function Dashboard() {
   function setTab(tabId) {
     if (tabId === 'contributions') {
       setSearchParams({ tab: 'contributions' });
+    } else if (tabId === 'following') {
+      setSearchParams({ tab: 'following' });
     } else if (tabId === 'analytics') {
       setSearchParams({ tab: 'analytics' });
     } else if (tabId === 'referrals') {
@@ -891,6 +897,12 @@ export default function Dashboard() {
       {activeTab === 'contributions' && (
         <section role="tabpanel" aria-labelledby="tab-contributions">
           <ContributorDashboard />
+        </section>
+      )}
+
+      {activeTab === 'following' && (
+        <section role="tabpanel" aria-labelledby="tab-following">
+          <FollowedCampaigns />
         </section>
       )}
 

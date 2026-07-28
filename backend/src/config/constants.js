@@ -39,4 +39,24 @@ module.exports = {
 
   /** Initial reconnect delay for the ledger payment stream, in milliseconds. */
   LEDGER_MONITOR_RECONNECT_DELAY_MS: 5_000,
+
+  // ---------------------------------------------------------------------------
+  // Milestone limits
+  // ---------------------------------------------------------------------------
+
+  /** Maximum number of milestones a campaign can define. */
+  MILESTONE_LIMIT: 5,
+
+  /** Maximum file size (in bytes) for milestone evidence uploads (10 MB). */
+  MILESTONE_EVIDENCE_MAX_FILE_SIZE: 10 * 1024 * 1024,
+
+  // ---------------------------------------------------------------------------
+  // Admin
+  // ---------------------------------------------------------------------------
+
+  /** Impersonation token TTL in seconds (15 minutes). */
+  IMPERSONATION_TTL_SECONDS: 15 * 60,
+
+  /** Maximum number of admin audit log entries that can be returned in a single query. */
+  ADMIN_AUDIT_LOG_MAX_LIMIT: 1000,
 };

@@ -1,4 +1,35 @@
+'use strict';
+
 const db = require('../config/database');
+const { TtlCache } = require('../utils/TtlCache');
+const { evaluateBadges } = require('./badgeService');
+
+// Cache per-user dashboard data for 60 seconds.
+// Key scheme: "campaigns:<userId>" and "contributions:<userId>"
+const dashboardCache = new TtlCache(60_000);
+
+async function listCreatorCampaigns(userId) {
+  const key = `campaigns:${userId}`;
+  return dashboardCache.wrap(key, async () => {
+    const { rows } = await db.query(
+      `SELECT c.id, c.title, c.status, c.asset_type, c.target_amount, c.raised_amount,
+              c.deadline, c.created_at,
+              COALESCE(stats.contributor_count, 0) AS contributor_count,
+              EXISTS (
+                SELECT 1 FROM milestones m WHERE m.campaign_id = c.id LIMIT 1
+              ) AS has_milestones
+       FROM campaigns c
+       LEFT JOIN LATERAL (
+         SELECT COUNT(DISTINCT sender_public_key)::int AS contributor_count
+         FROM contributions ctr
+         WHERE ctr.campaign_id = c.id
+       ) stats ON TRUE
+       WHERE c.creator_id = $1
+       ORDER BY c.created_at DESC`,
+      [userId]
+    );
+    return rows;
+  });
 
 async function listCreatorCampaigns(userId, options = {}) {
   const page = Math.max(1, parseInt(options.page, 10) || 1);
@@ -38,66 +69,43 @@ async function listCreatorCampaigns(userId, options = {}) {
 }
 
 async function listUserContributions(userId) {
-  const { rows: userRows } = await db.query(
-    'SELECT wallet_public_key FROM users WHERE id = $1',
-    [userId]
-  );
-  if (!userRows.length) return null;
+  const key = `contributions:${userId}`;
+  return dashboardCache.wrap(key, async () => {
+    const { rows: userRows } = await db.query(
+      'SELECT wallet_public_key FROM users WHERE id = $1',
+      [userId]
+    );
+    if (!userRows.length) return null;
 
-  const senderPublicKey = userRows[0].wallet_public_key;
-  const { rows } = await db.query(
-    `SELECT ctr.id, ctr.amount, ctr.asset, ctr.anchor_id, ctr.anchor_transaction_id,
-            ctr.source_amount, ctr.source_asset, ctr.conversion_rate, ctr.payment_type,
-            ctr.tx_hash, ctr.created_at,
-            c.id AS campaign_id, c.title AS campaign_title, c.status AS campaign_status,
-            c.target_amount, c.raised_amount
-     FROM contributions ctr
-     JOIN campaigns c ON c.id = ctr.campaign_id
-     WHERE ctr.sender_public_key = $1
-     ORDER BY ctr.created_at DESC`,
-    [senderPublicKey]
-  );
-  return rows;
+    const senderPublicKey = userRows[0].wallet_public_key;
+    const { rows } = await db.query(
+      `SELECT ctr.id, ctr.amount, ctr.asset, ctr.anchor_id, ctr.anchor_transaction_id,
+              ctr.source_amount, ctr.source_asset, ctr.conversion_rate, ctr.payment_type,
+              ctr.tx_hash, ctr.created_at,
+              c.id AS campaign_id, c.title AS campaign_title, c.status AS campaign_status,
+              c.target_amount, c.raised_amount
+       FROM contributions ctr
+       JOIN campaigns c ON c.id = ctr.campaign_id
+       WHERE ctr.sender_public_key = $1
+       ORDER BY ctr.created_at DESC`,
+      [senderPublicKey]
+    );
+    return rows;
+  });
+}
+
+/**
+ * Invalidate all cached dashboard data for a given user.
+ * Call this after a contribution is made or a campaign status changes.
+ * @param {string} userId
+ */
+function invalidateUserDashboard(userId) {
+  dashboardCache.invalidatePrefix(`campaigns:${userId}`);
+  dashboardCache.invalidatePrefix(`contributions:${userId}`);
 }
 
 const ACTIVE_CAMPAIGN_STATUSES = new Set(['active', 'funded']);
 const COMPLETED_CAMPAIGN_STATUSES = new Set(['completed', 'funded', 'withdrawn']);
-
-const BADGE_DEFINITIONS = [
-  {
-    id: 'first_contribution',
-    label: 'First contribution',
-    earned: (stats) => stats.campaigns_backed >= 1,
-  },
-  {
-    id: 'backed_5_campaigns',
-    label: 'Backed 5 campaigns',
-    earned: (stats) => stats.campaigns_backed >= 5,
-  },
-  {
-    id: 'backed_10_campaigns',
-    label: 'Backed 10 campaigns',
-    earned: (stats) => stats.campaigns_backed >= 10,
-  },
-  {
-    id: 'contributed_1000',
-    label: 'Contributed 1,000+',
-    earned: (stats) => stats.total_contributed >= 1000,
-  },
-  {
-    id: 'backed_completed_campaign',
-    label: 'Backed a completed campaign',
-    earned: (stats) => stats.campaigns_completed >= 1,
-  },
-];
-
-function computeBadges(stats) {
-  return BADGE_DEFINITIONS.map((def) => ({
-    id: def.id,
-    label: def.label,
-    earned: def.earned(stats),
-  }));
-}
 
 async function getContributorDashboard(userId) {
   const { rows: userRows } = await db.query(
@@ -130,7 +138,7 @@ async function getContributorDashboard(userId) {
       avg_contribution: 0,
     };
     return {
-      stats: { ...emptyStats, badges: computeBadges(emptyStats) },
+      stats: { ...emptyStats, badges: await evaluateBadges(userId) },
       campaigns: [],
     };
   }
@@ -218,7 +226,7 @@ async function getContributorDashboard(userId) {
   };
 
   return {
-    stats: { ...stats, badges: computeBadges(stats) },
+    stats: { ...stats, badges: await evaluateBadges(userId) },
     campaigns: allCampaigns,
   };
 }
@@ -261,6 +269,9 @@ async function getContributorDashboardCsv(userId) {
 module.exports = {
   listCreatorCampaigns,
   listUserContributions,
+  invalidateUserDashboard,
+  // Exported for testing
+  _dashboardCache: dashboardCache,
   getContributorDashboard,
   getContributorDashboardCsv,
 };

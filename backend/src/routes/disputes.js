@@ -9,9 +9,20 @@ const {
 } = require('../services/emailService');
 const logger = require('../config/logger');
 const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
+const { parsePagination } = require('../utils/pagination');
+const asyncHandler = require('../utils/asyncHandler');
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+}
+
+function isValidEvidenceUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    return u.protocol === 'https:' || u.protocol === 'http:';
+  } catch {
+    return false;
+  }
 }
 
 async function logDisputeEvent(client, { disputeId, actorId, action, note }) {
@@ -32,6 +43,9 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   }
   if (!description || !description.trim()) {
     return res.status(422).json({ error: 'description is required' });
+  }
+  if (evidence_url !== undefined && evidence_url !== null && evidence_url !== '' && !isValidEvidenceUrl(evidence_url)) {
+    return res.status(422).json({ error: 'evidence_url must be a valid http(s) URL' });
   }
 
   const { rows: campaigns } = await db.query(
@@ -146,17 +160,26 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
 });
 
 // GET /campaigns/:id/disputes — admin only
-router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), async (req, res) => {
+router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
+
+  const countResult = await db.query(
+    'SELECT COUNT(*)::int AS total FROM disputes WHERE campaign_id = $1',
+    [req.params.id]
+  );
+  const total = countResult.rows[0].total;
+
   const { rows } = await db.query(
     `SELECT d.*, u.name AS raised_by_name, u.email AS raised_by_email
      FROM disputes d
      JOIN users u ON u.id = d.raised_by
      WHERE d.campaign_id = $1
-     ORDER BY d.created_at DESC`,
-    [req.params.id]
+     ORDER BY d.created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [req.params.id, limit, offset]
   );
-  res.json(rows);
-});
+  res.json({ data: rows, total, limit, offset });
+}));
 
 // PATCH /disputes/:id — admin updates status + resolution note
 router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res) => {
@@ -335,7 +358,7 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
 });
 
 // GET /disputes/:id/events — audit log (admin only)
-router.get('/disputes/:id/events', requireAuth, requireRole('admin'), async (req, res) => {
+router.get('/disputes/:id/events', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT de.*, u.name AS actor_name
      FROM dispute_events de
@@ -345,6 +368,6 @@ router.get('/disputes/:id/events', requireAuth, requireRole('admin'), async (req
     [req.params.id]
   );
   res.json(rows);
-});
+}));
 
 module.exports = router;

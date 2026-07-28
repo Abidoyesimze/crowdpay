@@ -3,12 +3,16 @@ const multer = require('multer');
 const Sentry = require('@sentry/node');
 const db = require('../config/database');
 const logger = require('../config/logger');
+const { MILESTONE_LIMIT } = require('../config/constants');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const {
   createCampaignWallet,
   getCampaignBalance,
   getSupportedAssetCodes,
+  revokeAndCloseCampaignWallet,
 } = require('../services/stellarService');
+const { sendAlert } = require('../services/alerting');
+const cache = require('../utils/cache');
 const { Keypair } = require('@stellar/stellar-sdk');
 const { encryptSecret } = require('../services/walletService');
 const { watchCampaignWallet, addSSEClient, removeSSEClient } = require('../services/ledgerMonitor');
@@ -40,6 +44,10 @@ const {
   getCampaignsValidation,
   validateRequest,
 } = require('../middleware/validation');
+const { TtlCache } = require('../utils/TtlCache');
+
+// Shared cache for the static-ish discovery endpoints
+const campaignsCache = new TtlCache(60_000);
 const asyncHandler = require('../utils/asyncHandler');
 const {
   createCampaignInvite,
@@ -59,11 +67,20 @@ const {
 } = require('../lib/campaignPermissions');
 const { stripHtml } = require('../lib/sanitize');
 const { getSimhash, simhashSimilarity } = require('../utils/simhash');
+const { parsePagination } = require('../utils/pagination');
 
 const crypto = require('crypto');
 
-function generateReferralCode() {
-  return crypto.randomBytes(6).toString('base64url').slice(0, 8);
+async function generateUniqueReferralCode(runner = db) {
+  for (let i = 0; i < 10; i++) {
+    const code = crypto.randomBytes(6).toString('base64url').slice(0, 8);
+    const { rows } = await runner.query(
+      'SELECT 1 FROM campaign_referrals WHERE referral_code = $1',
+      [code]
+    );
+    if (!rows.length) return code;
+  }
+  throw new Error('Could not generate unique referral code');
 }
 
 /**
@@ -131,7 +148,6 @@ const upload = multer({
 
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
 const MILESTONE_PERCENT_SCALE = 10000;
-const MILESTONE_LIMIT = 5;
 
 function normalizeMilestonesInput(input) {
   if (input === null || input === undefined) return [];
@@ -180,7 +196,80 @@ function normalizeMilestonesInput(input) {
 }
 
 // List campaigns with optional search, filtering, sorting, and pagination
-router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req, res) => {
+
+/**
+ * GET /api/campaigns/featured
+ * Returns up to 6 active campaigns ranked by contribution count.
+ * Cached for 60 s with Cache-Control header so CDNs / proxies can also cache.
+ */
+router.get('/featured', async (req, res) => {
+  try {
+    const rows = await campaignsCache.wrap('featured', async () => {
+      const { rows: featured } = await db.query(
+        `SELECT
+           c.id, c.title, c.description, c.target_amount, c.raised_amount,
+           c.asset_type, c.deadline, c.created_at, c.cover_image_url,
+           u.name AS creator_name,
+           (
+             SELECT COUNT(DISTINCT sender_public_key)
+             FROM contributions
+             WHERE campaign_id = c.id
+           )::int AS backer_count,
+           ROUND(
+             (c.raised_amount / NULLIF(c.target_amount, 0)) * 100, 1
+           ) AS progress_pct
+         FROM campaigns c
+         JOIN users u ON u.id = c.creator_id
+         WHERE c.status = 'active'
+           AND c.deleted_at IS NULL
+           AND c.deadline > NOW()
+         ORDER BY backer_count DESC, c.raised_amount DESC
+         LIMIT 6`
+      );
+      return featured;
+    });
+
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
+    res.json(rows);
+  } catch (err) {
+    logger.error('Error fetching featured campaigns', { error: err.message });
+    res.status(500).json({ error: 'Failed to fetch featured campaigns' });
+  }
+});
+
+/**
+ * GET /api/campaigns/categories
+ * Returns campaigns grouped by asset_type with counts.
+ * This data rarely changes — cached for 5 minutes.
+ */
+router.get('/categories', async (req, res) => {
+  try {
+    const rows = await campaignsCache.wrap('categories', async () => {
+      const { rows: cats } = await db.query(
+        `SELECT
+           asset_type                       AS category,
+           COUNT(*)::int                    AS total_campaigns,
+           COUNT(*) FILTER (WHERE status = 'active')::int AS active_campaigns,
+           COALESCE(SUM(raised_amount), 0)  AS total_raised
+         FROM campaigns
+         WHERE deleted_at IS NULL
+         GROUP BY asset_type
+         ORDER BY active_campaigns DESC`,
+        [],
+        { ttlMs: 5 * 60_000 }
+      );
+      return cats;
+    }, 5 * 60_000);
+
+    res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
+    res.json(rows);
+  } catch (err) {
+    logger.error('Error fetching campaign categories', { error: err.message });
+    res.status(500).json({ error: 'Failed to fetch categories' });
+  }
+});
+
+router.get('/', getCampaignsValidation, validateRequest, async (req, res) => {
   /**
    * @openapi
    * /api/campaigns:
@@ -603,6 +692,51 @@ router.post('/:id/favorite', requireAuth, asyncHandler(async (req, res) => {
   res.status(204).send();
 }));
 
+// DELETE /campaigns/:id — Soft-delete campaign (owner only) and revoke/close Stellar wallet
+router.delete('/:id', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const { rows: campaignRows } = await db.query(
+    'SELECT id, title, creator_id, wallet_public_key, wallet_secret_encrypted FROM campaigns WHERE id = $1 AND deleted_at IS NULL',
+    [id]
+  );
+
+  if (!campaignRows.length) {
+    return res.status(404).json({ error: 'Campaign not found' });
+  }
+
+  const campaign = campaignRows[0];
+
+  // Revoke platform multisig, sweep non-zero funds to platform, and close Stellar account
+  try {
+    await revokeAndCloseCampaignWallet(campaign);
+  } catch (stellarErr) {
+    logger.error('Failed to revoke platform multisig / close Stellar account for deleted campaign', {
+      campaignId: id,
+      error: stellarErr.message,
+    });
+    await sendAlert('Campaign wallet cleanup failed on deletion', {
+      campaignId: id,
+      walletPublicKey: campaign.wallet_public_key,
+      error: stellarErr.message,
+    });
+    return res.status(502).json({
+      error: 'Failed to revoke Stellar wallet multisig and close account',
+      details: stellarErr.message,
+    });
+  }
+
+  const { rows: updated } = await db.query(
+    `UPDATE campaigns SET deleted_at = NOW() WHERE id = $1 RETURNING id, title, deleted_at`,
+    [id]
+  );
+
+  logger.info('Campaign deleted by owner', { campaignId: id, userId: req.user.userId });
+  cache.invalidate(`campaigns:id:${id}`);
+  cache.invalidatePrefix('campaigns:list:');
+  res.json({ message: 'Campaign deleted', campaign: updated[0] });
+}));
+
 // Remove campaign from the current user's favorites/wishlist
 router.delete('/:id/favorite', requireAuth, asyncHandler(async (req, res) => {
   await db.query(
@@ -822,6 +956,52 @@ async function loadPublicCampaignSummary(campaignId) {
   };
 }
 
+// The embed widget speaks in four milestone states (#596). Internally a
+// milestone awaiting platform review is `pending_review`, and a rejected one is
+// back in the creator's hands, so both collapse to a public-facing state.
+const EMBED_MILESTONE_STATUS = {
+  pending: 'pending',
+  rejected: 'pending',
+  pending_review: 'submitted',
+  approved: 'approved',
+  released: 'released',
+};
+
+async function loadPublicCampaignMilestones(campaignId) {
+  const { rows } = await db.query(
+    `SELECT id, title, release_percentage, sort_order, status
+     FROM milestones
+     WHERE campaign_id = $1
+     ORDER BY sort_order ASC, created_at ASC`,
+    [campaignId]
+  );
+
+  return rows.map((milestone) => ({
+    id: milestone.id,
+    title: milestone.title,
+    release_percentage: Number(milestone.release_percentage),
+    sort_order: milestone.sort_order,
+    status: EMBED_MILESTONE_STATUS[milestone.status] || 'pending',
+  }));
+}
+
+function summariseMilestones(milestones) {
+  const released = milestones.filter((milestone) => milestone.status === 'released');
+  const releasedPercentage = released.reduce(
+    (total, milestone) => total + milestone.release_percentage,
+    0
+  );
+
+  return {
+    total: milestones.length,
+    released: released.length,
+    approved: milestones.filter((milestone) => milestone.status === 'approved').length,
+    submitted: milestones.filter((milestone) => milestone.status === 'submitted').length,
+    pending: milestones.filter((milestone) => milestone.status === 'pending').length,
+    released_percentage: Math.round(releasedPercentage * 10) / 10,
+  };
+}
+
 function escapeXml(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -856,14 +1036,18 @@ router.get('/:id/embed', asyncHandler(async (req, res) => {
   res.header('Access-Control-Allow-Methods', 'GET');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
 
-  const campaignId = parseInt(req.params.id, 10);
+  const campaignId = req.params.id;
   const summary = await loadPublicCampaignSummary(campaignId);
   if (!summary) return res.status(404).json({ error: 'Campaign not found' });
+
+  const milestones = await loadPublicCampaignMilestones(campaignId);
 
   res.json({
     ...summary,
     description:
       summary.description?.slice(0, 200) + (summary.description?.length > 200 ? '...' : ''),
+    milestones,
+    milestone_summary: summariseMilestones(milestones),
   });
 }));
 
@@ -873,9 +1057,11 @@ router.get('/:id/widget', asyncHandler(async (req, res) => {
   res.header('Access-Control-Allow-Methods', 'GET');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
 
-  const campaignId = parseInt(req.params.id, 10);
+  const campaignId = req.params.id;
   const summary = await loadPublicCampaignSummary(campaignId);
   if (!summary) return res.status(404).json({ error: 'Campaign not found' });
+
+  const milestones = await loadPublicCampaignMilestones(campaignId);
 
   res.json({
     id: summary.id,
@@ -888,6 +1074,8 @@ router.get('/:id/widget', asyncHandler(async (req, res) => {
     days_remaining: summary.days_remaining,
     progress_percentage: summary.progress_percentage,
     contribution_url: summary.contribution_url,
+    milestones,
+    milestone_summary: summariseMilestones(milestones),
   });
 }));
 
@@ -914,6 +1102,14 @@ router.get('/:id/backers', asyncHandler(async (req, res) => {
   if (!campaignRows.length) return res.status(404).json({ error: 'Campaign not found' });
   const { show_backer_amounts } = campaignRows[0];
 
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
+
+  const countResult = await db.query(
+    'SELECT COUNT(*)::int AS total FROM contributions WHERE campaign_id = $1',
+    [campaignId]
+  );
+  const total = countResult.rows[0].total;
+
   const query = `
     SELECT 
       display_name,
@@ -924,9 +1120,10 @@ router.get('/:id/backers', asyncHandler(async (req, res) => {
     FROM contributions
     WHERE campaign_id = $1
     ORDER BY created_at DESC
+    LIMIT $2 OFFSET $3
   `;
-  const { rows } = await db.query(query, [campaignId]);
-  res.json(rows);
+  const { rows } = await db.query(query, [campaignId, limit, offset]);
+  res.json({ data: rows, total, limit, offset });
 }));
 
 // Download contributor fulfillment data for campaign owners/admins.
@@ -1466,17 +1663,28 @@ router.patch('/:id', requireAuth, asyncHandler(async (req, res) => {
   const setClause = updateParams.map(([field, , placeholder]) => `${field} = ${placeholder}`).join(', ');
   const values = updateParams.map(([, value]) => value);
   values.push(campaignId);
+  values.push(currentStatus);
+  const statusParamIndex = paramIndex + 1;
 
   const query = `
     UPDATE campaigns
     SET ${setClause}
-    WHERE id = $${paramIndex}
+    WHERE id = $${paramIndex} AND status = $${statusParamIndex}
     RETURNING *
   `;
 
   const { rows: updatedRows } = await db.query(query, values);
   if (!updatedRows.length) {
-    return res.status(404).json({ error: 'Campaign not found' });
+    const { rows: checkRows } = await db.query(
+      'SELECT status FROM campaigns WHERE id = $1',
+      [campaignId]
+    );
+    if (!checkRows.length) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    return res.status(422).json({
+      error: `Cannot edit a campaign with status: ${checkRows[0].status}`,
+    });
   }
 
   res.json(updatedRows[0]);
@@ -1572,6 +1780,14 @@ router.post('/:id/members/invite', requireAuth, requireCampaignMember('owner', '
 
 // GET /campaigns/:id/members — team list (owner/manager)
 router.get('/:id/members', requireAuth, requireCampaignMember('owner', 'manager'), asyncHandler(async (req, res) => {
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
+
+  const countResult = await db.query(
+    'SELECT COUNT(*)::int AS total FROM campaign_members WHERE campaign_id = $1',
+    [req.params.id]
+  );
+  const total = countResult.rows[0].total;
+
   const { rows } = await db.query(
     `SELECT cm.id, cm.user_id, cm.email, cm.role, cm.accepted_at, cm.created_at,
             cm.invite_expires_at,
@@ -1579,10 +1795,11 @@ router.get('/:id/members', requireAuth, requireCampaignMember('owner', 'manager'
      FROM campaign_members cm
      LEFT JOIN users u ON u.id = cm.user_id
      WHERE cm.campaign_id = $1
-     ORDER BY cm.created_at ASC`,
-    [req.params.id]
+     ORDER BY cm.created_at ASC
+     LIMIT $2 OFFSET $3`,
+    [req.params.id, limit, offset]
   );
-  res.json(rows);
+  res.json({ data: rows, total, limit, offset });
 }));
 
 // PATCH /campaigns/:id/members/:userId — change role (owner only)
@@ -1789,7 +2006,7 @@ router.get('/:id/referral', requireAuth, asyncHandler(async (req, res) => {
     });
   }
 
-  const code = generateReferralCode();
+  const code = await generateUniqueReferralCode(db);
   const { rows: inserted } = await db.query(
     `INSERT INTO campaign_referrals (campaign_id, referrer_user_id, referral_code)
      VALUES ($1, $2, $3)

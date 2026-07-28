@@ -493,6 +493,7 @@
     "tabs": {
       "campaigns": "Mes campagnes",
       "contributions": "Mes contributions",
+      "following": "Suivis",
       "analytics": "Analytique",
       "apiKeys": "Clés API",
       "referrals": "Parrainages"

@@ -1,10 +1,12 @@
 /* eslint-disable */
 import { useEffect, useState, useCallback, useRef } from 'react';
+import * as Sentry from '@sentry/react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import RelativeTime from '../components/RelativeTime';
 import DisputeResolveModal from '../components/DisputeResolveModal';
+import { useToast } from '../context/ToastContext';
 
 const DISPUTE_STATUSES = [
   'open',
@@ -1192,6 +1194,7 @@ function FraudQueue() {
   const [campaigns, setCampaigns] = useState([]);
   const [stats, setStats] = useState({ false_positives: 0, true_positives: 0, false_positive_rate: 0 });
   const [loading, setLoading] = useState(true);
+  const toast = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1203,11 +1206,12 @@ function FraudQueue() {
       setCampaigns(cList);
       setStats(cStats);
     } catch (err) {
-      console.error('Failed to load fraud data', err);
+      toast?.('Failed to load fraud data. Please try again.', 'error');
+      Sentry.captureException(err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     load();

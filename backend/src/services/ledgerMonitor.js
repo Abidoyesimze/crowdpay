@@ -395,6 +395,24 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
         }),
       );
 
+      // Award any badge this contribution has just unlocked
+      const { syncBadgesForWallet } = require('./badgeService');
+      syncBadgesForWallet(postCommitHooks.receiptPayload.senderPublicKey).catch((e) =>
+        logger.error("[badges] Sync failed", {
+          campaign_id: postCommitHooks.campaignId,
+          error: e.message,
+        }),
+      );
+
+      // Tell followers when the campaign crosses a funding threshold
+      const { announceFundingProgress } = require('./campaignFollowService');
+      announceFundingProgress(postCommitHooks.campaignId).catch((e) =>
+        logger.error("[follow] Funding progress announcement failed", {
+          campaign_id: postCommitHooks.campaignId,
+          error: e.message,
+        }),
+      );
+
       // Bust public caches — contribution changes raised_amount and contributor_count
       cache.invalidate(`campaigns:id:${postCommitHooks.campaignId}`);
       cache.invalidatePrefix('campaigns:list:');

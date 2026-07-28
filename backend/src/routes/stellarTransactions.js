@@ -2,6 +2,8 @@ const router = require('express').Router();
 const db = require('../config/database');
 const { requireAuth } = require('../middleware/auth');
 const asyncHandler = require('../utils/asyncHandler');
+const { isUuid } = require('../utils/validation');
+const { parsePagination } = require('../utils/pagination');
 
 function isPlatformApprover(userId) {
   if (!process.env.PLATFORM_APPROVER_USER_ID) return false;
@@ -22,11 +24,15 @@ async function assertCampaignReportingAccess(req, campaignId) {
  * Reporting index: Stellar transactions auditable by campaign creators and platform operators.
  */
 router.get('/', requireAuth, asyncHandler(async (req, res) => {
-  const { campaign_id: campaignId, status, limit } = req.query;
-  const max = Math.min(parseInt(limit, 10) || 50, 200);
+  const { campaign_id: campaignId, status } = req.query;
+  const { limit: max } = parsePagination(req.query, { limit: 50, max: 200 });
 
   if (!campaignId && !isPlatformApprover(req.user.userId)) {
     return res.status(400).json({ error: 'campaign_id is required unless using a platform operator account' });
+  }
+
+  if (campaignId && !isUuid(campaignId)) {
+    return res.status(400).json({ error: 'campaign_id must be a valid UUID' });
   }
 
   if (campaignId) {

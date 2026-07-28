@@ -24,39 +24,44 @@ choco install k6
 
 | Script | Description |
 |---|---|
-| `campaign-browse.js` | High-traffic campaign listing — simulates users browsing the home page |
-| `contribution-submit.js` | End-to-end contribution flow — quote → prepare → submit |
+| `smoke.js` | Quick smoke test — runs all major endpoints at 1 VU for 30 seconds |
+| `browse.js` | Anonymous browsing — homepage campaign list, detail, and contributions (ramps to 100 VUs) |
+| `campaign-browse.js` | High-traffic campaign listing — simulates users browsing public campaigns |
+| `contribute.js` | Authenticated contribution flow — login, view campaign, submit contribution (ramps to 50 VUs) |
+| `contribution-submit.js` | End-to-end custodial contribution flow — quote → prepare → submit |
 | `auth-flow.js` | Login and authenticated profile endpoint throughput |
-| `smoke.js` | Quick smoke test — runs all scripts at 1 VU for 10 seconds |
-
-## Running
-
-```bash
-# Smoke test (all endpoints, 1 VU)
-k6 run load-tests/smoke.js
-
-# Campaign browse — 50 concurrent users, 2 minutes
-k6 run --vus 50 --duration 2m load-tests/campaign-browse.js
-
-# Contribution flow — 20 concurrent users, 1 minute
-k6 run --vus 20 --duration 1m load-tests/contribution-submit.js
-
-# Auth flow — 30 concurrent users, 2 minutes
-k6 run --vus 30 --duration 2m load-tests/auth-flow.js
-
-# Full soak test (all, 5 minutes)
-BASE_URL=https://api.crowdpay.example.com k6 run --vus 100 --duration 5m load-tests/campaign-browse.js
-```
 
 ## Environment Variables
+
+All scripts read target hosts, credentials, and parameters from environment variables with sensible defaults for local development.
 
 | Variable | Default | Description |
 |---|---|---|
 | `BASE_URL` | `http://localhost:3001` | Backend API base URL |
-| `CREATOR_EMAIL` | `bola@example.com` | Seed creator credentials |
-| `CREATOR_PASSWORD` | `creator123` | |
-| `CONTRIBUTOR_EMAIL` | `alice@example.com` | Seed contributor credentials |
-| `CONTRIBUTOR_PASSWORD` | `password123` | |
+| `CREATOR_EMAIL` | `bola@example.com` | Seed creator email |
+| `CREATOR_PASSWORD` | `creator123` | Seed creator password |
+| `CONTRIBUTOR_EMAIL` | `alice@example.com` | Seed contributor email |
+| `CONTRIBUTOR_PASSWORD` | `password123` | Seed contributor password |
+| `USER_EMAIL` | `alice@example.com` | User email for `contribute.js` |
+| `USER_PASSWORD` | `password123` | User password for `contribute.js` |
+| `CAMPAIGN_ID` | `11111111-1111-1111-1111-111111111111` | Primary target campaign UUID |
+| `CAMPAIGN_IDS` | Seed campaign array | Comma-separated list of campaign UUIDs for `campaign-browse.js` |
+
+## Running
+
+```bash
+# Quick smoke test with defaults
+k6 run load-tests/smoke.js
+
+# Campaign browsing test with custom target environment
+k6 run -e BASE_URL=https://api.staging.crowdpay.com load-tests/campaign-browse.js
+
+# Custom credentials and campaign ID
+k6 run -e BASE_URL=http://localhost:3001 -e CONTRIBUTOR_EMAIL=user@example.com -e CONTRIBUTOR_PASSWORD=secret load-tests/contribute.js
+
+# Passing environment variables via shell
+BASE_URL=https://api.crowdpay.example.com k6 run --vus 50 --duration 2m load-tests/campaign-browse.js
+```
 
 ## Acceptance Thresholds
 
@@ -64,20 +69,4 @@ All scripts enforce the following SLOs:
 - **p(95) response time ≤ 500 ms** for read endpoints
 - **p(99) response time ≤ 2000 ms** for write endpoints
 - **Error rate < 1%** across all requests
-# Load tests
 
-[k6](https://k6.io) load-testing scripts for the CrowdPay API.
-
-| Script | Scenario |
-|---|---|
-| `browse.js` | Anonymous browsing — homepage campaign list, campaign detail, contributions (ramps to 100 VUs) |
-| `contribute.js` | Authenticated flow — login, view campaign, submit contribution (ramps to 50 VUs) |
-
-## Running
-
-```sh
-k6 run load-tests/browse.js
-```
-
-Before running, edit the target host (`https://your-app.com`) and the placeholder
-`campaignId` / credentials in each script to point at the environment under test.

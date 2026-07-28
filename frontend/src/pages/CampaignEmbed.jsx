@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import MilestoneProgressBar, { normalizeWidgetSize } from '../components/MilestoneProgressBar';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const BASE_URL = import.meta.env.VITE_API_URL || `${API_BASE_URL}/api`;
@@ -12,6 +13,7 @@ export default function CampaignEmbed() {
   // Extract campaign ID from URL path: /embed/campaigns/:id
   const pathParts = window.location.pathname.split('/');
   const campaignId = pathParts[pathParts.length - 1];
+  const size = normalizeWidgetSize(new URLSearchParams(window.location.search).get('size'));
 
   useEffect(() => {
     if (!campaignId) {
@@ -119,7 +121,9 @@ export default function CampaignEmbed() {
 
       <h1 style={styles.title}>{campaign.title}</h1>
 
-      {campaign.description && <p style={styles.description}>{campaign.description}</p>}
+      {size !== 'small' && campaign.description && (
+        <p style={styles.description}>{campaign.description}</p>
+      )}
 
       <div style={styles.progressSection}>
         <div style={styles.amounts}>
@@ -157,6 +161,12 @@ export default function CampaignEmbed() {
           )}
         </div>
       </div>
+
+      <MilestoneProgressBar
+        milestones={campaign.milestones}
+        summary={campaign.milestone_summary}
+        size={size}
+      />
 
       <a
         href={campaign.contribution_url}

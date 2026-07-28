@@ -8,6 +8,9 @@ import { useAuth } from '../context/AuthContext';
 import OnboardingCallout from '../components/OnboardingCallout';
 import KycPrompt from '../components/KycPrompt';
 import { isCreatorOnboardingVisible, dismissCreatorOnboarding } from '../lib/onboarding';
+import { saveDraft, loadDraft, clearDraft, hasDraftContent } from '../lib/campaignDraft';
+
+const DRAFT_SAVE_DEBOUNCE_MS = 800;
 
 const ASSETS = [
   {
@@ -77,6 +80,61 @@ export default function CreateCampaign() {
   const [duplicateWarning, setDuplicateWarning] = useState(null);
   const today = new Date().toISOString().split('T')[0];
   const [showCreatorTips, setShowCreatorTips] = useState(isCreatorOnboardingVisible);
+  // A draft found in storage on load. Auto-save stays paused until the creator
+  // restores or discards it, so an untouched form cannot overwrite it.
+  const [pendingDraft, setPendingDraft] = useState(() =>
+    location.state?.prefill ? null : loadDraft()
+  );
+  const [draftSavedAt, setDraftSavedAt] = useState(null);
+  const [draftSaving, setDraftSaving] = useState(false);
+
+  useEffect(() => {
+    if (pendingDraft) return undefined;
+    if (!hasDraftContent(form)) return undefined;
+
+    setDraftSaving(true);
+    const timer = setTimeout(() => {
+      const draft = saveDraft(form, step);
+      setDraftSaving(false);
+      if (draft) setDraftSavedAt(draft.saved_at);
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+
+    return () => clearTimeout(timer);
+  }, [form, step, pendingDraft]);
+
+  function restoreDraft() {
+    setForm(pendingDraft.form);
+    setStep(pendingDraft.step || 1);
+    setDraftSavedAt(pendingDraft.saved_at);
+    setPendingDraft(null);
+  }
+
+  function discardDraft() {
+    clearDraft();
+    setPendingDraft(null);
+    setDraftSavedAt(null);
+  }
+
+  function discardCurrentDraft() {
+    clearDraft();
+    setDraftSavedAt(null);
+    setForm({
+      title: '',
+      description: '',
+      target_amount: '',
+      asset_type: 'USDC',
+      deadline: '',
+      category: '',
+      min_contribution: '',
+      max_contribution: '',
+      max_per_user: '',
+      show_backer_amounts: true,
+      milestones: [],
+      reward_tiers: [],
+    });
+    setStep(1);
+    setError('');
+  }
 
   useEffect(() => {
     if (ready && !user) {
@@ -360,6 +418,8 @@ export default function CreateCampaign() {
           : undefined,
       });
 
+      clearDraft();
+
       let coverUploadError = '';
       if (coverImageFile) {
         try {
@@ -481,6 +541,62 @@ export default function CreateCampaign() {
             <li>{t('createCampaign.tip3')}</li>
           </ul>
         </OnboardingCallout>
+      )}
+
+      {pendingDraft && (
+        <div className="alert alert--info" style={{ marginBottom: '1.25rem' }} role="status">
+          <p>
+            You have an unsaved draft from{' '}
+            <strong>{new Date(pendingDraft.saved_at).toLocaleString()}</strong>.
+          </p>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.65rem' }}>
+            <button type="button" className="btn-primary" onClick={restoreDraft}>
+              Restore draft
+            </button>
+            <button type="button" className="btn-secondary" onClick={discardDraft}>
+              Discard draft
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!pendingDraft && (draftSaving || draftSavedAt) && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.65rem',
+            flexWrap: 'wrap',
+            marginBottom: '1rem',
+            fontSize: '0.8rem',
+            color: 'var(--color-text-hint)',
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          <span>
+            {draftSaving
+              ? 'Saving draft…'
+              : `Draft saved ${new Date(draftSavedAt).toLocaleTimeString()}`}
+          </span>
+          {draftSavedAt && (
+            <button
+              type="button"
+              onClick={discardCurrentDraft}
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                color: 'var(--color-accent)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontSize: '0.8rem',
+              }}
+            >
+              Discard draft
+            </button>
+          )}
+        </div>
       )}
 
       <form onSubmit={handleSubmit}>
