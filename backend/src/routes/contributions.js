@@ -38,6 +38,7 @@ const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } =
 const { assertUserKycVerified } = require('../services/kycService');
 const asyncHandler = require('../utils/asyncHandler');
 const { getReferralCodeFromRequest } = require('../services/referralService');
+const { reserveTierSlot } = require('../services/rewardTierService');
 
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
 const PREPARED_CONTRIBUTION_EXPIRES_IN = '10m';
@@ -505,7 +506,7 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
     throw err;
   }
 
-  const { campaign_id, amount, send_asset, display_name } = req.body;
+  const { campaign_id, amount, send_asset, display_name, tier_id } = req.body;
 
   const campaign = await loadActiveCampaign(campaign_id);
   if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
@@ -526,6 +527,17 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
     return res.status(400).json({
       error: `Maximum contribution is ${campaign.max_contribution} ${campaign.asset_type}`,
     });
+  }
+
+  // If a specific reward tier was chosen, validate it exists and belongs to this campaign
+  if (tier_id) {
+    const { rows: tierRows } = await db.query(
+      'SELECT id, title, tier_limit, claimed_count FROM reward_tiers WHERE id = $1 AND campaign_id = $2',
+      [tier_id, campaign_id]
+    );
+    if (!tierRows.length) {
+      return res.status(404).json({ error: 'Reward tier not found for this campaign' });
+    }
   }
 
   const client = await db.connect();
@@ -553,6 +565,20 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
       }
     }
 
+    // Atomically reserve a reward tier slot (if a tier was selected)
+    let reservedTier = null;
+    if (tier_id) {
+      reservedTier = await reserveTierSlot(client, { tierId: tier_id, campaignId: campaign_id });
+      if (!reservedTier) {
+        await client.query('ROLLBACK');
+        transactionStarted = false;
+        return res.status(409).json({
+          error: 'This reward tier is sold out',
+          tier_id,
+        });
+      }
+    }
+
     const result = await submitCustodialContribution({
       campaign,
       campaignId: campaign_id,
@@ -565,6 +591,7 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
       referralCode: getReferralCodeFromRequest(campaign_id, req),
       ipAddress: req.ip,
       client,
+      tierId: reservedTier ? reservedTier.id : null,
     });
     await client.query('COMMIT');
     transactionStarted = false;

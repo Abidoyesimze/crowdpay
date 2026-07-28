@@ -273,6 +273,14 @@ const contributionValidation = [
     })
     .isLength({ max: 50 })
     .withMessage('Display name must be at most 50 characters'),
+  body('tier_id')
+    .optional({ nullable: true })
+    .custom((value) => {
+      if (value === null || value === undefined || value === '') return true;
+      if (!isUuid(value)) throw new Error('tier_id must be a valid UUID');
+      return true;
+    })
+    .withMessage('tier_id must be a valid UUID'),
 ];
 
 const withdrawalValidation = [
