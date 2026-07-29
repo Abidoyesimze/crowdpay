@@ -97,6 +97,17 @@ export default function Home() {
       const viewedCampaigns = results.filter(Boolean);
       setRecentlyViewed(viewedCampaigns);
 
+      if (user) {
+        api
+          .getRecommendedCampaigns({ limit: 6 })
+          .then((data) => {
+            const viewedIdSet = new Set(viewedIds);
+            setRecommended((Array.isArray(data) ? data : []).filter((c) => !viewedIdSet.has(c.id)).slice(0, 6));
+          })
+          .catch(() => {});
+        return;
+      }
+
       const categoryTally = {};
       viewedCampaigns.forEach((c) => {
         if (!c.category) return;
@@ -113,7 +124,7 @@ export default function Home() {
         })
         .catch(() => {});
     });
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     setSearchInput(search);

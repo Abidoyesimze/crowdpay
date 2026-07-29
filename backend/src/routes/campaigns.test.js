@@ -25,6 +25,7 @@ function buildApp({
   sorobanDeployImpl,
   sorobanInvokeImpl,
   listCreatorCampaignsImpl,
+  getRecommendedCampaignsImpl,
 }) {
   const router = proxyquire('./campaigns', {
     '../services/campaignStatusService': campaignStatusImpl || {
@@ -101,6 +102,9 @@ function buildApp({
     '../services/userDashboardService': {
       listCreatorCampaigns: listCreatorCampaignsImpl || (async () => []),
     },
+    '../services/campaignRecommendationService': {
+      getRecommendedCampaigns: getRecommendedCampaignsImpl || (async () => []),
+    },
     '../middleware/validation': {
       createCampaignValidation: [],
       createCampaignUpdateValidation: [],
@@ -132,6 +136,23 @@ function buildApp({
   app.use('/api/campaigns', router);
   return app;
 }
+
+test('GET /api/campaigns/recommended returns personalized campaign suggestions', async () => {
+  const app = buildApp({
+    authUser: { userId: 'user-1', role: 'contributor' },
+    getRecommendedCampaignsImpl: async () => [
+      { id: 'campaign-1', title: 'Recommended campaign', category: 'technology' },
+    ],
+  });
+
+  const response = await request(app)
+    .get('/api/campaigns/recommended')
+    .set('Authorization', 'Bearer token');
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.length, 1);
+  assert.equal(response.body[0].title, 'Recommended campaign');
+});
 
 test('POST /api/campaigns/cron/fail-expired returns failed and funded campaigns', async () => {
   const app = buildApp({

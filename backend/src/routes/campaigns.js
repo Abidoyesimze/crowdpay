@@ -30,6 +30,7 @@ const { sendEmail, sendTeamMemberInvitedEmail } = require('../services/emailServ
 const { uploadCampaignCoverImage } = require('../services/storage');
 const { isKycRequiredForCampaigns } = require('../services/kycProvider');
 const { listCreatorCampaigns } = require('../services/userDashboardService');
+const { getRecommendedCampaigns } = require('../services/campaignRecommendationService');
 const { publishDraftCampaign, CampaignNotPublishableError } = require('../services/campaignPublishing');
 const {
   MAX_TIERS_PER_CAMPAIGN,
@@ -268,6 +269,12 @@ router.get('/categories', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch categories' });
   }
 });
+
+router.get('/recommended', requireAuth, asyncHandler(async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 6), 12);
+  const rows = await getRecommendedCampaigns(req.user.userId, { limit });
+  res.json(rows);
+}));
 
 router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req, res) => {
   /**
