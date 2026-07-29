@@ -43,6 +43,9 @@ const ff = require("./services/featureFlags");
 const {
   assertNoLegacyPlaintextUserWalletSecrets,
 } = require("./services/walletSecrets");
+const {
+  startRecurringContributionsCron,
+} = require("./services/recurringContributionsService");
 const db = require("./config/database");
 const swaggerUi = require("swagger-ui-express");
 const swaggerJsdoc = require("swagger-jsdoc");
@@ -509,6 +512,7 @@ async function bootstrap() {
     startWeeklyDigestCron();
     startNotificationDigestCron();
     startContractDeploymentRetryCron();
+    startRecurringContributionsCron();
   });
 }
 

@@ -2110,4 +2110,70 @@ router.post('/:id/share', asyncHandler(async (req, res) => {
   res.json({ share_count: rows[0].share_count });
 }));
 
+// ── Stretch Goals (#585) ──────────────────────────────────────────────────────
+
+// GET /campaigns/:id/stretch-goals — public list
+router.get('/:id/stretch-goals', asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT id, title, description, amount, sort_order, created_at
+     FROM campaign_stretch_goals
+     WHERE campaign_id = $1
+     ORDER BY sort_order ASC, amount ASC`,
+    [req.params.id]
+  );
+  res.json(rows);
+}));
+
+// POST /campaigns/:id/stretch-goals — owner only
+router.post('/:id/stretch-goals', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const { title, description, amount, sort_order } = req.body;
+  if (!title || !title.trim()) return res.status(400).json({ error: 'title is required' });
+  if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+    return res.status(400).json({ error: 'amount must be a positive number' });
+  }
+  const { rows } = await db.query(
+    `INSERT INTO campaign_stretch_goals (campaign_id, title, description, amount, sort_order)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, title, description, amount, sort_order, created_at`,
+    [req.params.id, title.trim(), description?.trim() || null, Number(amount), sort_order ?? 0]
+  );
+  res.status(201).json(rows[0]);
+}));
+
+// PATCH /campaigns/:id/stretch-goals/:goalId — owner only
+router.patch('/:id/stretch-goals/:goalId', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const { title, description, amount, sort_order } = req.body;
+  const updates = [];
+  const values = [];
+  let idx = 1;
+  if (title !== undefined) { updates.push(`title = $${idx++}`); values.push(title.trim()); }
+  if (description !== undefined) { updates.push(`description = $${idx++}`); values.push(description?.trim() || null); }
+  if (amount !== undefined) {
+    if (isNaN(Number(amount)) || Number(amount) <= 0) return res.status(400).json({ error: 'amount must be positive' });
+    updates.push(`amount = $${idx++}`); values.push(Number(amount));
+  }
+  if (sort_order !== undefined) { updates.push(`sort_order = $${idx++}`); values.push(sort_order); }
+  if (!updates.length) return res.status(400).json({ error: 'Nothing to update' });
+  updates.push(`updated_at = NOW()`);
+  values.push(req.params.goalId, req.params.id);
+  const { rows } = await db.query(
+    `UPDATE campaign_stretch_goals SET ${updates.join(', ')}
+     WHERE id = $${idx} AND campaign_id = $${idx + 1}
+     RETURNING id, title, description, amount, sort_order`,
+    values
+  );
+  if (!rows.length) return res.status(404).json({ error: 'Stretch goal not found' });
+  res.json(rows[0]);
+}));
+
+// DELETE /campaigns/:id/stretch-goals/:goalId — owner only
+router.delete('/:id/stretch-goals/:goalId', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `DELETE FROM campaign_stretch_goals WHERE id = $1 AND campaign_id = $2 RETURNING id`,
+    [req.params.goalId, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'Stretch goal not found' });
+  res.status(204).end();
+}));
+
 module.exports = router;

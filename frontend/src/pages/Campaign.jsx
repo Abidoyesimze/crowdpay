@@ -308,6 +308,7 @@ export default function Campaign() {
   const [coverUploadError, setCoverUploadError] = useState(location.state?.coverUploadError || '');
   const [updates, setUpdates] = useState([]);
   const [milestones, setMilestones] = useState([]);
+  const [stretchGoals, setStretchGoals] = useState([]);
   const [updateForm, setUpdateForm] = useState({ title: '', body: '' });
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updatesError, setUpdatesError] = useState('');
@@ -507,6 +508,7 @@ export default function Campaign() {
       .then(setMilestones)
       .catch(() => setMilestones([]))
       .finally(() => setMilestonesLoading(false));
+    api.getStretchGoals(id).then(setStretchGoals).catch(() => setStretchGoals([]));
     api
       .getContractStatus(id)
       .then((data) => {
@@ -1872,6 +1874,49 @@ export default function Campaign() {
 
       <MilestoneTracker milestones={milestones} assetType={campaign.asset_type} />
       <MilestoneVotePanel milestones={milestones} />
+
+      {/* Stretch Goals (#585) */}
+      {stretchGoals.length > 0 && (
+        <div className="campaign-card" style={{ marginBottom: '1.5rem' }}>
+          <h3 style={{ margin: '0 0 0.75rem', fontSize: '1rem', fontWeight: 700 }}>
+            🚀 Stretch Goals
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            {stretchGoals.map((goal) => {
+              const reached = Number(campaign.raised_amount) >= Number(goal.amount);
+              return (
+                <div
+                  key={goal.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '0.75rem',
+                    padding: '0.65rem 0.9rem',
+                    borderRadius: 8,
+                    border: `1px solid ${reached ? 'var(--color-success, #22c55e)' : 'var(--color-border)'}`,
+                    background: reached ? 'var(--color-success-bg, #f0fdf4)' : 'transparent',
+                  }}
+                >
+                  <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>{reached ? '✅' : '🎯'}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <strong style={{ fontSize: '0.9rem' }}>{goal.title}</strong>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-hint)', fontWeight: 600, flexShrink: 0 }}>
+                        {Number(goal.amount).toLocaleString()} {campaign.asset_type}
+                      </span>
+                    </div>
+                    {goal.description && (
+                      <p style={{ margin: '0.2rem 0 0', fontSize: '0.82rem', color: 'var(--color-text-secondary)' }}>
+                        {goal.description}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {canManageTeam && (
         <div style={{ marginBottom: '2rem' }} data-no-print>
           <div
