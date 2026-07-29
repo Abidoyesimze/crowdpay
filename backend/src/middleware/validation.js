@@ -399,12 +399,12 @@ function validateRequest(req, res, next) {
     message: e.msg,
   }));
 
-  const isContributionsPath = Boolean(
-    (req.originalUrl && req.originalUrl.includes('/contributions')) ||
-    (req.baseUrl && req.baseUrl.includes('/contributions')) ||
-    (req.path && req.path.includes('/contributions'))
+  const usesUnprocessableEntity = Boolean(
+    (req.originalUrl && (req.originalUrl.includes('/contributions') || req.originalUrl.includes('/withdrawals'))) ||
+    (req.baseUrl && (req.baseUrl.includes('/contributions') || req.baseUrl.includes('/withdrawals'))) ||
+    (req.path && (req.path.includes('/contributions') || req.path.includes('/withdrawals')))
   );
-  const statusCode = isContributionsPath ? 422 : 400;
+  const statusCode = usesUnprocessableEntity ? 422 : 400;
 
   return res.status(statusCode).json({
     error: {
