@@ -172,6 +172,77 @@ describe('DepositModal', () => {
     expect(screen.getByText('Add Funds')).toBeInTheDocument();
   });
 
+  async function enterAnchorPhaseWithFakeTimers() {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mockStartWalletDeposit.mockResolvedValue({
+      id: 'session-1',
+      interactive_url: 'https://anchor.example/interactive',
+      status: 'pending',
+    });
+
+    const utils = setup();
+
+    const amountInput = await screen.findByLabelText(/Amount/i);
+    await user.type(amountInput, '25');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await screen.findByText('Complete your deposit');
+    await waitFor(() => expect(mockGetAnchorDepositStatus).toHaveBeenCalledTimes(1));
+
+    return utils;
+  }
+
+  it('backs off exponentially between failed status polls', async () => {
+    mockGetAnchorDepositStatus.mockRejectedValue(new Error('Network down'));
+
+    await enterAnchorPhaseWithFakeTimers();
+
+    for (const [index, delay] of [5000, 10000, 20000, 40000].entries()) {
+      expect(
+        await screen.findByText(
+          new RegExp(`Retrying in ${delay / 1000}s — attempt ${index + 2} of 5`)
+        )
+      ).toBeInTheDocument();
+      await vi.advanceTimersByTimeAsync(delay);
+      await waitFor(() => expect(mockGetAnchorDepositStatus).toHaveBeenCalledTimes(index + 2));
+    }
+  });
+
+  it('stops polling after the retry limit and surfaces an error', async () => {
+    mockGetAnchorDepositStatus.mockRejectedValue(new Error('Network down'));
+
+    await enterAnchorPhaseWithFakeTimers();
+
+    await vi.advanceTimersByTimeAsync(5000 + 10000 + 20000 + 40000);
+
+    await waitFor(() => expect(mockGetAnchorDepositStatus).toHaveBeenCalledTimes(5));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /stopped checking your deposit status after 5 failed attempts/i
+    );
+
+    // No further requests once the limit is hit.
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(mockGetAnchorDepositStatus).toHaveBeenCalledTimes(5);
+  });
+
+  it('resets the backoff after a successful poll', async () => {
+    mockGetAnchorDepositStatus
+      .mockRejectedValueOnce(new Error('Network down'))
+      .mockResolvedValue({ id: 'session-1', status: 'pending' });
+
+    await enterAnchorPhaseWithFakeTimers();
+
+    expect(await screen.findByText(/Retrying in 5s/)).toBeInTheDocument();
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await waitFor(() => expect(mockGetAnchorDepositStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText(/Retrying in/)).not.toBeInTheDocument());
+
+    // Back to the steady-state interval, not the escalated delay.
+    await vi.advanceTimersByTimeAsync(4000);
+    await waitFor(() => expect(mockGetAnchorDepositStatus).toHaveBeenCalledTimes(3));
+  });
+
   it('calls onClose when the Cancel button is clicked', async () => {
     const user = userEvent.setup();
     const { onClose } = setup();
