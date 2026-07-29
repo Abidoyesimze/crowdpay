@@ -18,7 +18,7 @@ const { TX_TIMEOUT_CONTRIBUTION_S } = require('../config/constants');
 // in environments (e.g. CI, unit tests) where USDC_ISSUER is not set.
 process.env.USDC_ISSUER = process.env.USDC_ISSUER || 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 // Provide a dummy JWT_SECRET for token signing/verification in unit tests.
-process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-for-unit-tests';
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'unit-test-jwt-secret-for-contributions-32';
 
 const TESTNET_PASSPHRASE = Networks.TESTNET;
 const VALID_G = 'GASXEYHSSVN3WSHD4WSZ4O37HC2AG4JH2EB6UPHM6IXDXDRJRDJD4RZK';

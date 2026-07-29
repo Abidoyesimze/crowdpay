@@ -4,7 +4,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const proxyquire = require('proxyquire').noCallThru();
 
-process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecret';
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'admin-impersonation-unit-test-jwt-secret-32';
 
 let queryCalls;
 

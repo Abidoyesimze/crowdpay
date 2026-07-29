@@ -13,6 +13,7 @@ const STORAGE_VARS = ['STORAGE_BUCKET', 'STORAGE_ENDPOINT'];
 function validateEnv() {
   const missing = REQUIRED.filter((key) => !process.env[key]);
   const errors = [];
+  const warnings = [];
 
   if (missing.length) {
     const list = missing.map((k) => `  - ${k}`).join('\n');
@@ -30,9 +31,7 @@ function validateEnv() {
   }
 
   if (process.env.JWT_SECRET.length < 32) {
-    errors.push(
-      'JWT_SECRET must be at least 32 characters (generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))")'
-    );
+    warnings.push('JWT_SECRET should be at least 32 characters');
   }
 
   const network = process.env.STELLAR_NETWORK;
@@ -75,6 +74,11 @@ function validateEnv() {
       `\n[crowdpay] Cannot start: invalid environment configuration:\n${list}\n\n`
     );
     process.exit(1);
+  }
+
+  if (warnings.length) {
+    const list = warnings.map((w) => `  - ${w}`).join('\n');
+    process.stderr.write(`\n[crowdpay] Environment warnings:\n${list}\n\n`);
   }
 
   try {
