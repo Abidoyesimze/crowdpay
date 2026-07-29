@@ -147,6 +147,7 @@ async function submitCustodialContribution({
     ...intent.flowMetadata,
     ip_address: ipAddress || null,
     tier_id: tierId || null,
+    nft_reward: Boolean(tierId),
     ...(referralCode ? { referral_code: referralCode } : {}),
     ...(anchorMetadata
       ? {

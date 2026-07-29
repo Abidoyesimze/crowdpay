@@ -252,6 +252,7 @@ app.use(
 );
 
 app.use("/api/auth", require("./routes/auth"));
+app.use("/api/nft-rewards", require("./routes/nftRewards"));
 // Backwards/alternate compatibility for docs + clients expecting /api/users/register|login.
 app.use("/api/users", require("./routes/auth"));
 // Session management routes

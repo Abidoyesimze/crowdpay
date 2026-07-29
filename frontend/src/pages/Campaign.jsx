@@ -351,6 +351,7 @@ export default function Campaign() {
   const [referralUrl, setReferralUrl] = useState(null);
   const [referralLeaderboard, setReferralLeaderboard] = useState(null);
   const [tiers, setTiers] = useState([]);
+  const [nftRewards, setNftRewards] = useState([]);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [milestonesLoading, setMilestonesLoading] = useState(false);
   const [contractStatus, setContractStatus] = useState(null);
@@ -521,6 +522,10 @@ export default function Campaign() {
       .getCampaignTiers(id)
       .then((data) => setTiers(Array.isArray(data) ? data : []))
       .catch(() => setTiers([]));
+    api
+      .getCampaignNftRewards(id)
+      .then((data) => setNftRewards(Array.isArray(data?.rewards) ? data.rewards : []))
+      .catch(() => setNftRewards([]));
     api
       .getCampaignUpdates(id, { limit: 20 })
       .then(setUpdates)
@@ -1215,6 +1220,25 @@ export default function Campaign() {
       </div>
 
       <CampaignComments campaignId={campaign.id} campaign={campaign} />
+
+      {nftRewards.length > 0 && (
+        <div style={{ marginBottom: "1rem" }}>
+          <h2 style={styles.sectionTitle}>NFT proof of support</h2>
+          <div style={{ display: "grid", gap: "0.75rem" }}>
+            {nftRewards.slice(0, 3).map((reward) => (
+              <div key={reward.id} style={{ ...styles.card, marginBottom: 0 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", flexWrap: "wrap" }}>
+                  <strong>{reward.reward_tier_title || 'NFT reward'}</strong>
+                  <span style={styles.small}>{reward.status || 'configured'}</span>
+                </div>
+                {reward.serial_number && (
+                  <p style={{ ...styles.small, marginTop: '0.4rem' }}>Serial: {reward.serial_number}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {tiers.length > 0 && (
         <div style={{ marginBottom: "1rem" }}>

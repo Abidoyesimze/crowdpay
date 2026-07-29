@@ -42,7 +42,7 @@ function emptyMilestone() {
 }
 
 function emptyTier() {
-  return { title: '', description: '', min_amount: '', limit: '', estimated_delivery: '' };
+  return { title: '', description: '', min_amount: '', limit: '', estimated_delivery: '', nft_enabled: false, nft_metadata_url: '', nft_artwork_url: '' };
 }
 
 function milestonePercentTotal(milestones) {
@@ -489,6 +489,18 @@ export default function CreateCampaign() {
               title: milestone.title.trim(),
               description: milestone.description.trim(),
               release_percentage: Number(milestone.release_percentage),
+            }))
+          : undefined,
+        reward_tiers: form.reward_tiers.length
+          ? form.reward_tiers.map((tier) => ({
+              title: tier.title.trim(),
+              description: tier.description.trim() || null,
+              min_amount: Number(tier.min_amount),
+              limit: tier.limit ? parseInt(tier.limit, 10) : null,
+              estimated_delivery: tier.estimated_delivery || null,
+              nft_enabled: Boolean(tier.nft_enabled),
+              nft_metadata_url: tier.nft_metadata_url?.trim() || null,
+              nft_artwork_url: tier.nft_artwork_url?.trim() || null,
             }))
           : undefined,
       });
@@ -1264,6 +1276,39 @@ export default function CreateCampaign() {
                         value={tier.estimated_delivery}
                         onChange={(e) => setTierField(index, 'estimated_delivery', e.target.value)}
                       />
+                    </div>
+                    <div className="campaign-card" style={{ marginTop: '0.75rem', padding: '0.85rem' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(tier.nft_enabled)}
+                          onChange={(e) => setTierField(index, 'nft_enabled', e.target.checked)}
+                        />
+                        Issue an NFT proof of support for this tier
+                      </label>
+                      <p style={{ marginTop: '0.45rem', marginBottom: '0.65rem', fontSize: '0.84rem', color: 'var(--color-text-secondary)' }}>
+                        Contributors who unlock this tier will receive a unique NFT reward record linked to the campaign.
+                      </p>
+                      {Boolean(tier.nft_enabled) && (
+                        <div style={{ display: 'grid', gap: '0.65rem' }}>
+                          <div className="form-stack">
+                            <label className="label-strong">Metadata URL <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+                            <input
+                              value={tier.nft_metadata_url || ''}
+                              onChange={(e) => setTierField(index, 'nft_metadata_url', e.target.value)}
+                              placeholder="https://ipfs.io/ipfs/..."
+                            />
+                          </div>
+                          <div className="form-stack">
+                            <label className="label-strong">Artwork URL <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+                            <input
+                              value={tier.nft_artwork_url || ''}
+                              onChange={(e) => setTierField(index, 'nft_artwork_url', e.target.value)}
+                              placeholder="https://ipfs.io/ipfs/..."
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}

@@ -374,6 +374,10 @@ export const api = {
   getCampaignAnalytics: (id) => request('GET', `/campaigns/${id}/analytics`),
   getCampaignAnalyticsContributors: (id) =>
     request('GET', `/campaigns/${id}/analytics/contributors`),
+  getCampaignTiers: (id) => request('GET', `/campaigns/${id}/tiers`),
+  getMyNftRewards: () => request('GET', '/nft-rewards/me'),
+  getCampaignNftRewards: (campaignId) => request('GET', `/nft-rewards/campaign/${encodeURIComponent(campaignId)}`),
+  getContributionNftRewards: (contributionId) => request('GET', `/nft-rewards/contributions/${encodeURIComponent(contributionId)}`),
   getCampaignAnalyticsBackers: (id) => request('GET', `/campaigns/${id}/analytics/backers`),
   exportCampaignContributions: (id) =>
     downloadFile(
