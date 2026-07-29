@@ -269,7 +269,7 @@ router.get('/categories', async (req, res) => {
   }
 });
 
-router.get('/', getCampaignsValidation, validateRequest, async (req, res) => {
+router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req, res) => {
   /**
    * @openapi
    * /api/campaigns:
@@ -355,10 +355,10 @@ router.get('/', getCampaignsValidation, validateRequest, async (req, res) => {
 
   const sortExpressions = {
     newest: 'c.created_at DESC',
-    trending: `(SELECT COUNT(*) FROM contributions ctr WHERE ctr.campaign_id = c.id AND ctr.created_at >= NOW() - INTERVAL '48 hours') DESC`,
+    trending: 'COALESCE(ctr_trending.recent_count, 0) DESC, c.created_at DESC',
     ending_soon: 'c.deadline ASC NULLS LAST',
     most_funded: 'c.raised_amount DESC',
-    most_backed: '(SELECT COUNT(*) FROM contributions ctr WHERE ctr.campaign_id = c.id) DESC',
+    most_backed: 'COALESCE(con.total_contributions, 0) DESC',
     closest_to_goal: '(c.raised_amount / NULLIF(c.target_amount, 0)) DESC NULLS LAST, c.raised_amount DESC',
   };
   if (searchParamIdx !== null) {
@@ -373,10 +373,28 @@ router.get('/', getCampaignsValidation, validateRequest, async (req, res) => {
     SELECT c.*,
            u.name AS creator_name,
            u.kyc_status AS creator_kyc_status,
-           (SELECT COUNT(*)::int FROM campaign_updates cu WHERE cu.campaign_id = c.id) AS updates_count,
-           (SELECT COUNT(DISTINCT sender_public_key)::int FROM contributions con WHERE con.campaign_id = c.id) AS contributor_count
+           COALESCE(cu.updates_count, 0)::int AS updates_count,
+           COALESCE(con.contributor_count, 0)::int AS contributor_count
     FROM campaigns c
     JOIN users u ON u.id = c.creator_id
+    LEFT JOIN (
+      SELECT campaign_id, COUNT(*)::int AS updates_count
+      FROM campaign_updates
+      GROUP BY campaign_id
+    ) cu ON cu.campaign_id = c.id
+    LEFT JOIN (
+      SELECT campaign_id,
+             COUNT(DISTINCT sender_public_key)::int AS contributor_count,
+             COUNT(*)::int AS total_contributions
+      FROM contributions
+      GROUP BY campaign_id
+    ) con ON con.campaign_id = c.id
+    LEFT JOIN (
+      SELECT campaign_id, COUNT(*)::int AS recent_count
+      FROM contributions
+      WHERE created_at >= NOW() - INTERVAL '48 hours'
+      GROUP BY campaign_id
+    ) ctr_trending ON ctr_trending.campaign_id = c.id
     ${whereClause}
     ORDER BY ${orderBy}
     LIMIT $${params.length + 1}
@@ -668,9 +686,14 @@ router.get('/featured', asyncHandler(async (req, res) => {
     SELECT c.id, c.title, c.description, c.target_amount, c.raised_amount,
            c.asset_type, c.status, c.deadline, c.featured_note,
            u.name AS creator_name,
-           (SELECT COUNT(*) FROM contributions WHERE campaign_id = c.id) AS contributor_count
+           COALESCE(con.contributor_count, 0)::int AS contributor_count
     FROM campaigns c
     JOIN users u ON u.id = c.creator_id
+    LEFT JOIN (
+      SELECT campaign_id, COUNT(*)::int AS contributor_count
+      FROM contributions
+      GROUP BY campaign_id
+    ) con ON con.campaign_id = c.id
     WHERE c.featured = TRUE AND c.status = 'active' AND c.deleted_at IS NULL AND c.is_flagged_duplicate = FALSE AND c.is_hidden = FALSE
     ORDER BY c.featured_at DESC
     LIMIT 3

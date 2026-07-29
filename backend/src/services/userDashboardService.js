@@ -30,6 +30,7 @@ async function listCreatorCampaigns(userId) {
     );
     return rows;
   });
+}
 
 async function listCreatorCampaigns(userId, options = {}) {
   const page = Math.max(1, parseInt(options.page, 10) || 1);

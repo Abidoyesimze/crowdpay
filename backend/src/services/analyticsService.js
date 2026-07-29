@@ -165,6 +165,7 @@ async function getPlatformAnalytics() {
 function invalidateCampaignAnalytics(campaignId) {
   analyticsCache.invalidate(`analytics:${campaignId}`);
   analyticsCache.invalidate('analytics:platform');
+}
 
 
 /**
