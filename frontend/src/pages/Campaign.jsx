@@ -616,43 +616,66 @@ export default function Campaign() {
   useEffect(() => {
     if (!window.EventSource) return;
 
-    const es = new EventSource(`/api/campaigns/${id}/stream`);
+    let es = null;
+    let retryDelay = 1000;
+    let retryTimeout = null;
+    let isUnmounted = false;
 
-    es.onopen = () => setIsLive(true);
+    function connect() {
+      if (isUnmounted) return;
 
-    es.onmessage = (e) => {
-      let msg;
-      try {
-        msg = JSON.parse(e.data);
-      } catch {
-        return;
-      }
+      es = new EventSource(`/api/campaigns/${id}/stream`);
 
-      if (msg.type === 'contribution') {
-        setCampaign((prev) => (prev ? { ...prev, raised_amount: msg.raised_amount } : prev));
-        setContributions((prev) => {
-          const current = prev || [];
-          const exists = current.some((c) => c.tx_hash === msg.contribution.tx_hash);
-          if (exists) return current;
+      es.onopen = () => {
+        setIsLive(true);
+        retryDelay = 1000;
+      };
 
-          setTotalContributions((t) => t + 1);
+      es.onmessage = (e) => {
+        let msg;
+        try {
+          msg = JSON.parse(e.data);
+        } catch {
+          return;
+        }
 
-          const updated = [msg.contribution, ...current];
-          if (!showAll && updated.length > 10) {
-            return updated.slice(0, 10);
-          }
-          return updated;
-        });
-      }
-    };
+        if (msg.type === 'contribution') {
+          setCampaign((prev) => (prev ? { ...prev, raised_amount: msg.raised_amount } : prev));
+          setContributions((prev) => {
+            const current = prev || [];
+            const exists = current.some((c) => c.tx_hash === msg.contribution.tx_hash);
+            if (exists) return current;
 
-    es.onerror = () => {
-      setIsLive(false);
-      es.close();
-    };
+            setTotalContributions((t) => t + 1);
+
+            const updated = [msg.contribution, ...current];
+            if (!showAll && updated.length > 10) {
+              return updated.slice(0, 10);
+            }
+            return updated;
+          });
+        }
+      };
+
+      es.onerror = () => {
+        setIsLive(false);
+        es.close();
+
+        if (!isUnmounted) {
+          retryTimeout = setTimeout(() => {
+            connect();
+            retryDelay = Math.min(retryDelay * 2, 30000);
+          }, retryDelay);
+        }
+      };
+    }
+
+    connect();
 
     return () => {
-      es.close();
+      isUnmounted = true;
+      if (es) es.close();
+      if (retryTimeout) clearTimeout(retryTimeout);
       setIsLive(false);
     };
   }, [id, showAll]);
