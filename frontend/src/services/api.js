@@ -362,6 +362,10 @@ export const api = {
   startKyc: () => request('POST', '/auth/kyc/start'),
   getKycStatus: () => request('GET', '/auth/kyc/status'),
 
+  saveCampaignDraft: (body) => request('POST', '/campaigns/drafts', body),
+  getMyCampaignDraft: () => request('GET', '/campaigns/drafts/my'),
+  deleteCampaignDraft: (id) => request('DELETE', `/campaigns/drafts/${id}`),
+
   getMyCampaigns: (options = {}) => request('GET', '/campaigns/mine', null, { query: options }),
   getFeaturedCampaigns: () => request('GET', '/campaigns/featured'),
   getCampaignCategories: () => request('GET', '/campaigns/categories'),

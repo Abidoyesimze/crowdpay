@@ -393,6 +393,57 @@ router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+// ── Campaign draft auto-save ──────────────────────────────────────────────
+
+router.post('/drafts', requireAuth, requireRole('creator', 'admin'), asyncHandler(async (req, res) => {
+  const { form_data, step } = req.body;
+
+  if (!form_data || typeof form_data !== 'object') {
+    return res.status(400).json({ error: 'form_data is required' });
+  }
+
+  const { rows } = await db.query(
+    `INSERT INTO campaign_drafts (creator_id, form_data, step, saved_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (creator_id)
+     DO UPDATE SET form_data = EXCLUDED.form_data,
+                   step = EXCLUDED.step,
+                   saved_at = NOW()
+     RETURNING id, saved_at`,
+    [req.user.userId, JSON.stringify(form_data), step ?? 1]
+  );
+
+  res.json(rows[0]);
+}));
+
+router.get('/drafts/my', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT id, form_data, step, saved_at
+     FROM campaign_drafts
+     WHERE creator_id = $1
+     ORDER BY saved_at DESC
+     LIMIT 1`,
+    [req.user.userId]
+  );
+
+  if (!rows.length) return res.status(404).json({ error: 'No draft found' });
+
+  res.json(rows[0]);
+}));
+
+router.delete('/drafts/:id', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `DELETE FROM campaign_drafts
+     WHERE id = $1 AND creator_id = $2
+     RETURNING id`,
+    [req.params.id, req.user.userId]
+  );
+
+  if (!rows.length) return res.status(404).json({ error: 'Draft not found' });
+
+  res.json({ message: 'Draft deleted' });
+}));
+
 router.get('/:id/milestones', asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT m.*, (c.milestones_contract_id IS NOT NULL) AS on_chain
