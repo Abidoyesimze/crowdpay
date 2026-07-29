@@ -283,9 +283,14 @@ router.get('/campaigns', async (req, res) => {
               c.contract_deployment_status, c.contract_deployment_error,
               c.escrow_contract_id,
               u.id as creator_id, u.name as creator_name, u.email as creator_email,
-              (SELECT COUNT(*) FROM contributions WHERE campaign_id = c.id) as contribution_count
+              COALESCE(con.contribution_count, 0)::int as contribution_count
        FROM campaigns c 
        JOIN users u ON c.creator_id = u.id
+       LEFT JOIN (
+         SELECT campaign_id, COUNT(*)::int as contribution_count
+         FROM contributions
+         GROUP BY campaign_id
+       ) con ON con.campaign_id = c.id
        ${where}
        ORDER BY c.created_at DESC
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
@@ -678,9 +683,20 @@ router.get('/users', async (req, res) => {
     const { rows } = await db.query(
       `SELECT u.id, u.name, u.email, u.role, u.is_admin, u.is_banned, u.created_at,
               u.kyc_status, u.kyc_completed_at,
-              (SELECT COUNT(*) FROM campaigns WHERE creator_id = u.id AND deleted_at IS NULL) as campaign_count,
-              (SELECT COUNT(*) FROM contributions WHERE sender_public_key = u.wallet_public_key) as contribution_count
+              COALESCE(camp.campaign_count, 0)::int as campaign_count,
+              COALESCE(con.contribution_count, 0)::int as contribution_count
        FROM users u
+       LEFT JOIN (
+         SELECT creator_id, COUNT(*)::int as campaign_count
+         FROM campaigns
+         WHERE deleted_at IS NULL
+         GROUP BY creator_id
+       ) camp ON camp.creator_id = u.id
+       LEFT JOIN (
+         SELECT sender_public_key, COUNT(*)::int as contribution_count
+         FROM contributions
+         GROUP BY sender_public_key
+       ) con ON con.sender_public_key = u.wallet_public_key
        ${where}
        ORDER BY u.created_at DESC
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,

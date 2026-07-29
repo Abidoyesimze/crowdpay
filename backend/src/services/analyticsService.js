@@ -167,6 +167,7 @@ function invalidateCampaignAnalytics(campaignId) {
   analyticsCache.invalidate('analytics:platform');
 }
 
+
 /**
  * Daily contribution buckets for the full campaign duration.
  * Fills in zero-contribution days so charts render continuous lines.

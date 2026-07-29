@@ -1,7 +1,7 @@
 const express = require('express');
 const { body, param } = require('express-validator');
 const { requireAuth } = require('../middleware/auth');
-const { validate } = require('../middleware/validation');
+const { validateRequest } = require('../middleware/validation');
 const asyncHandler = require('../utils/asyncHandler');
 const db = require('../config/database');
 
@@ -36,7 +36,7 @@ router.post(
   '/:campaignId/translations',
   requireAuth,
   upsertValidation,
-  validate,
+  validateRequest,
   asyncHandler(async (req, res) => {
     const { campaignId } = req.params;
     const { language, title, description } = req.body;
