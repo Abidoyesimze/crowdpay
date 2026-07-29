@@ -1,4 +1,5 @@
 const { validateWalletSecretConfig } = require('../services/walletSecrets');
+const { validateWalletEncryptionKey } = require('../services/walletService');
 const { validateGeoipConfig } = require('../services/geoipService');
 
 const REQUIRED = [
@@ -8,6 +9,7 @@ const REQUIRED = [
   'PLATFORM_SECRET_KEY',
   'STELLAR_NETWORK',
   'STELLAR_HORIZON_URL',
+  'WALLET_ENCRYPTION_KEY',
 ];
 const STORAGE_VARS = ['STORAGE_BUCKET', 'STORAGE_ENDPOINT'];
 
@@ -80,6 +82,13 @@ function validateEnv() {
 
   try {
     validateWalletSecretConfig();
+  } catch (err) {
+    process.stderr.write(`\n[crowdpay] Cannot start: ${err.message}\n\n`);
+    process.exit(1);
+  }
+
+  try {
+    validateWalletEncryptionKey();
   } catch (err) {
     process.stderr.write(`\n[crowdpay] Cannot start: ${err.message}\n\n`);
     process.exit(1);

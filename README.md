@@ -128,11 +128,24 @@ cd frontend && npm run dev   # http://localhost:5173
 | `STELLAR_HORIZON_URL` | Horizon endpoint URL |
 | `PLATFORM_SECRET_KEY` | Stellar secret key for the platform co-signer wallet |
 | `USDC_ISSUER` | USDC issuer (`GBBD47...` on testnet) |
-| `WALLET_SECRET_LOCAL_KEK` | Base64-encoded key-encryption key for stored secrets |
+| `WALLET_ENCRYPTION_KEY` | Base64 or hex-encoded 32-byte encryption key used by backend wallet recovery |
+| `WALLET_SECRET_LOCAL_KEK` | Base64-encoded 32-byte key-encryption key for stored secrets |
 | `FRONTEND_URL` | Allowed CORS origin (dev: `http://localhost:5173`) |
 | `SMTP_HOST` / `EMAIL_SERVICE_API_KEY` | Email delivery (optional in dev) |
 | `PERSONA_API_KEY` / `PERSONA_TEMPLATE_ID` | KYC provider (optional in dev) |
 | `AWS_ACCESS_KEY_ID` + S3 vars | Image uploads (optional in dev) |
+
+Generate a 32-byte key:
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+### Wallet secret key rotation
+
+- `WALLET_SECRET_LOCAL_KEK` and `WALLET_ENCRYPTION_KEY` must remain stable across process restarts. If either key is changed while encrypted wallet secrets still exist, those secrets become unrecoverable.
+- For local secret storage, generate the keys once and keep them in a secure secret store or deployment environment.
+- To rotate keys safely, decrypt existing secrets with the current key and re-encrypt them with the new key before switching the environment to use the new value.
+- In production, using `WALLET_SECRET_PROVIDER=aws-kms` is the recommended approach because AWS KMS can manage key lifecycle without direct key material rotation in the app.
 
 Generate a platform keypair:
 ```bash
