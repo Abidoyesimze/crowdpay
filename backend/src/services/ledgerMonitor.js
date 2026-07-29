@@ -238,6 +238,7 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     const displayName = submittedRows[0]?.metadata?.display_name || null;
     const referralCode = submittedRows[0]?.metadata?.referral_code || null;
     const ipAddress = submittedRows[0]?.metadata?.ip_address || null;
+    const reservedTierId = submittedRows[0]?.metadata?.tier_id || null;
 
     const { rows: inserted } = await client.query(
       `INSERT INTO contributions
@@ -282,10 +283,13 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
 
     // Match this contribution to the highest reward tier it qualifies for that
     // still has capacity (idempotent + atomic with the insert above).
+    // If the contribution was made with an explicit tier_id that was reserved
+    // atomically in the route, use that tier directly without bumping claimed_count.
     const assignedTier = await assignTierToContribution(client, {
       campaignId,
       amount: destinationAmount,
       contributionId: inserted[0].id,
+      tierId: reservedTierId || undefined,
     });
 
     await markContributionIndexed(client, txHash, inserted[0].id);

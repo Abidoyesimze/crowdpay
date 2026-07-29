@@ -30,7 +30,7 @@ const analyticsCache = new TtlCache(5 * 60_000);
  * @param {string} campaignId
  * @returns {Promise<object>}
  */
-async function getCampaignAnalytics(campaignId) {
+async function getCachedCampaignAnalytics(campaignId) {
   const key = `analytics:${campaignId}`;
   return analyticsCache.wrap(key, async () => {
     const [totals, timeSeries, milestones, breakdown] = await Promise.all([

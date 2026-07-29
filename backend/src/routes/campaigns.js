@@ -411,6 +411,57 @@ router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+// ── Campaign draft auto-save ──────────────────────────────────────────────
+
+router.post('/drafts', requireAuth, requireRole('creator', 'admin'), asyncHandler(async (req, res) => {
+  const { form_data, step } = req.body;
+
+  if (!form_data || typeof form_data !== 'object') {
+    return res.status(400).json({ error: 'form_data is required' });
+  }
+
+  const { rows } = await db.query(
+    `INSERT INTO campaign_drafts (creator_id, form_data, step, saved_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (creator_id)
+     DO UPDATE SET form_data = EXCLUDED.form_data,
+                   step = EXCLUDED.step,
+                   saved_at = NOW()
+     RETURNING id, saved_at`,
+    [req.user.userId, JSON.stringify(form_data), step ?? 1]
+  );
+
+  res.json(rows[0]);
+}));
+
+router.get('/drafts/my', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT id, form_data, step, saved_at
+     FROM campaign_drafts
+     WHERE creator_id = $1
+     ORDER BY saved_at DESC
+     LIMIT 1`,
+    [req.user.userId]
+  );
+
+  if (!rows.length) return res.status(404).json({ error: 'No draft found' });
+
+  res.json(rows[0]);
+}));
+
+router.delete('/drafts/:id', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `DELETE FROM campaign_drafts
+     WHERE id = $1 AND creator_id = $2
+     RETURNING id`,
+    [req.params.id, req.user.userId]
+  );
+
+  if (!rows.length) return res.status(404).json({ error: 'Draft not found' });
+
+  res.json({ message: 'Draft deleted' });
+}));
+
 router.get('/:id/milestones', asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT m.*, (c.milestones_contract_id IS NOT NULL) AS on_chain
@@ -873,6 +924,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
         );
         res.cookie(`cp_ref_${req.params.id}`, refCode, {
           httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
           sameSite: 'lax',
           maxAge: 30 * 24 * 60 * 60 * 1000,
           path: '/',
@@ -1981,31 +2033,20 @@ router.patch('/:id/visibility', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // GET /campaigns/:id/analytics — full contribution analytics
-router.get('/:id/analytics', asyncHandler(async (req, res) => {
+router.get('/:id/analytics', requireAuth, requireCampaignMember(), asyncHandler(async (req, res) => {
   const data = await getCampaignAnalytics(req.params.id);
   if (!data) return res.status(404).json({ error: 'Campaign not found' });
   res.json(data);
 }));
 
 // GET /campaigns/:id/analytics/contributors — country breakdown, repeat vs first-time
-router.get('/:id/analytics/contributors', requireAuth, asyncHandler(async (req, res) => {
-  // verify campaign exists and requester is owner or admin
-  const { rows } = await db.query('SELECT creator_id FROM campaigns WHERE id = $1', [req.params.id]);
-  if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
-  if (req.user.role !== 'admin' && rows[0].creator_id !== req.user.userId) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
+router.get('/:id/analytics/contributors', requireAuth, requireCampaignMember(), asyncHandler(async (req, res) => {
   const data = await getCampaignContributors(req.params.id);
   res.json(data);
 }));
 
 // GET /campaigns/:id/analytics/backers — backer growth, leaderboard, repeat rate
-router.get('/:id/analytics/backers', requireAuth, asyncHandler(async (req, res) => {
-  const { rows } = await db.query('SELECT creator_id FROM campaigns WHERE id = $1', [req.params.id]);
-  if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
-  if (req.user.role !== 'admin' && rows[0].creator_id !== req.user.userId) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
+router.get('/:id/analytics/backers', requireAuth, requireCampaignMember(), asyncHandler(async (req, res) => {
   const data = await getCampaignBackers(req.params.id);
   res.json(data);
 }));
@@ -2057,6 +2098,16 @@ router.get('/:id/referrals', requireAuth, requireCampaignMember('owner'), asyncH
     [req.params.id]
   );
   res.json(rows);
+}));
+
+// POST /campaigns/:id/share — increment share_count
+router.post('/:id/share', asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    'UPDATE campaigns SET share_count = share_count + 1 WHERE id = $1 RETURNING share_count',
+    [req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
+  res.json({ share_count: rows[0].share_count });
 }));
 
 module.exports = router;

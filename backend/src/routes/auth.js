@@ -874,6 +874,8 @@ router.post('/logout', async (req, res) => {
   }
   clearRefreshTokenCookie(res);
   clearAccessTokenCookie(res);
+  // Clear CSRF cookie on logout
+  res.clearCookie('cp_csrf', { path: '/' });
   res.json({ ok: true });
 });
 
@@ -964,6 +966,13 @@ router.post(
     res.json({ message: 'Password reset successfully' });
   }
 );
+
+router.get('/csrf-token', (req, res) => {
+  // CSRF cookie is set by the csrfProtection middleware on all requests.
+  // This endpoint lets the frontend fetch the current token value.
+  const token = req.cookies?.['cp_csrf'] || null;
+  res.json({ csrfToken: token });
+});
 
 router.post('/kyc/start', requireAuth, asyncHandler(async (req, res) => {
   try {

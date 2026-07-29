@@ -366,9 +366,14 @@ export default function ContributorDashboard() {
         }}
       >
         <div style={{ fontSize: '0.85rem', color: 'var(--color-text-hint)' }}>Your portfolio</div>
-        <button type="button" onClick={exportCsv} disabled={exporting} style={{ fontSize: '0.8rem' }}>
-          {exporting ? 'Exporting…' : 'Export CSV'}
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          <Link to="/tax-receipts" style={{ fontSize: '0.8rem', color: 'var(--color-accent)', fontWeight: 700 }}>
+            Tax receipts
+          </Link>
+          <button type="button" onClick={exportCsv} disabled={exporting} style={{ fontSize: '0.8rem' }}>
+            {exporting ? 'Exporting…' : 'Export CSV'}
+          </button>
+        </div>
       </div>
 
       <div

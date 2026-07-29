@@ -88,6 +88,7 @@ async function submitCustodialContribution({
   referralCode,
   ipAddress,
   client,
+  tierId,
 }) {
   const intent =
     intentOverride ||
@@ -145,6 +146,7 @@ async function submitCustodialContribution({
   const metadata = {
     ...intent.flowMetadata,
     ip_address: ipAddress || null,
+    tier_id: tierId || null,
     ...(referralCode ? { referral_code: referralCode } : {}),
     ...(anchorMetadata
       ? {

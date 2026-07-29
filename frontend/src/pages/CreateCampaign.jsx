@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import SimpleMDE from 'react-simplemde-editor';
@@ -11,6 +11,7 @@ import { isCreatorOnboardingVisible, dismissCreatorOnboarding } from '../lib/onb
 import { saveDraft, loadDraft, clearDraft, hasDraftContent } from '../lib/campaignDraft';
 
 const DRAFT_SAVE_DEBOUNCE_MS = 800;
+const SERVER_DRAFT_SAVE_MS = 30_000;
 
 const ASSETS = [
   {
@@ -87,20 +88,86 @@ export default function CreateCampaign() {
   );
   const [draftSavedAt, setDraftSavedAt] = useState(null);
   const [draftSaving, setDraftSaving] = useState(false);
+  const [draftId, setDraftId] = useState(null);
+
+  // Local storage save (immediate indicator, updated by server save)
+  const localSaveTimer = useRef(null);
 
   useEffect(() => {
-    if (pendingDraft) return undefined;
-    if (!hasDraftContent(form)) return undefined;
+    if (pendingDraft) return;
+    if (!hasDraftContent(form)) return;
 
-    setDraftSaving(true);
-    const timer = setTimeout(() => {
+    if (localSaveTimer.current) clearTimeout(localSaveTimer.current);
+    localSaveTimer.current = setTimeout(() => {
       const draft = saveDraft(form, step);
-      setDraftSaving(false);
-      if (draft) setDraftSavedAt(draft.saved_at);
+      if (draft && !draftId) setDraftSavedAt(draft.saved_at);
     }, DRAFT_SAVE_DEBOUNCE_MS);
 
-    return () => clearTimeout(timer);
-  }, [form, step, pendingDraft]);
+    return () => {
+      if (localSaveTimer.current) clearTimeout(localSaveTimer.current);
+    };
+  }, [form, step, pendingDraft, draftId]);
+
+  // Server auto-save every 30s (debounced, with indicator)
+  const serverSaveTimer = useRef(null);
+
+  useEffect(() => {
+    if (pendingDraft) return;
+    if (!hasDraftContent(form)) return;
+    if (!user) return;
+
+    if (serverSaveTimer.current) clearTimeout(serverSaveTimer.current);
+
+    serverSaveTimer.current = setTimeout(async () => {
+      setDraftSaving(true);
+      try {
+        const result = await api.saveCampaignDraft({ form_data: form, step });
+        setDraftId(result.id);
+        setDraftSavedAt(result.saved_at);
+        saveDraft(form, step);
+      } catch {
+        // server save failed — local storage is the fallback
+      }
+      setDraftSaving(false);
+    }, SERVER_DRAFT_SAVE_MS);
+
+    return () => {
+      if (serverSaveTimer.current) clearTimeout(serverSaveTimer.current);
+    };
+  }, [form, step, pendingDraft, user]);
+
+  // On mount, check for a server draft and offer to restore it
+  useEffect(() => {
+    if (!user) return;
+    if (location.state?.prefill) return;
+
+    let cancelled = false;
+
+    api.getMyCampaignDraft()
+      .then((serverDraft) => {
+        if (cancelled) return;
+        const localDraft = loadDraft();
+
+        const serverTime = new Date(serverDraft.saved_at).getTime();
+        const localTime = localDraft ? new Date(localDraft.saved_at).getTime() : 0;
+
+        if (serverTime > localTime) {
+          setPendingDraft({
+            form: serverDraft.form_data,
+            step: serverDraft.step,
+            saved_at: serverDraft.saved_at,
+          });
+          setDraftId(serverDraft.id);
+        } else if (localDraft) {
+          setDraftId(null);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+      });
+
+    return () => { cancelled = true; };
+  }, [user, location.state?.prefill]);
 
   function restoreDraft() {
     setForm(pendingDraft.form);
@@ -110,14 +177,22 @@ export default function CreateCampaign() {
   }
 
   function discardDraft() {
+    if (draftId) {
+      api.deleteCampaignDraft(draftId).catch(() => {});
+    }
     clearDraft();
     setPendingDraft(null);
     setDraftSavedAt(null);
+    setDraftId(null);
   }
 
   function discardCurrentDraft() {
+    if (draftId) {
+      api.deleteCampaignDraft(draftId).catch(() => {});
+    }
     clearDraft();
     setDraftSavedAt(null);
+    setDraftId(null);
     setForm({
       title: '',
       description: '',
@@ -419,6 +494,10 @@ export default function CreateCampaign() {
       });
 
       clearDraft();
+      if (draftId) {
+        api.deleteCampaignDraft(draftId).catch(() => {});
+        setDraftId(null);
+      }
 
       let coverUploadError = '';
       if (coverImageFile) {

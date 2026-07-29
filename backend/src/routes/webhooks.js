@@ -16,6 +16,7 @@ const {
   WebhookError,
 } = require('../services/webhookService');
 const asyncHandler = require('../utils/asyncHandler');
+const { isSafeUrl } = require('../utils/ssrfGuard');
 
 const isTest = process.env.NODE_ENV === 'test';
 
@@ -32,20 +33,9 @@ const incomingWebhookLimiter = rateLimit({
   skip: () => isTest,
 });
 
-function isValidWebhookUrl(urlString) {
-  try {
-    const u = new URL(urlString);
-    if (u.protocol === 'https:') return true;
-    if (
-      u.protocol === 'http:' &&
-      (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
-    ) {
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
+async function isValidWebhookUrl(urlString) {
+  const result = await isSafeUrl(urlString);
+  return result.safe;
 }
 
 function normalizeEvents(events) {
@@ -125,7 +115,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
   if (!url || !events) {
     return res.status(400).json({ error: 'url and events array are required' });
   }
-  if (!isValidWebhookUrl(url)) {
+  if (!(await isValidWebhookUrl(url))) {
     return res.status(400).json({ error: 'url must be https, or http://localhost for development' });
   }
   const ev = normalizeEvents(events);

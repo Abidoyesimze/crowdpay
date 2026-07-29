@@ -36,12 +36,20 @@ export default function Navbar() {
       setNotifications([]);
       return;
     }
-    const fetchNotifs = () =>
+    const fetchNotifs = () => {
+      if (document.visibilityState !== 'visible') return;
       api
         .getNotifications()
         .then(setNotifications)
         .catch(() => {});
-    fetchNotifs();
+    };
+    
+    // Initial fetch
+    api
+      .getNotifications()
+      .then(setNotifications)
+      .catch(() => {});
+
     const id = setInterval(fetchNotifs, 30_000);
     return () => clearInterval(id);
   }, [user]);

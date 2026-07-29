@@ -110,8 +110,38 @@ async function listTiersWithAvailability(campaignId) {
 }
 
 /**
+ * Reserve a slot in a specific reward tier by incrementing its claimed_count.
+ *
+ * Called from the contribution route INSIDE its transaction so the tier slot
+ * is atomically reserved alongside the Stellar transaction submission. If the
+ * tier is already sold out (claimed_count >= tier_limit with a finite limit)
+ * the UPDATE returns zero rows and the caller should reject the contribution
+ * with HTTP 409.
+ *
+ * @param {object} client   Database client inside an open transaction
+ * @param {{tierId: string, campaignId: string}} params
+ * @returns {{id: string, title: string}|null} the reserved tier, or null if sold out
+ */
+async function reserveTierSlot(client, { tierId, campaignId }) {
+  const { rows } = await client.query(
+    `UPDATE reward_tiers
+        SET claimed_count = claimed_count + 1
+      WHERE id = $1
+        AND campaign_id = $2
+        AND (tier_limit IS NULL OR claimed_count < tier_limit)
+      RETURNING id, title`,
+    [tierId, campaignId],
+  );
+  return rows[0] || null;
+}
+
+/**
  * Match a contribution to the highest reward tier it qualifies for that still
  * has capacity, record it, and increment that tier's claimed_count.
+ *
+ * When an explicit tierId is provided (pre-reserved via reserveTierSlot) the
+ * function only creates the contribution_rewards join row without bumping
+ * claimed_count (the slot was already reserved in the route transaction).
  *
  * Runs on a provided client inside the contribution-indexing transaction so the
  * assignment is atomic with the contribution insert. The whole operation is a
@@ -122,9 +152,31 @@ async function listTiersWithAvailability(campaignId) {
  *   - Full tiers are filtered out, so a contributor that can't get the top tier
  *     automatically falls back to the next qualifying one.
  *
+ * @param {object}   client  Database client inside an open transaction
+ * @param {{campaignId: string, amount: number, contributionId: string, tierId?: string}} params
  * @returns {{id: string, title: string}|null} the assigned tier, or null if none matched
  */
-async function assignTierToContribution(client, { campaignId, amount, contributionId }) {
+async function assignTierToContribution(client, { campaignId, amount, contributionId, tierId }) {
+  if (tierId) {
+    // Explicit tier — slot was already reserved by the contribution route.
+    // Only create the contribution_rewards join row; do NOT bump claimed_count
+    // again because reserveTierSlot already did that atomically.
+    const { rows } = await client.query(
+      `WITH ins AS (
+         INSERT INTO contribution_rewards (contribution_id, reward_tier_id)
+         VALUES ($1, $2)
+         ON CONFLICT (contribution_id) DO NOTHING
+         RETURNING reward_tier_id
+       )
+       SELECT r.id, r.title
+         FROM reward_tiers r
+         JOIN ins ON ins.reward_tier_id = r.id`,
+      [contributionId, tierId],
+    );
+    return rows[0] || null;
+  }
+
+  // Auto-match to the highest qualifying tier (legacy behaviour)
   const { rows } = await client.query(
     `WITH chosen AS (
        SELECT id
@@ -158,4 +210,5 @@ module.exports = {
   insertTiers,
   listTiersWithAvailability,
   assignTierToContribution,
+  reserveTierSlot,
 };

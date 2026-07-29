@@ -55,7 +55,7 @@ export default function Widget() {
     };
 
     const stop = () => {
-      if (intervalId !== null) return;
+      if (intervalId === null) return;
       window.clearInterval(intervalId);
       intervalId = null;
       controller?.abort();
