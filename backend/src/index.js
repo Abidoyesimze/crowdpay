@@ -369,7 +369,7 @@ if (ff.isEnabled("serve-frontend")) {
     if (req.path.startsWith("/api") || req.path.startsWith("/health"))
       return next();
 
-    const campaignMatch = req.path.match(/^\/campaigns\/([a-f0-9\-]+)$/);
+    const campaignMatch = req.path.match(/^\/campaigns\/([a-f0-9-]+)$/);
     if (campaignMatch) {
       try {
         const campaignId = campaignMatch[1];

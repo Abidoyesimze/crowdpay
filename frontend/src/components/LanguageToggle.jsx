@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import api from '../services/api';
+import { api } from '../services/api';
 
 const LANGUAGE_LABELS = {
   en: 'English', es: 'Español', fr: 'Français', de: 'Deutsch',

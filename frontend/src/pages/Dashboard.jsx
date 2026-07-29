@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
@@ -10,18 +10,11 @@ import ContributorDashboard from '../components/ContributorDashboard';
 import FollowedCampaigns from '../components/FollowedCampaigns';
 import DepositModal from '../components/DepositModal';
 import ApiKeysPanel from '../components/ApiKeysPanel';
-import BackerInsightsCard from '../components/BackerInsightsCard';
 import { stellarExpertTxUrl, stellarExpertAccountUrl } from '../config/stellar';
 import ThankYouModal from '../components/ThankYouModal';
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from 'recharts';
+
+const BackerInsightsCard = React.lazy(() => import('../components/BackerInsightsCard'));
+const MiniLineChart = React.lazy(() => import('../components/MiniLineChart'));
 
 const TABS = [
   { id: 'campaigns', labelKey: 'dashboard.tabs.campaigns' },
@@ -47,34 +40,6 @@ function exportCSV(rows, filename) {
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
   a.download = filename;
   a.click();
-}
-
-function MiniLineChart({ data, dataKey = 'total_amount', label = '' }) {
-  const { t } = useTranslation();
-  if (!data || data.length === 0) {
-    return (
-      <p style={{ color: 'var(--color-text-hint)', fontSize: '0.9rem' }}>
-        {t('dashboard.noContributionData')}
-      </p>
-    );
-  }
-  return (
-    <ResponsiveContainer width="100%" height={180}>
-      <LineChart data={data} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-        <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(d) => d?.slice(5)} />
-        <YAxis tick={{ fontSize: 11 }} width={48} />
-        <Tooltip formatter={(v) => [Number(v).toLocaleString(), label]} />
-        <Line
-          type="monotone"
-          dataKey={dataKey}
-          stroke="var(--color-accent)"
-          dot={false}
-          strokeWidth={2}
-        />
-      </LineChart>
-    </ResponsiveContainer>
-  );
 }
 
 function daysUntil(dateStr) {
@@ -932,11 +897,13 @@ export default function Dashboard() {
                 </button>
               )}
             </div>
-            <MiniLineChart
-              data={dashAnalytics?.recent_trend}
-              dataKey="total_amount"
-              label={t('dashboard.amount')}
-            />
+            <React.Suspense fallback={<p style={{ color: 'var(--color-text-hint)', fontSize: '0.9rem' }}>Loading chart…</p>}>
+              <MiniLineChart
+                data={dashAnalytics?.recent_trend}
+                dataKey="total_amount"
+                label={t('dashboard.amount')}
+              />
+            </React.Suspense>
             {dashAnalytics?.overview && (
               <div
                 style={{
@@ -1134,21 +1101,25 @@ export default function Dashboard() {
                 )}
 
                 {campaignBackers && (
-                  <BackerInsightsCard
-                    data={campaignBackers}
-                    assetType={campaignAnalytics?.campaign?.asset_type || 'XLM'}
-                  />
+                  <React.Suspense fallback={<p style={{ color: 'var(--color-text-hint)', fontSize: '0.9rem' }}>Loading chart…</p>}>
+                    <BackerInsightsCard
+                      data={campaignBackers}
+                      assetType={campaignAnalytics?.campaign?.asset_type || 'XLM'}
+                    />
+                  </React.Suspense>
                 )}
 
                 {/* Time-series chart */}
                 <strong style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.9rem' }}>
                   {t('dashboard.contributionsOverTime')}
                 </strong>
-                <MiniLineChart
-                  data={campaignAnalytics.daily_buckets}
-                  dataKey="total_amount"
-                  label={t('dashboard.amount')}
-                />
+                <React.Suspense fallback={<p style={{ color: 'var(--color-text-hint)', fontSize: '0.9rem' }}>Loading chart…</p>}>
+                  <MiniLineChart
+                    data={campaignAnalytics.daily_buckets}
+                    dataKey="total_amount"
+                    label={t('dashboard.amount')}
+                  />
+                </React.Suspense>
 
                 {/* Milestone funnel */}
                 <MilestoneFunnel campaignId={selectedCampaignId} />
