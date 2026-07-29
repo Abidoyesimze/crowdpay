@@ -5,6 +5,10 @@
   "scripts": {
     "lint": "npm run lint --prefix backend && npm run lint --prefix frontend",
     "format": "npm run format --prefix frontend",
-    "test:e2e": "npx playwright test"
+    "test:e2e": "npx playwright test",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7"
   }
 }
