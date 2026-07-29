@@ -558,7 +558,12 @@ const platformApproveHandler = async (req, res) => {
           title: 'Withdrawal approved',
           body: `Your withdrawal of ${updatedWithdrawalRow.amount} was approved and submitted on-chain.`,
           link: `/campaigns/${updatedWithdrawalRow.campaign_id}`,
-        }).catch(() => {});
+        }).catch((err) =>
+          logger.warn('Withdrawal approved notification failed', {
+            withdrawal_id: req.params.id,
+            error: err.message,
+          })
+        );
 
         notifyContributorFundRelease({
           campaignId: updatedWithdrawalRow.campaign_id,
@@ -752,7 +757,12 @@ router.post('/:id/reject', requireAuth, requirePlatformApprover, async (req, res
         title: 'Withdrawal rejected',
         body: `Your withdrawal request was rejected. Reason: ${reason}`,
         link: `/campaigns/${requestRow.campaign_id}`,
-      }).catch(() => {});
+      }).catch((err) =>
+        logger.warn('Withdrawal rejected notification failed', {
+          withdrawal_id: req.params.id,
+          error: err.message,
+        })
+      );
       emitWithdrawalUpdated(cRows[0].creator_id, updated[0]);
     }
 
