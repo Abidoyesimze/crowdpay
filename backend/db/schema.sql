@@ -57,6 +57,7 @@ CREATE TABLE campaigns (
   fraud_score         INTEGER DEFAULT 0,
   fraud_signals       JSONB DEFAULT '{}'::jsonb,
   share_count         INTEGER NOT NULL DEFAULT 0,
+  country             TEXT,
   created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS campaign_updates (
@@ -93,6 +94,7 @@ CREATE TABLE contributions (
   refunded            BOOLEAN NOT NULL DEFAULT FALSE,
   platform_fee_amount NUMERIC(20, 7),
   ip_address          TEXT,
+  device_fingerprint  TEXT,   -- salted HMAC of client device fingerprint (never raw)
   created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 

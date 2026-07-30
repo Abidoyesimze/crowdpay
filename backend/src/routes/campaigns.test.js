@@ -450,6 +450,74 @@ test('GET /api/campaigns supports search, asset filter, and sort', async () => {
   assert.ok(listQuery.params.includes('USDC'));
 });
 
+test('GET /api/campaigns applies faceted filters (funding range, deadline, verified, country)', async () => {
+  const queries = [];
+  const app = buildApp({
+    queryImpl: async (text, params) => {
+      queries.push({ text, params });
+      if (text.includes('COUNT(*)')) {
+        return { rows: [{ total: 0 }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app).get(
+    '/api/campaigns?min_funding=100&max_funding=500&deadline_within=7&creator_verified=true&country=US'
+  );
+
+  assert.equal(response.status, 200);
+  const listQuery = queries.find((q) => q.text.includes('ORDER BY'));
+  assert.ok(listQuery);
+  // Funding range is parameterized against raised_amount.
+  assert.match(listQuery.text, /c\.raised_amount >= \$/);
+  assert.match(listQuery.text, /c\.raised_amount <= \$/);
+  assert.ok(listQuery.params.includes(100));
+  assert.ok(listQuery.params.includes(500));
+  // Deadline proximity uses CURRENT_DATE window.
+  assert.match(listQuery.text, /c\.deadline <= CURRENT_DATE/);
+  assert.ok(listQuery.params.includes(7));
+  // Creator reputation via KYC verification (no injectable param).
+  assert.match(listQuery.text, /u\.kyc_status = 'verified'/);
+  // Geographic facet parameterized.
+  assert.match(listQuery.text, /c\.country = \$/);
+  assert.ok(listQuery.params.includes('US'));
+  // Count query must also join users so the verified filter resolves.
+  const countQuery = queries.find((q) => q.text.includes('COUNT(*)'));
+  assert.match(countQuery.text, /JOIN users u/);
+});
+
+test('GET /api/campaigns/facets returns facet counts and funding bounds', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('GROUP BY category')) {
+        return { rows: [{ category: 'technology', count: 3 }] };
+      }
+      if (text.includes('GROUP BY asset_type')) {
+        return { rows: [{ asset_type: 'USDC', count: 5 }] };
+      }
+      if (text.includes('GROUP BY country')) {
+        return { rows: [{ country: 'US', count: 2 }] };
+      }
+      if (text.includes('MIN(raised_amount)')) {
+        return { rows: [{ min_funding: '0', max_funding: '900' }] };
+      }
+      if (text.includes("kyc_status = 'verified'")) {
+        return { rows: [{ count: 4 }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app).get('/api/campaigns/facets');
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.categories, [{ category: 'technology', count: 3 }]);
+  assert.deepEqual(response.body.assets, [{ asset_type: 'USDC', count: 5 }]);
+  assert.deepEqual(response.body.countries, [{ country: 'US', count: 2 }]);
+  assert.equal(response.body.funding.max, 900);
+  assert.equal(response.body.verified_creators, 4);
+});
+
 test('GET /api/campaigns/mine parses page and limit parameters', async () => {
   let passedOptions = {};
   const app = buildApp({

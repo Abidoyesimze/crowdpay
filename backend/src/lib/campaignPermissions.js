@@ -35,6 +35,18 @@ function canChangeRoles(role) {
   return role === 'owner';
 }
 
+/**
+ * Whether an actor with `actorRole` may grant `targetRole` to a member.
+ * Only owners may grant the `owner` role — this prevents a manager from
+ * escalating privileges by inviting a brand-new owner. Managers may still
+ * invite managers, editors, and viewers.
+ */
+function canAssignRole(actorRole, targetRole) {
+  if (!isValidRole(targetRole)) return false;
+  if (targetRole === 'owner') return actorRole === 'owner';
+  return canInviteMembers(actorRole);
+}
+
 function canSubmitMilestones(role) {
   return role === 'owner' || role === 'manager';
 }
@@ -53,6 +65,7 @@ module.exports = {
   canManageMembers,
   canInviteMembers,
   canChangeRoles,
+  canAssignRole,
   canSubmitMilestones,
   canDeleteCampaign,
 };

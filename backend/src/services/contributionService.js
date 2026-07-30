@@ -87,6 +87,7 @@ async function submitCustodialContribution({
   displayName,
   referralCode,
   ipAddress,
+  deviceFingerprint,
   client,
   tierId,
 }) {
@@ -146,6 +147,7 @@ async function submitCustodialContribution({
   const metadata = {
     ...intent.flowMetadata,
     ip_address: ipAddress || null,
+    device_fingerprint: deviceFingerprint || null,
     tier_id: tierId || null,
     ...(referralCode ? { referral_code: referralCode } : {}),
     ...(anchorMetadata
