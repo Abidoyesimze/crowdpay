@@ -106,6 +106,46 @@ router.put('/channel-settings', requireAuth, asyncHandler(async (req, res) => {
   res.json(rows[0]);
 }));
 
+// FCM registration tokens are browser/device-specific. They are never trusted
+// as an account identifier: the authenticated user owns every stored token.
+router.get('/push-subscriptions', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    'SELECT COUNT(*)::int AS count FROM push_subscriptions WHERE user_id = $1',
+    [req.user.userId]
+  );
+  res.json({ subscribed: rows[0].count > 0 });
+}));
+
+router.post('/push-subscriptions', requireAuth, asyncHandler(async (req, res) => {
+  const { token } = req.body || {};
+  if (typeof token !== 'string' || !token.trim() || token.length > 4096) {
+    return res.status(400).json({ error: 'token must be a non-empty string up to 4096 characters' });
+  }
+
+  await db.query(
+    `INSERT INTO push_subscriptions (user_id, token, updated_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id, updated_at = NOW()`,
+    [req.user.userId, token]
+  );
+  await db.query(
+    `INSERT INTO notification_channel_settings (user_id)
+     VALUES ($1)
+     ON CONFLICT (user_id) DO NOTHING`,
+    [req.user.userId]
+  );
+  res.status(201).json({ ok: true });
+}));
+
+router.delete('/push-subscriptions', requireAuth, asyncHandler(async (req, res) => {
+  const { token } = req.body || {};
+  if (typeof token !== 'string' || !token.trim()) {
+    return res.status(400).json({ error: 'token is required' });
+  }
+  await db.query('DELETE FROM push_subscriptions WHERE user_id = $1 AND token = $2', [req.user.userId, token]);
+  res.json({ ok: true });
+}));
+
 // Per-event-type, per-channel enable/disable overrides.
 router.get('/preferences', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
