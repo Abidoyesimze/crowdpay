@@ -1,5 +1,28 @@
 import '@testing-library/jest-dom/vitest';
 import { vi } from 'vitest';
+
+// Provide a simple in‑memory localStorage mock for test environment
+if (typeof global.localStorage === 'undefined') {
+  const _storage = {};
+  global.localStorage = {
+    getItem(key) {
+      return Object.prototype.hasOwnProperty.call(_storage, key) ? _storage[key] : null;
+    },
+    setItem(key, value) {
+      _storage[key] = String(value);
+    },
+    removeItem(key) {
+      delete _storage[key];
+    },
+    clear() {
+      Object.keys(_storage).forEach(k => delete _storage[k]);
+    },
+  };
+}
+// Ensure window.localStorage mirrors the same mock when JSDOM provides a window object
+if (typeof window !== 'undefined' && typeof window.localStorage === 'undefined') {
+  window.localStorage = global.localStorage;
+}
 import en from '../locales/en.json';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
