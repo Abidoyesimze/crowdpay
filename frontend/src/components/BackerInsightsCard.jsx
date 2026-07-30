@@ -1,3 +1,4 @@
+import React, { memo } from 'react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 function shortenKey(key) {
@@ -5,7 +6,7 @@ function shortenKey(key) {
   return `${key.slice(0, 8)}…${key.slice(-4)}`;
 }
 
-export default function BackerInsightsCard({ data, assetType = 'XLM' }) {
+const BackerInsightsCard = memo(function BackerInsightsCard({ data, assetType = 'XLM' }) {
   if (!data) {
     return null;
   }
@@ -56,6 +57,7 @@ export default function BackerInsightsCard({ data, assetType = 'XLM' }) {
                 stroke="var(--color-accent)"
                 dot={false}
                 strokeWidth={2}
+                isAnimationActive={false}
               />
             </LineChart>
           </ResponsiveContainer>
@@ -89,4 +91,6 @@ export default function BackerInsightsCard({ data, assetType = 'XLM' }) {
       </div>
     </div>
   );
-}
+});
+
+export default BackerInsightsCard;
