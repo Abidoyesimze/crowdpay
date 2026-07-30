@@ -48,7 +48,7 @@ const CATEGORY_LABELS = {
   other: 'Other',
 };
 
-export default function CampaignCard({ campaign, featured }) {
+function CampaignCard({ campaign, featured }) {
   const { t } = useTranslation();
   const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
   const fillColor = progressColor(parseFloat(pct), campaign.status);
@@ -157,6 +157,8 @@ export default function CampaignCard({ campaign, featured }) {
     </Link>
   );
 }
+
+export default React.memo(CampaignCard);
 
 const styles = {
   card: {
