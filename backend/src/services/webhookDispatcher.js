@@ -16,6 +16,8 @@ const WEBHOOK_EVENTS = {
   WITHDRAWAL_UPDATED: 'withdrawal.updated',
   DISPUTE_OPENED: 'dispute.opened',
   DISPUTE_RESOLVED: 'dispute.resolved',
+  SPONSOR_MATCH_CREATED: 'sponsor_match.created',
+  SPONSOR_MATCH_COMPLETED: 'sponsor_match.completed',
 };
 
 const ALL_WEBHOOK_EVENTS = Object.values(WEBHOOK_EVENTS);
