@@ -1,6 +1,7 @@
 const db = require('../config/database');
 const logger = require('../config/logger');
 const channels = require('./notificationChannels');
+const fcmPush = require('./fcmPushService');
 
 // Multi-channel notification orchestration (issue #429).
 //
@@ -24,7 +25,8 @@ async function insertInApp(userId, { type, title, body, link }) {
 async function loadChannelSettings(userId) {
   const { rows } = await db.query(
     `SELECT push_token, slack_webhook_url, discord_webhook_url, sms_phone_number,
-            quiet_hours_start, quiet_hours_end
+            quiet_hours_start, quiet_hours_end,
+            EXISTS (SELECT 1 FROM push_subscriptions WHERE user_id = $1) AS push_enabled
      FROM notification_channel_settings
      WHERE user_id = $1`,
     [userId]
@@ -49,9 +51,24 @@ async function loadPreferences(userId, eventType) {
 // it has a destination configured and the user has not explicitly disabled it
 // for this event type.
 function channelEnabled(channel, prefs, settings) {
+  if (channel === 'push' && settings?.push_enabled) {
+    return prefs.push === undefined ? true : prefs.push === true;
+  }
   if (!channels.destinationFor(channel, settings)) return false;
   const override = prefs[channel];
   return override === undefined ? true : override === true;
+}
+
+async function deliverChannel(userId, channel, settings, message) {
+  if (channel === 'push' && settings.push_enabled) {
+    try {
+      return await fcmPush.sendToUser(userId, message);
+    } catch (err) {
+      logger.error('FCM notification delivery failed', { user_id: userId, type: message.type, error: err.message });
+      return false;
+    }
+  }
+  return channels.deliver(channel, settings, message);
 }
 
 // Determine whether `nowHour` (0-23) falls inside the user's quiet-hours
@@ -130,7 +147,7 @@ async function createNotification(userId, { type, title, body, link }, { nowHour
       continue;
     }
 
-    await channels.deliver(channel, settings, message);
+    await deliverChannel(userId, channel, settings, message);
   }
 }
 
@@ -175,7 +192,7 @@ async function flushQuietHours({ nowHour } = {}) {
       link: null,
     };
 
-    const delivered = await channels.deliver(channel, settings, digest);
+    const delivered = await deliverChannel(settings.user_id, channel, settings, digest);
     if (delivered) {
       const ids = items.map((i) => i.id);
       await db.query(

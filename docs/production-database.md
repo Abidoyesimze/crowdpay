@@ -38,6 +38,7 @@ GRANT USAGE ON SCHEMA public TO crowdpay_app;
 SQL
 ```
 
+
 The migration role must be used for `npm run migrate`; it needs to create/alter tables and indexes. After the first migration, grant the runtime role access to the objects it needs:
 
 ```bash

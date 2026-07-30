@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../services/api';
 
+const POLL_INTERVAL_MS = 4000;
+// Consecutive-failure backoff. A 5th failure gives up instead of polling forever.
+const POLL_BACKOFF_MS = [5000, 10000, 20000, 40000];
+const MAX_POLL_FAILURES = POLL_BACKOFF_MS.length + 1;
+
 export default function DepositModal({ onClose, onSuccess }) {
   const [amount, setAmount] = useState('');
   const [anchorInfo, setAnchorInfo] = useState({ anchors: [] });
@@ -9,6 +14,7 @@ export default function DepositModal({ onClose, onSuccess }) {
   const [loading, setLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState('Submitting…');
   const [error, setError] = useState('');
+  const [pollRetryNotice, setPollRetryNotice] = useState('');
   const [kycRequired, setKycRequired] = useState(false);
   const [phase, setPhase] = useState('form');
   const [balance, setBalance] = useState(null);
@@ -43,11 +49,19 @@ export default function DepositModal({ onClose, onSuccess }) {
   useEffect(() => {
     if (phase !== 'anchor' || !session?.id) return;
     let stopped = false;
+    let timerId;
+    let failures = 0;
+
+    const schedule = (delayMs) => {
+      timerId = window.setTimeout(poll, delayMs);
+    };
 
     const poll = async () => {
       try {
         const next = await api.getAnchorDepositStatus(session.id);
         if (stopped) return;
+        failures = 0;
+        setPollRetryNotice('');
         setSession(next);
         if (next.status === 'completed') {
           setPhase('success');
@@ -67,22 +81,35 @@ export default function DepositModal({ onClose, onSuccess }) {
           setError(customError);
           setPhase('form');
           if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
-        } else {
-          setKycRequired(
-            next.last_anchor_status === 'pending_user_info_update' ||
-              next.last_anchor_status === 'pending_customer_info_update'
-          );
+          return;
         }
+        setKycRequired(
+          next.last_anchor_status === 'pending_user_info_update' ||
+            next.last_anchor_status === 'pending_customer_info_update'
+        );
+        schedule(POLL_INTERVAL_MS);
       } catch (err) {
-        if (!stopped) setError(err.message || 'Could not refresh deposit status.');
+        if (stopped) return;
+        failures += 1;
+        if (failures >= MAX_POLL_FAILURES) {
+          setPollRetryNotice('');
+          setError(
+            `We stopped checking your deposit status after ${MAX_POLL_FAILURES} failed attempts (${err.message || 'network error'}). Your deposit is unaffected — reopen the deposit window or check your balance again shortly.`
+          );
+          return;
+        }
+        const delayMs = POLL_BACKOFF_MS[failures - 1];
+        setPollRetryNotice(
+          `Could not refresh the deposit status (${err.message || 'network error'}). Retrying in ${delayMs / 1000}s — attempt ${failures + 1} of ${MAX_POLL_FAILURES}.`
+        );
+        schedule(delayMs);
       }
     };
 
     poll();
-    const id = window.setInterval(poll, 4000);
     return () => {
       stopped = true;
-      window.clearInterval(id);
+      window.clearTimeout(timerId);
     };
   }, [session?.id, onSuccess, phase]);
 
@@ -127,6 +154,7 @@ export default function DepositModal({ onClose, onSuccess }) {
     setLoading(true);
     setLoadingLabel('Preparing deposit…');
     setError('');
+    setPollRetryNotice('');
     try {
       const popup = window.open('', 'crowdpay-wallet-deposit', 'popup,width=520,height=780');
       popupRef.current = popup;
@@ -272,6 +300,16 @@ export default function DepositModal({ onClose, onSuccess }) {
               <p className="alert alert--warning" style={{ marginBottom: '1rem' }} role="status">
                 <strong>Action Required:</strong> The partner needs additional KYC information.
                 Please complete the form in the deposit window.
+              </p>
+            )}
+            {pollRetryNotice && (
+              <p className="alert alert--warning" style={{ marginBottom: '1rem' }} role="status">
+                {pollRetryNotice}
+              </p>
+            )}
+            {error && (
+              <p className="alert alert--error" style={{ marginBottom: '1rem' }} role="alert">
+                {error}
               </p>
             )}
             {session?.anchor_transaction_id && (

@@ -368,12 +368,19 @@ export const api = {
 
   getMyCampaigns: (options = {}) => request('GET', '/campaigns/mine', null, { query: options }),
   getFeaturedCampaigns: () => request('GET', '/campaigns/featured'),
+  getRecommendedCampaigns: (options = {}) =>
+    request('GET', '/campaigns/recommended', null, { query: options }),
   getCampaignCategories: () => request('GET', '/campaigns/categories'),
+  getCampaignFacets: () => request('GET', '/campaigns/facets'),
   getCampaigns: (options = {}) => request('GET', '/campaigns', null, { query: options }),
   getCampaign: (id, options = {}) => request('GET', `/campaigns/${id}`, null, { query: options }),
   getCampaignAnalytics: (id) => request('GET', `/campaigns/${id}/analytics`),
   getCampaignAnalyticsContributors: (id) =>
     request('GET', `/campaigns/${id}/analytics/contributors`),
+  getCampaignTiers: (id) => request('GET', `/campaigns/${id}/tiers`),
+  getMyNftRewards: () => request('GET', '/nft-rewards/me'),
+  getCampaignNftRewards: (campaignId) => request('GET', `/nft-rewards/campaign/${encodeURIComponent(campaignId)}`),
+  getContributionNftRewards: (contributionId) => request('GET', `/nft-rewards/contributions/${encodeURIComponent(contributionId)}`),
   getCampaignAnalyticsBackers: (id) => request('GET', `/campaigns/${id}/analytics/backers`),
   exportCampaignContributions: (id) =>
     downloadFile(
@@ -597,6 +604,9 @@ export const api = {
   updateNotificationPreference: (body) => request('PUT', '/notifications/preferences', body),
   getChannelSettings: () => request('GET', '/notifications/channel-settings'),
   updateChannelSettings: (body) => request('PUT', '/notifications/channel-settings', body),
+  getPushSubscriptionStatus: () => request('GET', '/notifications/push-subscriptions'),
+  registerPushSubscription: (token) => request('POST', '/notifications/push-subscriptions', { token }),
+  removePushSubscription: (token) => request('DELETE', '/notifications/push-subscriptions', { token }),
 
   getReferralCode: (campaignId) => request('GET', `/campaigns/${campaignId}/referral`),
   getReferralLeaderboard: (campaignId) => request('GET', `/campaigns/${campaignId}/referrals`),
@@ -631,4 +641,25 @@ export const api = {
     request('POST', `/campaigns/${campaignId}/translations`, { language, title, description }),
   deleteTranslation: (campaignId, language) =>
     request('DELETE', `/campaigns/${campaignId}/translations/${language}`),
+  // ── Stretch Goals (#585) ──────────────────────────────────────────
+  getStretchGoals: (campaignId) =>
+    request('GET', `/campaigns/${campaignId}/stretch-goals`),
+  createStretchGoal: (campaignId, body) =>
+    request('POST', `/campaigns/${campaignId}/stretch-goals`, body),
+  updateStretchGoal: (campaignId, goalId, body) =>
+    request('PATCH', `/campaigns/${campaignId}/stretch-goals/${goalId}`, body),
+  deleteStretchGoal: (campaignId, goalId) =>
+    request('DELETE', `/campaigns/${campaignId}/stretch-goals/${goalId}`),
+  // ── Creator Public Profile (#588) ────────────────────────────────
+  getCreatorProfile: (userId) =>
+    request('GET', `/users/${userId}/public`),
+  // ── Recurring Contributions (#584) ───────────────────────────────
+  getMyRecurringContributions: () =>
+    request('GET', '/users/me/recurring-contributions'),
+  createRecurringContribution: (body) =>
+    request('POST', '/users/me/recurring-contributions', body),
+  updateRecurringContribution: (id, body) =>
+    request('PATCH', `/users/me/recurring-contributions/${id}`, body),
+  deleteRecurringContribution: (id) =>
+    request('DELETE', `/users/me/recurring-contributions/${id}`),
 };

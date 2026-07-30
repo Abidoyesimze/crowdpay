@@ -333,7 +333,7 @@ async function getCampaignBackers(campaignId) {
  * Aggregate analytics across all campaigns owned by a creator.
  */
 async function getUserDashboardAnalytics(userId) {
-  const [overviewRows, trendRows, topCampaignRows] = await Promise.all([
+  const [overviewRows, trendRows, topCampaignRows, velocityRows, retentionRows, referralRows] = await Promise.all([
     db.query(
       `SELECT
          COUNT(DISTINCT c.id)::int                                AS total_campaigns,
@@ -369,12 +369,67 @@ async function getUserDashboardAnalytics(userId) {
        LIMIT 5`,
       [userId]
     ),
+    // Funding velocity: daily cumulative raised per campaign (last 60 days)
+    db.query(
+      `SELECT c.id AS campaign_id, c.title,
+              DATE(ctr.created_at) AS day,
+              SUM(ctr.amount)      AS daily_amount
+       FROM contributions ctr
+       JOIN campaigns c ON c.id = ctr.campaign_id
+       WHERE c.creator_id = $1
+         AND ctr.created_at >= NOW() - INTERVAL '60 days'
+       GROUP BY c.id, c.title, DATE(ctr.created_at)
+       ORDER BY c.id, day ASC`,
+      [userId]
+    ),
+    // Contributor retention: returning vs first-time per month (last 6 months)
+    db.query(
+      `SELECT
+         TO_CHAR(DATE_TRUNC('month', ctr.created_at), 'YYYY-MM') AS month,
+         SUM(CASE WHEN prev.sender_public_key IS NOT NULL THEN 1 ELSE 0 END)::int AS returning_count,
+         SUM(CASE WHEN prev.sender_public_key IS NULL    THEN 1 ELSE 0 END)::int AS new_count
+       FROM contributions ctr
+       JOIN campaigns c ON c.id = ctr.campaign_id
+       LEFT JOIN (
+         SELECT DISTINCT ctr2.sender_public_key
+         FROM contributions ctr2
+         JOIN campaigns c2 ON c2.id = ctr2.campaign_id
+         WHERE c2.creator_id = $1
+           AND ctr2.created_at < NOW() - INTERVAL '6 months'
+       ) prev ON prev.sender_public_key = ctr.sender_public_key
+       WHERE c.creator_id = $1
+         AND ctr.created_at >= NOW() - INTERVAL '6 months'
+       GROUP BY DATE_TRUNC('month', ctr.created_at)
+       ORDER BY month ASC`,
+      [userId]
+    ),
+    // Referral conversion rate: clicks vs contributions per referral code
+    db.query(
+      `SELECT
+         cr.referral_code,
+         COUNT(DISTINCT cr.id)::int  AS click_count,
+         COUNT(DISTINCT ctr.id)::int AS contribution_count,
+         CASE WHEN COUNT(cr.id) = 0 THEN 0
+              ELSE ROUND(COUNT(DISTINCT ctr.id)::numeric / COUNT(cr.id) * 100, 2)
+         END AS conversion_rate
+       FROM campaign_referrals cr
+       JOIN campaigns c ON c.id = cr.campaign_id
+       LEFT JOIN contributions ctr ON ctr.referral_code = cr.referral_code
+       WHERE c.creator_id = $1
+       GROUP BY cr.referral_code
+       ORDER BY contribution_count DESC
+       LIMIT 10`,
+      [userId]
+    ),
   ]);
 
   return {
     overview: overviewRows.rows[0],
     recent_trend: trendRows.rows,
     top_campaigns: topCampaignRows.rows,
+    funding_velocity: velocityRows.rows,
+    contributor_retention: retentionRows.rows,
+    referral_conversion: referralRows.rows,
   };
 }
 

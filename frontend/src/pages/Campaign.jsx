@@ -308,6 +308,7 @@ export default function Campaign() {
   const [coverUploadError, setCoverUploadError] = useState(location.state?.coverUploadError || '');
   const [updates, setUpdates] = useState([]);
   const [milestones, setMilestones] = useState([]);
+  const [stretchGoals, setStretchGoals] = useState([]);
   const [updateForm, setUpdateForm] = useState({ title: '', body: '' });
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updatesError, setUpdatesError] = useState('');
@@ -351,6 +352,7 @@ export default function Campaign() {
   const [referralUrl, setReferralUrl] = useState(null);
   const [referralLeaderboard, setReferralLeaderboard] = useState(null);
   const [tiers, setTiers] = useState([]);
+  const [nftRewards, setNftRewards] = useState([]);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [milestonesLoading, setMilestonesLoading] = useState(false);
   const [contractStatus, setContractStatus] = useState(null);
@@ -507,6 +509,7 @@ export default function Campaign() {
       .then(setMilestones)
       .catch(() => setMilestones([]))
       .finally(() => setMilestonesLoading(false));
+    api.getStretchGoals(id).then(setStretchGoals).catch(() => setStretchGoals([]));
     api
       .getContractStatus(id)
       .then((data) => {
@@ -521,6 +524,10 @@ export default function Campaign() {
       .getCampaignTiers(id)
       .then((data) => setTiers(Array.isArray(data) ? data : []))
       .catch(() => setTiers([]));
+    api
+      .getCampaignNftRewards(id)
+      .then((data) => setNftRewards(Array.isArray(data?.rewards) ? data.rewards : []))
+      .catch(() => setNftRewards([]));
     api
       .getCampaignUpdates(id, { limit: 20 })
       .then(setUpdates)
@@ -1216,6 +1223,25 @@ export default function Campaign() {
 
       <CampaignComments campaignId={campaign.id} campaign={campaign} />
 
+      {nftRewards.length > 0 && (
+        <div style={{ marginBottom: "1rem" }}>
+          <h2 style={styles.sectionTitle}>NFT proof of support</h2>
+          <div style={{ display: "grid", gap: "0.75rem" }}>
+            {nftRewards.slice(0, 3).map((reward) => (
+              <div key={reward.id} style={{ ...styles.card, marginBottom: 0 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", flexWrap: "wrap" }}>
+                  <strong>{reward.reward_tier_title || 'NFT reward'}</strong>
+                  <span style={styles.small}>{reward.status || 'configured'}</span>
+                </div>
+                {reward.serial_number && (
+                  <p style={{ ...styles.small, marginTop: '0.4rem' }}>Serial: {reward.serial_number}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {tiers.length > 0 && (
         <div style={{ marginBottom: "1rem" }}>
           <h2 style={styles.sectionTitle}>Reward tiers</h2>
@@ -1872,6 +1898,49 @@ export default function Campaign() {
 
       <MilestoneTracker milestones={milestones} assetType={campaign.asset_type} />
       <MilestoneVotePanel milestones={milestones} />
+
+      {/* Stretch Goals (#585) */}
+      {stretchGoals.length > 0 && (
+        <div className="campaign-card" style={{ marginBottom: '1.5rem' }}>
+          <h3 style={{ margin: '0 0 0.75rem', fontSize: '1rem', fontWeight: 700 }}>
+            🚀 Stretch Goals
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            {stretchGoals.map((goal) => {
+              const reached = Number(campaign.raised_amount) >= Number(goal.amount);
+              return (
+                <div
+                  key={goal.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '0.75rem',
+                    padding: '0.65rem 0.9rem',
+                    borderRadius: 8,
+                    border: `1px solid ${reached ? 'var(--color-success, #22c55e)' : 'var(--color-border)'}`,
+                    background: reached ? 'var(--color-success-bg, #f0fdf4)' : 'transparent',
+                  }}
+                >
+                  <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>{reached ? '✅' : '🎯'}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <strong style={{ fontSize: '0.9rem' }}>{goal.title}</strong>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-hint)', fontWeight: 600, flexShrink: 0 }}>
+                        {Number(goal.amount).toLocaleString()} {campaign.asset_type}
+                      </span>
+                    </div>
+                    {goal.description && (
+                      <p style={{ margin: '0.2rem 0 0', fontSize: '0.82rem', color: 'var(--color-text-secondary)' }}>
+                        {goal.description}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {canManageTeam && (
         <div style={{ marginBottom: '2rem' }} data-no-print>
           <div
@@ -1927,6 +1996,30 @@ export default function Campaign() {
           {activeTab !== 'analytics' && (
             <>
               <h2 style={styles.sectionTitle}>Team</h2>
+              <div
+                className="campaign-card"
+                style={{ marginBottom: '1.5rem', fontSize: '0.85rem' }}
+              >
+                <strong style={{ display: 'block', marginBottom: '0.5rem' }}>
+                  Role permissions
+                </strong>
+                <ul style={{ margin: 0, paddingLeft: '1.1rem', color: 'var(--color-text-hint)' }}>
+                  <li>
+                    <strong>Owner</strong> — full control: manage team, assign roles (including
+                    owner), edit content, post updates, withdraw funds.
+                  </li>
+                  <li>
+                    <strong>Manager</strong> — invite members, post updates, submit milestones, view
+                    analytics.
+                  </li>
+                  <li>
+                    <strong>Editor</strong> — edit campaign content.
+                  </li>
+                  <li>
+                    <strong>Viewer</strong> — read-only access to analytics.
+                  </li>
+                </ul>
+              </div>
               <div className="campaign-card" style={{ marginBottom: '1.5rem' }}>
                 <strong style={{ marginBottom: '0.75rem', display: 'block' }}>
                   Invite Team Member

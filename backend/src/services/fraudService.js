@@ -27,6 +27,13 @@ async function evaluateCampaign(campaignId, dbClient = db) {
   const FRAUD_WEIGHT_SINGLE_WALLET = getTunable('FRAUD_WEIGHT_SINGLE_WALLET', 35);
   const FRAUD_THRESHOLD_SINGLE_WALLET_PCT = getTunable('FRAUD_THRESHOLD_SINGLE_WALLET_PCT', 0.50); // 50%
 
+  const FRAUD_WEIGHT_SAME_DEVICE = getTunable('FRAUD_WEIGHT_SAME_DEVICE', 25);
+  const FRAUD_THRESHOLD_SAME_DEVICE = getTunable('FRAUD_THRESHOLD_SAME_DEVICE', 3);
+  const FRAUD_WINDOW_SAME_DEVICE_MS = getTunable('FRAUD_WINDOW_SAME_DEVICE_MS', 24 * 60 * 60 * 1000); // 24h
+
+  const FRAUD_WEIGHT_DEVICE_CLUSTER = getTunable('FRAUD_WEIGHT_DEVICE_CLUSTER', 45);
+  const FRAUD_THRESHOLD_DEVICE_CLUSTER = getTunable('FRAUD_THRESHOLD_DEVICE_CLUSTER', 3); // other campaigns
+
   const FRAUD_THRESHOLD = getTunable('FRAUD_THRESHOLD', 50);
   const FRAUD_AUTO_PAUSE_THRESHOLD = getTunable('FRAUD_AUTO_PAUSE_THRESHOLD', 80);
   const FRAUD_AUTO_PAUSE_ENABLED = getTunable('FRAUD_AUTO_PAUSE_ENABLED', 'true') === 'true';
@@ -51,6 +58,10 @@ async function evaluateCampaign(campaignId, dbClient = db) {
     let velocityDetails = 'Velocity within normal bounds or insufficient history.';
     let singleWalletScore = 0;
     let singleWalletDetails = 'No single wallet exceeds the limit.';
+    let sameDeviceScore = 0;
+    let sameDeviceDetails = 'No suspicious device patterns detected.';
+    let deviceClusterScore = 0;
+    let deviceClusterDetails = 'No coordinated device cluster detected.';
 
     // Signal 1: Multiple contributions from the same IP
     const { rows: sameIpRows } = await dbClient.query(
@@ -136,12 +147,68 @@ async function evaluateCampaign(campaignId, dbClient = db) {
       }
     }
 
-    const totalScore = sameIpScore + walletAgeScore + velocityScore + singleWalletScore;
+    // Signal 5: Multiple contributions from the same device fingerprint
+    const { rows: sameDeviceRows } = await dbClient.query(
+      `SELECT device_fingerprint, COUNT(*)::int AS count
+       FROM contributions
+       WHERE campaign_id = $1 AND device_fingerprint IS NOT NULL
+         AND created_at >= NOW() - CAST($2 || ' milliseconds' AS INTERVAL)
+       GROUP BY device_fingerprint
+       HAVING COUNT(*) > $3`,
+      [campaignId, FRAUD_WINDOW_SAME_DEVICE_MS, FRAUD_THRESHOLD_SAME_DEVICE]
+    );
+    if (sameDeviceRows.length > 0) {
+      let totalOver = 0;
+      const detailsArray = [];
+      for (const row of sameDeviceRows) {
+        const overLimit = row.count - FRAUD_THRESHOLD_SAME_DEVICE;
+        totalOver += overLimit;
+        // Only expose a short, non-reversible prefix — never the full hashed fingerprint.
+        detailsArray.push(`Device ${row.device_fingerprint.slice(0, 8)}… sent ${row.count} contributions`);
+      }
+      sameDeviceScore = totalOver * FRAUD_WEIGHT_SAME_DEVICE;
+      sameDeviceDetails = detailsArray.join(', ');
+    }
+
+    // Signal 6: Coordinated device cluster — a device funding this campaign is also
+    // active across several other campaigns (a hallmark of coordinated abuse).
+    const { rows: deviceClusterRows } = await dbClient.query(
+      `SELECT d.device_fingerprint, COUNT(DISTINCT other.campaign_id)::int AS other_campaigns
+       FROM (
+         SELECT DISTINCT device_fingerprint
+         FROM contributions
+         WHERE campaign_id = $1 AND device_fingerprint IS NOT NULL
+       ) d
+       JOIN contributions other
+         ON other.device_fingerprint = d.device_fingerprint
+        AND other.campaign_id <> $1
+       GROUP BY d.device_fingerprint
+       HAVING COUNT(DISTINCT other.campaign_id) >= $2`,
+      [campaignId, FRAUD_THRESHOLD_DEVICE_CLUSTER]
+    );
+    if (deviceClusterRows.length > 0) {
+      deviceClusterScore = FRAUD_WEIGHT_DEVICE_CLUSTER;
+      const worst = deviceClusterRows.reduce(
+        (max, row) => (row.other_campaigns > max.other_campaigns ? row : max),
+        deviceClusterRows[0]
+      );
+      deviceClusterDetails = `${deviceClusterRows.length} device(s) shared with other campaigns; one device also funded ${worst.other_campaigns} other campaign(s).`;
+    }
+
+    const totalScore =
+      sameIpScore +
+      walletAgeScore +
+      velocityScore +
+      singleWalletScore +
+      sameDeviceScore +
+      deviceClusterScore;
     const signals = {
       same_ip: { score: sameIpScore, detail: sameIpDetails },
       wallet_age: { score: walletAgeScore, detail: walletAgeDetails },
       velocity: { score: velocityScore, detail: velocityDetails },
       single_wallet: { score: singleWalletScore, detail: singleWalletDetails },
+      same_device: { score: sameDeviceScore, detail: sameDeviceDetails },
+      device_cluster: { score: deviceClusterScore, detail: deviceClusterDetails },
     };
 
     const isHighRisk = totalScore >= FRAUD_THRESHOLD;

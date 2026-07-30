@@ -34,6 +34,7 @@ const About = lazy(() => import('./pages/About'));
 const Resources = lazy(() => import('./pages/Resources'));
 const Leaderboard = lazy(() => import('./pages/Leaderboard'));
 const NotFound = lazy(() => import('./pages/NotFound'));
+const CreatorProfile = lazy(() => import('./pages/CreatorProfile'));
 
 function PrivateRoute({ children }) {
   const { user, ready } = useAuth();
@@ -65,6 +66,7 @@ export default function App() {
                 <Route path="/about" element={<About />} />
                 <Route path="/resources" element={<Resources />} />
                 <Route path="/leaderboard" element={<Leaderboard />} />
+                <Route path="/creators/:id" element={<CreatorProfile />} />
                 <Route
                   path="/campaigns/new"
                   element={

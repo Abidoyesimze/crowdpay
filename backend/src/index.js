@@ -37,12 +37,16 @@ const {
 const {
   sendWeeklyContributorDigests,
 } = require("./services/weeklyDigestService");
+const { upsertRecommendationsForUser } = require("./services/campaignRecommendationService");
 const { flushQuietHours } = require("./services/notifications");
 const { sendAlert } = require("./services/alerting");
 const ff = require("./services/featureFlags");
 const {
   assertNoLegacyPlaintextUserWalletSecrets,
 } = require("./services/walletSecrets");
+const {
+  startRecurringContributionsCron,
+} = require("./services/recurringContributionsService");
 const db = require("./config/database");
 const swaggerUi = require("swagger-ui-express");
 const swaggerJsdoc = require("swagger-jsdoc");
@@ -252,6 +256,7 @@ app.use(
 );
 
 app.use("/api/auth", require("./routes/auth"));
+app.use("/api/nft-rewards", require("./routes/nftRewards"));
 // Backwards/alternate compatibility for docs + clients expecting /api/users/register|login.
 app.use("/api/users", require("./routes/auth"));
 // Session management routes
@@ -481,6 +486,22 @@ function startNotificationDigestCron() {
   logger.info("Notification digest cron scheduled", { schedule });
 }
 
+function startRecommendationRefreshCron() {
+  const cron = require("node-cron");
+  const schedule = process.env.RECOMMENDATION_REFRESH_CRON || "0 2 * * *";
+  cron.schedule(schedule, async () => {
+    try {
+      const { rows } = await db.query(`SELECT id FROM users`);
+      for (const row of rows) {
+        await upsertRecommendationsForUser(row.id);
+      }
+    } catch (err) {
+      logger.error("Recommendation refresh cron failed", { error: err.message });
+    }
+  });
+  logger.info("Recommendation refresh cron scheduled", { schedule });
+}
+
 function startContractDeploymentRetryCron() {
   if (!ff.isEnabled("contract-deployment-retry-cron")) return;
   const cron = require("node-cron");
@@ -509,7 +530,9 @@ async function bootstrap() {
     startScheduledPublishCron();
     startWeeklyDigestCron();
     startNotificationDigestCron();
+    startRecommendationRefreshCron();
     startContractDeploymentRetryCron();
+    startRecurringContributionsCron();
   });
 }
 

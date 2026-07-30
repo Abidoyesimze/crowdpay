@@ -56,6 +56,14 @@ function validateTiersInput(tiers, campaignAssetType) {
       estimatedDelivery = tier.estimated_delivery;
     }
 
+    const nftEnabled = tier.nft_enabled === true || tier.nft_enabled === 'true' || tier.nft_enabled === 1;
+    const nftMetadataUrl = typeof tier.nft_metadata_url === 'string' && tier.nft_metadata_url.trim()
+      ? stripHtml(tier.nft_metadata_url.trim()) || null
+      : null;
+    const nftArtworkUrl = typeof tier.nft_artwork_url === 'string' && tier.nft_artwork_url.trim()
+      ? stripHtml(tier.nft_artwork_url.trim()) || null
+      : null;
+
     return {
       title,
       description: typeof tier.description === 'string' ? stripHtml(tier.description) || null : null,
@@ -63,6 +71,9 @@ function validateTiersInput(tiers, campaignAssetType) {
       asset_type: assetType,
       tier_limit: tierLimit,
       estimated_delivery: estimatedDelivery,
+      nft_enabled: nftEnabled,
+      nft_metadata_url: nftMetadataUrl,
+      nft_artwork_url: nftArtworkUrl,
     };
   });
 }
@@ -72,11 +83,13 @@ function validateTiersInput(tiers, campaignAssetType) {
  * an existing transaction (e.g. campaign creation).
  */
 async function insertTiers(client, campaignId, normalizedTiers) {
+  const createdTiers = [];
   for (const tier of normalizedTiers) {
-    await client.query(
+    const { rows } = await client.query(
       `INSERT INTO reward_tiers
          (campaign_id, title, description, min_amount, asset_type, tier_limit, estimated_delivery)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, title`,
       [
         campaignId,
         tier.title,
@@ -87,7 +100,18 @@ async function insertTiers(client, campaignId, normalizedTiers) {
         tier.estimated_delivery,
       ],
     );
+    const insertedTier = rows[0];
+    if (tier.nft_enabled) {
+      await client.query(
+        `INSERT INTO nft_rewards
+           (reward_tier_id, campaign_id, status, metadata_url, artwork_url)
+         VALUES ($1, $2, 'configured', $3, $4)`,
+        [insertedTier.id, campaignId, tier.nft_metadata_url, tier.nft_artwork_url],
+      );
+    }
+    createdTiers.push({ id: insertedTier.id, title: insertedTier.title, nft_enabled: tier.nft_enabled });
   }
+  return createdTiers;
 }
 
 /**
@@ -96,14 +120,36 @@ async function insertTiers(client, campaignId, normalizedTiers) {
  */
 async function listTiersWithAvailability(campaignId) {
   const { rows } = await db.query(
-    `SELECT id, campaign_id, title, description, min_amount, asset_type,
-            tier_limit, claimed_count, estimated_delivery, created_at,
-            CASE WHEN tier_limit IS NULL THEN NULL
-                 ELSE GREATEST(tier_limit - claimed_count, 0) END AS remaining,
-            (tier_limit IS NOT NULL AND claimed_count >= tier_limit) AS sold_out
-       FROM reward_tiers
-      WHERE campaign_id = $1
-      ORDER BY min_amount ASC`,
+    `SELECT rt.id, rt.campaign_id, rt.title, rt.description, rt.min_amount, rt.asset_type,
+            rt.tier_limit, rt.claimed_count, rt.estimated_delivery, rt.created_at,
+            CASE WHEN rt.tier_limit IS NULL THEN NULL
+                 ELSE GREATEST(rt.tier_limit - rt.claimed_count, 0) END AS remaining,
+            (rt.tier_limit IS NOT NULL AND rt.claimed_count >= rt.tier_limit) AS sold_out,
+            EXISTS (
+              SELECT 1
+              FROM nft_rewards nr
+              WHERE nr.reward_tier_id = rt.id
+                AND nr.contribution_id IS NULL
+            ) AS nft_enabled,
+            (
+              SELECT nr.metadata_url
+              FROM nft_rewards nr
+              WHERE nr.reward_tier_id = rt.id
+                AND nr.contribution_id IS NULL
+              ORDER BY nr.created_at ASC
+              LIMIT 1
+            ) AS nft_metadata_url,
+            (
+              SELECT nr.artwork_url
+              FROM nft_rewards nr
+              WHERE nr.reward_tier_id = rt.id
+                AND nr.contribution_id IS NULL
+              ORDER BY nr.created_at ASC
+              LIMIT 1
+            ) AS nft_artwork_url
+       FROM reward_tiers rt
+      WHERE rt.campaign_id = $1
+      ORDER BY rt.min_amount ASC`,
     [campaignId],
   );
   return rows;
@@ -168,7 +214,29 @@ async function assignTierToContribution(client, { campaignId, amount, contributi
          ON CONFLICT (contribution_id) DO NOTHING
          RETURNING reward_tier_id
        )
-       SELECT r.id, r.title
+       SELECT r.id, r.title,
+              EXISTS (
+                SELECT 1
+                FROM nft_rewards nr
+                WHERE nr.reward_tier_id = r.id
+                  AND nr.contribution_id IS NULL
+              ) AS nft_enabled,
+              (
+                SELECT nr.metadata_url
+                FROM nft_rewards nr
+                WHERE nr.reward_tier_id = r.id
+                  AND nr.contribution_id IS NULL
+                ORDER BY nr.created_at ASC
+                LIMIT 1
+              ) AS nft_metadata_url,
+              (
+                SELECT nr.artwork_url
+                FROM nft_rewards nr
+                WHERE nr.reward_tier_id = r.id
+                  AND nr.contribution_id IS NULL
+                ORDER BY nr.created_at ASC
+                LIMIT 1
+              ) AS nft_artwork_url
          FROM reward_tiers r
          JOIN ins ON ins.reward_tier_id = r.id`,
       [contributionId, tierId],
@@ -198,7 +266,29 @@ async function assignTierToContribution(client, { campaignId, amount, contributi
         SET claimed_count = claimed_count + 1
        FROM ins
       WHERE t.id = ins.reward_tier_id
-      RETURNING t.id, t.title`,
+      RETURNING t.id, t.title,
+                EXISTS (
+                  SELECT 1
+                  FROM nft_rewards nr
+                  WHERE nr.reward_tier_id = t.id
+                    AND nr.contribution_id IS NULL
+                ) AS nft_enabled,
+                (
+                  SELECT nr.metadata_url
+                  FROM nft_rewards nr
+                  WHERE nr.reward_tier_id = t.id
+                    AND nr.contribution_id IS NULL
+                  ORDER BY nr.created_at ASC
+                  LIMIT 1
+                ) AS nft_metadata_url,
+                (
+                  SELECT nr.artwork_url
+                  FROM nft_rewards nr
+                  WHERE nr.reward_tier_id = t.id
+                    AND nr.contribution_id IS NULL
+                  ORDER BY nr.created_at ASC
+                  LIMIT 1
+                ) AS nft_artwork_url`,
     [campaignId, amount, contributionId],
   );
   return rows[0] || null;
