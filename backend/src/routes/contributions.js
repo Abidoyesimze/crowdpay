@@ -527,6 +527,7 @@ router.post('/submit-signed', requireAuth, asyncHandler(async (req, res) => {
     stellar_transaction_id: stellarTransactionId,
     message: 'Transaction submitted',
     conversion_quote: prepared.conversion_quote || null,
+    nft_reward: Boolean(prepared.flow_metadata?.tier_id),
   });
 }));
 
@@ -670,6 +671,7 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
       stellar_transaction_id: result.stellarTransactionId,
       message: "Transaction submitted",
       conversion_quote: result.conversionQuote,
+      nft_reward: Boolean(tier_id),
       ...(result.platform_fee_amount !== null && result.platform_fee_amount !== undefined
         ? { platform_fee_amount: result.platform_fee_amount }
         : {}),

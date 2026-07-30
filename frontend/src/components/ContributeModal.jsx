@@ -1152,6 +1152,11 @@ export default function ContributeModal({
                 🎉 {"You've"} unlocked: <strong>{unlockedTier.title}</strong>
               </p>
             )}
+            {result?.nft_reward && (
+              <p className="alert alert--info" style={{ marginBottom: '1rem', fontSize: '0.9rem' }} role="status">
+                NFT reward record is being prepared for this contribution. Its status will appear in your profile once available.
+              </p>
+            )}
             {(result?.tx_hash || result?.conversion_quote || result?.anchor_transaction_id) && (
               <details style={{ marginBottom: '1rem' }}>
                 <summary

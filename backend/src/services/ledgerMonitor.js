@@ -239,6 +239,7 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     const referralCode = submittedRows[0]?.metadata?.referral_code || null;
     const ipAddress = submittedRows[0]?.metadata?.ip_address || null;
     const reservedTierId = submittedRows[0]?.metadata?.tier_id || null;
+    const nftRewardRequested = submittedRows[0]?.metadata?.nft_reward === true;
 
     const { rows: inserted } = await client.query(
       `INSERT INTO contributions
@@ -292,6 +293,21 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
       tierId: reservedTierId || undefined,
     });
 
+    if (assignedTier?.nft_enabled && nftRewardRequested) {
+      await client.query(
+        `INSERT INTO nft_rewards (campaign_id, reward_tier_id, contribution_id, status)
+         SELECT $1, $2, $3, 'minting'
+         WHERE EXISTS (
+           SELECT 1
+           FROM reward_tiers rt
+           WHERE rt.id = $2
+           AND rt.campaign_id = $1
+         )
+         ON CONFLICT (reward_tier_id, contribution_id) DO NOTHING`,
+        [campaignId, assignedTier.id, inserted[0].id],
+      );
+    }
+
     await markContributionIndexed(client, txHash, inserted[0].id);
 
     if (referralCode) {
@@ -331,6 +347,7 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
         payment_type: paymentType,
         anchor_transaction_id: anchorMetadata?.anchor_transaction_id || null,
         reward_tier: assignedTier || null,
+        nft_reward: assignedTier?.nft_enabled && nftRewardRequested ? true : false,
       },
       receiptPayload: {
         campaignId,
