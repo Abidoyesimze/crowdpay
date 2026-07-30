@@ -503,8 +503,8 @@ router.get('/facets', asyncHandler(async (req, res) => {
 
 
 router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
-  const { page, limit } = req.query;
-  const result = await listCreatorCampaigns(req.user.userId, { page, limit });
+  const { page, limit, fields } = req.query;
+  const result = await listCreatorCampaigns(req.user.userId, { page, limit, fields });
   res.json(result);
 }));
 

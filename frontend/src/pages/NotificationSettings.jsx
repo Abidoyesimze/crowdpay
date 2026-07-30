@@ -97,7 +97,10 @@ export default function NotificationSettings() {
         api.getNotificationPreferences().catch(() => []),
         api.getChannelSettings().catch(() => ({})),
         api.getPushSubscriptionStatus().catch(() => ({ subscribed: false })),
-        api.getMyCampaigns({ limit: 50 }).catch(() => ({ campaigns: [] })),
+        // Only request the fields used by the per-campaign overrides section.
+        api
+          .getMyCampaigns({ limit: 50, fields: 'id,title,status,raised_amount' })
+          .catch(() => ({ data: [] })),
       ]);
 
       // Build preference map from rows
@@ -133,8 +136,8 @@ export default function NotificationSettings() {
         setQuietEnd(String(qe));
       }
 
-      // Campaigns for per-campaign overrides
-      const campList = (myCampaigns?.campaigns || []).filter(
+      // Campaigns for per-campaign overrides (API returns { data, pagination })
+      const campList = (myCampaigns?.data || []).filter(
         (c) => c.status === 'active' || c.status === 'funded'
       );
       setCampaigns(campList);

@@ -8,6 +8,7 @@ test('listCreatorCampaigns queries by creator_id', async () => {
   const { listCreatorCampaigns } = proxyquire('./userDashboardService', {
     '../config/database': {
       query: async (text, p) => {
+        if (text.includes('COUNT(*)')) return { rows: [{ total: 1 }] };
         sql = text;
         params = p;
         return { rows: [{ id: 'camp-1', title: 'Mine', status: 'active' }] };
@@ -17,8 +18,59 @@ test('listCreatorCampaigns queries by creator_id', async () => {
 
   const res = await listCreatorCampaigns('user-1');
   assert.match(sql, /creator_id = \$1/);
+  assert.match(sql, /contributor_count/);
+  assert.match(sql, /LEFT JOIN LATERAL/);
   assert.deepEqual(params, ['user-1', 20, 0]);
   assert.equal(res.data[0].title, 'Mine');
+});
+
+test('listCreatorCampaigns fields param selects only requested columns and skips heavy joins', async () => {
+  let sql = '';
+  const { listCreatorCampaigns } = proxyquire('./userDashboardService', {
+    '../config/database': {
+      query: async (text, p) => {
+        if (text.includes('COUNT(*)')) return { rows: [{ total: 1 }] };
+        sql = text;
+        return {
+          rows: [{ id: 'camp-1', title: 'Mine', status: 'active', raised_amount: '10' }],
+        };
+      },
+    },
+  });
+
+  const res = await listCreatorCampaigns('user-1', {
+    fields: 'id,title,status,raised_amount',
+    limit: 50,
+  });
+
+  assert.match(sql, /c\.id/);
+  assert.match(sql, /c\.title/);
+  assert.match(sql, /c\.status/);
+  assert.match(sql, /c\.raised_amount/);
+  assert.doesNotMatch(sql, /contributor_count/);
+  assert.doesNotMatch(sql, /LEFT JOIN LATERAL/);
+  assert.doesNotMatch(sql, /has_milestones/);
+  assert.equal(res.data[0].id, 'camp-1');
+  assert.equal(res.pagination.limit, 50);
+});
+
+test('listCreatorCampaigns ignores unknown fields and always includes id', async () => {
+  let sql = '';
+  const { listCreatorCampaigns } = proxyquire('./userDashboardService', {
+    '../config/database': {
+      query: async (text) => {
+        if (text.includes('COUNT(*)')) return { rows: [{ total: 0 }] };
+        sql = text;
+        return { rows: [] };
+      },
+    },
+  });
+
+  await listCreatorCampaigns('user-1', { fields: 'title,hack;DROP TABLE' });
+  assert.match(sql, /c\.id/);
+  assert.match(sql, /c\.title/);
+  assert.doesNotMatch(sql, /DROP TABLE/);
+  assert.doesNotMatch(sql, /LEFT JOIN LATERAL/);
 });
 
 test('listUserContributions includes conversion_rate', async () => {
