@@ -1996,6 +1996,30 @@ export default function Campaign() {
           {activeTab !== 'analytics' && (
             <>
               <h2 style={styles.sectionTitle}>Team</h2>
+              <div
+                className="campaign-card"
+                style={{ marginBottom: '1.5rem', fontSize: '0.85rem' }}
+              >
+                <strong style={{ display: 'block', marginBottom: '0.5rem' }}>
+                  Role permissions
+                </strong>
+                <ul style={{ margin: 0, paddingLeft: '1.1rem', color: 'var(--color-text-hint)' }}>
+                  <li>
+                    <strong>Owner</strong> — full control: manage team, assign roles (including
+                    owner), edit content, post updates, withdraw funds.
+                  </li>
+                  <li>
+                    <strong>Manager</strong> — invite members, post updates, submit milestones, view
+                    analytics.
+                  </li>
+                  <li>
+                    <strong>Editor</strong> — edit campaign content.
+                  </li>
+                  <li>
+                    <strong>Viewer</strong> — read-only access to analytics.
+                  </li>
+                </ul>
+              </div>
               <div className="campaign-card" style={{ marginBottom: '1.5rem' }}>
                 <strong style={{ marginBottom: '0.75rem', display: 'block' }}>
                   Invite Team Member

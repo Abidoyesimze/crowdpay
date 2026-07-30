@@ -65,6 +65,7 @@ const {
   canInviteMembers,
   canManageMembers,
   canChangeRoles,
+  canAssignRole,
 } = require('../lib/campaignPermissions');
 const { stripHtml } = require('../lib/sanitize');
 const { getSimhash, simhashSimilarity } = require('../utils/simhash');
@@ -319,6 +320,13 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
    *                     type: object
    */
   const { search, status, asset, category, min_progress, sort = 'newest' } = req.query;
+  const {
+    min_funding,
+    max_funding,
+    deadline_within,
+    creator_verified,
+    country,
+  } = req.query;
   const limit = Math.min(Number(req.query.limit || 20), 100);
   const offset = Math.max(Number(req.query.offset || 0), 0);
   const filters = [];
@@ -348,6 +356,31 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
     // Progress is (raised_amount / target_amount) * 100
     filters.push(`(c.raised_amount / c.target_amount) * 100 >= $${params.length}`);
   }
+  // Funding range facet — filter on amount raised so far.
+  if (min_funding !== undefined && min_funding !== '' && Number.isFinite(Number(min_funding))) {
+    params.push(Number(min_funding));
+    filters.push(`c.raised_amount >= $${params.length}`);
+  }
+  if (max_funding !== undefined && max_funding !== '' && Number.isFinite(Number(max_funding))) {
+    params.push(Number(max_funding));
+    filters.push(`c.raised_amount <= $${params.length}`);
+  }
+  // Deadline proximity facet — campaigns ending within N days from now.
+  if (deadline_within !== undefined && deadline_within !== '' && Number.isFinite(Number(deadline_within))) {
+    params.push(Number(deadline_within));
+    filters.push(
+      `c.deadline IS NOT NULL AND c.deadline >= CURRENT_DATE AND c.deadline <= CURRENT_DATE + ($${params.length}::int) * INTERVAL '1 day'`
+    );
+  }
+  // Creator reputation facet — currently backed by KYC verification status.
+  if (creator_verified === 'true' || creator_verified === '1') {
+    filters.push(`u.kyc_status = 'verified'`);
+  }
+  // Geographic location facet.
+  if (country) {
+    params.push(country);
+    filters.push(`c.country = $${params.length}`);
+  }
   let searchParamIdx = null;
   if (search) {
     params.push(search);
@@ -356,7 +389,7 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
   }
 
   const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-  const countQuery = `SELECT COUNT(*)::int AS total FROM campaigns c ${whereClause}`;
+  const countQuery = `SELECT COUNT(*)::int AS total FROM campaigns c JOIN users u ON u.id = c.creator_id ${whereClause}`;
   const countResult = await db.query(countQuery, params);
   const total = countResult.rows[0]?.total || 0;
 
@@ -411,6 +444,63 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
 
   res.json({ total, limit, offset, campaigns: result.rows });
 }));
+
+// GET /campaigns/facets — available filter facets with counts for the discovery UI.
+// Computed over the publicly listable, active campaign set so the UI can render
+// faceted controls (categories, assets, countries) and sensible funding bounds.
+router.get('/facets', asyncHandler(async (req, res) => {
+  const baseWhere = `
+    c.deleted_at IS NULL
+    AND c.is_flagged_duplicate = FALSE
+    AND c.is_hidden = FALSE
+    AND c.status = 'active'
+  `;
+
+  const [categories, assets, countries, funding, verified] = await Promise.all([
+    db.query(
+      `SELECT category, COUNT(*)::int AS count
+       FROM campaigns c
+       WHERE ${baseWhere} AND category IS NOT NULL
+       GROUP BY category ORDER BY count DESC`
+    ),
+    db.query(
+      `SELECT asset_type, COUNT(*)::int AS count
+       FROM campaigns c
+       WHERE ${baseWhere}
+       GROUP BY asset_type ORDER BY count DESC`
+    ),
+    db.query(
+      `SELECT country, COUNT(*)::int AS count
+       FROM campaigns c
+       WHERE ${baseWhere} AND country IS NOT NULL
+       GROUP BY country ORDER BY count DESC`
+    ),
+    db.query(
+      `SELECT COALESCE(MIN(raised_amount), 0)::numeric AS min_funding,
+              COALESCE(MAX(raised_amount), 0)::numeric AS max_funding
+       FROM campaigns c
+       WHERE ${baseWhere}`
+    ),
+    db.query(
+      `SELECT COUNT(*)::int AS count
+       FROM campaigns c
+       JOIN users u ON u.id = c.creator_id
+       WHERE ${baseWhere} AND u.kyc_status = 'verified'`
+    ),
+  ]);
+
+  res.json({
+    categories: categories.rows,
+    assets: assets.rows,
+    countries: countries.rows,
+    funding: {
+      min: Number(funding.rows[0]?.min_funding || 0),
+      max: Number(funding.rows[0]?.max_funding || 0),
+    },
+    verified_creators: verified.rows[0]?.count || 0,
+  });
+}));
+
 
 router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
   const { page, limit } = req.query;
@@ -1393,7 +1483,9 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
    *       403:
    *         description: Forbidden
    */
-  const { title, description, target_amount, asset_type, deadline, milestones, min_contribution, max_contribution, reward_tiers } = req.body;
+  const { title, description, target_amount, asset_type, deadline, milestones, min_contribution, max_contribution, reward_tiers, country } = req.body;
+  const normalizedCountry =
+    typeof country === 'string' && country.trim() ? country.trim().slice(0, 80) : null;
 
   let normalizedMilestones;
   try {
@@ -1503,14 +1595,14 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
          (title, description, target_amount, asset_type, wallet_public_key, creator_id, deadline, 
           min_contribution, max_contribution, escrow_contract_id, milestones_contract_id, platform_fee_bps,
           contract_address, contract_deployed_at, content_fingerprint, is_flagged_duplicate,
-          contract_deployment_status, contract_deployment_error, last_deployment_attempt_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+          contract_deployment_status, contract_deployment_error, last_deployment_attempt_at, country)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        RETURNING *`,
       [title, description, target_amount, asset_type, wallet.publicKey, req.user.userId, deadline, 
        min_contribution || null, max_contribution || null, escrowContractId, milestonesContractId, platformFeeBps,
        contractAddress, contractDeploymentStatus === 'deployed' ? new Date() : null,
        contentFingerprint, isFlaggedDuplicate,
-       contractDeploymentStatus, contractDeploymentError, new Date()]
+       contractDeploymentStatus, contractDeploymentError, new Date(), normalizedCountry]
     );
     campaign = rows[0];
 
@@ -1650,7 +1742,7 @@ router.post('/:id/tiers', requireAuth, requireCampaignMember('owner'), asyncHand
 // PATCH /campaigns/:id - Update campaign (title, description, deadline)
 router.patch('/:id', requireAuth, asyncHandler(async (req, res) => {
   const campaignId = req.params.id;
-  const { title, description, deadline } = req.body;
+  const { title, description, deadline, country } = req.body;
 
   // Check if campaign exists and belongs to user
   const { rows: campaignRows } = await db.query(
@@ -1726,13 +1818,20 @@ router.patch('/:id', requireAuth, asyncHandler(async (req, res) => {
     updateParams.push(['deadline', deadline, `$${paramIndex++}`]);
   }
 
+  if (country !== undefined) {
+    const normalizedCountry =
+      typeof country === 'string' && country.trim() ? country.trim().slice(0, 80) : null;
+    updates.country = normalizedCountry;
+    updateParams.push(['country', normalizedCountry, `$${paramIndex++}`]);
+  }
+
   // Check if any valid updates were provided
   if (Object.keys(updates).length === 0) {
     return res.status(400).json({ error: 'No valid fields to update' });
   }
 
   // Check for invalid fields in request body
-  const allowedFields = ['title', 'description', 'deadline'];
+  const allowedFields = ['title', 'description', 'deadline', 'country'];
   for (const field of Object.keys(req.body)) {
     if (!allowedFields.includes(field)) {
       return res.status(422).json({
@@ -1847,6 +1946,10 @@ router.post('/:id/members/invite', requireAuth, requireCampaignMember('owner', '
   if (!email || !role) return res.status(422).json({ error: 'Email and role are required' });
   if (!isValidRole(role)) {
     return res.status(422).json({ error: 'Invalid role. Must be owner, manager, editor, or viewer' });
+  }
+  // Never trust the client: only owners may grant the owner role.
+  if (!canAssignRole(req.campaignRole, role)) {
+    return res.status(403).json({ error: 'Only an owner can assign the owner role' });
   }
 
   const { rows: campaignRows } = await db.query('SELECT title FROM campaigns WHERE id = $1', [req.params.id]);

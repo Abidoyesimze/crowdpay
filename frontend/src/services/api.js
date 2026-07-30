@@ -371,6 +371,7 @@ export const api = {
   getRecommendedCampaigns: (options = {}) =>
     request('GET', '/campaigns/recommended', null, { query: options }),
   getCampaignCategories: () => request('GET', '/campaigns/categories'),
+  getCampaignFacets: () => request('GET', '/campaigns/facets'),
   getCampaigns: (options = {}) => request('GET', '/campaigns', null, { query: options }),
   getCampaign: (id, options = {}) => request('GET', `/campaigns/${id}`, null, { query: options }),
   getCampaignAnalytics: (id) => request('GET', `/campaigns/${id}/analytics`),

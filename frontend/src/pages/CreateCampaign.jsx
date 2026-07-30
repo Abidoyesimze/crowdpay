@@ -65,6 +65,7 @@ export default function CreateCampaign() {
     asset_type: location.state?.prefill?.asset_type || 'USDC',
     deadline: '',
     category: '',
+    country: '',
     min_contribution: location.state?.prefill?.min_contribution || '',
     max_contribution: location.state?.prefill?.max_contribution || '',
     max_per_user: location.state?.prefill?.max_per_user || '',
@@ -200,6 +201,7 @@ export default function CreateCampaign() {
       asset_type: 'USDC',
       deadline: '',
       category: '',
+      country: '',
       min_contribution: '',
       max_contribution: '',
       max_per_user: '',
@@ -481,6 +483,7 @@ export default function CreateCampaign() {
         asset_type: form.asset_type,
         deadline: formattedDeadline,
         category: form.category || undefined,
+        country: form.country?.trim() || undefined,
         min_contribution: form.min_contribution ? Number(form.min_contribution) : undefined,
         max_contribution: form.max_contribution ? Number(form.max_contribution) : undefined,
         max_per_user: form.max_per_user ? Number(form.max_per_user) : undefined,
@@ -828,6 +831,23 @@ export default function CreateCampaign() {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="form-group" style={{ marginTop: '1rem' }}>
+              <label className="label-strong" htmlFor="cc-country">
+                Location{' '}
+                <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                  (optional)
+                </span>
+              </label>
+              <input
+                id="cc-country"
+                type="text"
+                value={form.country}
+                onChange={setField('country')}
+                placeholder="e.g. United States, Kenya, Global"
+                maxLength={80}
+              />
             </div>
 
             {error && (

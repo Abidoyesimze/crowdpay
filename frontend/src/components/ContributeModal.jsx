@@ -8,6 +8,7 @@ import {
 } from '@stellar/freighter-api';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
+import { getDeviceFingerprint } from '../lib/deviceFingerprint';
 import { stellarExpertTxUrl } from '../config/stellar';
 import KycPrompt from './KycPrompt';
 
@@ -378,12 +379,14 @@ export default function ContributeModal({
 
   async function submitWithCustodial() {
     setLoadingLabel('Submitting with CrowdPay wallet…');
+    const device_fingerprint = await getDeviceFingerprint();
     return api.contribute(
       {
         campaign_id: campaign.id,
         amount: destAmount,
         send_asset: sendAsset,
         display_name: displayName.trim() || undefined,
+        device_fingerprint: device_fingerprint || undefined,
         idempotency_key: activeSubmissionKeyRef.current,
       },
       token
@@ -418,6 +421,7 @@ export default function ContributeModal({
     }
 
     setLoadingLabel('Preparing transaction…');
+    const device_fingerprint = await getDeviceFingerprint();
     const prepared = await api.prepareContribution(
       {
         campaign_id: campaign.id,
@@ -425,6 +429,7 @@ export default function ContributeModal({
         send_asset: sendAsset,
         sender_public_key: signerAddress,
         display_name: displayName.trim() || undefined,
+        device_fingerprint: device_fingerprint || undefined,
         idempotency_key: activeSubmissionKeyRef.current,
       },
       token

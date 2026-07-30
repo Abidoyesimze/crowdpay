@@ -45,6 +45,7 @@ export default function Home() {
   const [searchInput, setSearchInput] = useState(() => searchParams.get('search') || '');
   const [sort, setSort] = useState(() => searchParams.get('sort') || 'newest');
   const [categoryCounts, setCategoryCounts] = useState([]);
+  const [facets, setFacets] = useState(null);
   const [featured, setFeatured] = useState([]);
   const [recentlyViewed, setRecentlyViewed] = useState([]);
   const [recommended, setRecommended] = useState([]);
@@ -54,6 +55,11 @@ export default function Home() {
   const asset = searchParams.get('asset') || '';
   const category = searchParams.get('category') || '';
   const minProgress = searchParams.get('min_progress') || '';
+  const minFunding = searchParams.get('min_funding') || '';
+  const maxFunding = searchParams.get('max_funding') || '';
+  const deadlineWithin = searchParams.get('deadline_within') || '';
+  const creatorVerified = searchParams.get('creator_verified') || '';
+  const country = searchParams.get('country') || '';
 
   const limit = Number(searchParams.get('limit') || 20);
   const offset = Number(searchParams.get('offset') || 0);
@@ -76,6 +82,11 @@ export default function Home() {
     Boolean(asset) ||
     Boolean(status) ||
     Boolean(category) ||
+    Boolean(minFunding) ||
+    Boolean(maxFunding) ||
+    Boolean(deadlineWithin) ||
+    Boolean(creatorVerified) ||
+    Boolean(country) ||
     sort !== 'newest';
 
   useEffect(() => {
@@ -85,6 +96,10 @@ export default function Home() {
     api
       .getCampaignCategories()
       .then(setCategoryCounts)
+      .catch(() => {});
+    api
+      .getCampaignFacets()
+      .then(setFacets)
       .catch(() => {});
     api
       .getFeaturedCampaigns()
@@ -142,7 +157,21 @@ export default function Home() {
     setListError('');
     setLoading(true);
     api
-      .getCampaigns({ search, status, asset, category, min_progress: minProgress, sort, limit, offset })
+      .getCampaigns({
+        search,
+        status,
+        asset,
+        category,
+        min_progress: minProgress,
+        min_funding: minFunding,
+        max_funding: maxFunding,
+        deadline_within: deadlineWithin,
+        creator_verified: creatorVerified,
+        country,
+        sort,
+        limit,
+        offset,
+      })
       .then((data) => {
         const nextCampaigns = data.campaigns || [];
         const nextTotal = data.total || 0;
@@ -153,7 +182,7 @@ export default function Home() {
       })
       .catch((err) => setListError(err.message || t('home.loadingCampaigns')))
       .finally(() => setLoading(false));
-  }, [search, status, asset, category, sort]);
+  }, [search, status, asset, category, minProgress, minFunding, maxFunding, deadlineWithin, creatorVerified, country, sort]);
 
   async function loadMore() {
     if (loadingMore || !hasMore || paginationRequestRef.current) return;
@@ -169,6 +198,12 @@ export default function Home() {
         status,
         asset,
         category,
+        min_progress: minProgress,
+        min_funding: minFunding,
+        max_funding: maxFunding,
+        deadline_within: deadlineWithin,
+        creator_verified: creatorVerified,
+        country,
         sort,
         limit: 20,
         offset: page * 20,
@@ -397,6 +432,73 @@ export default function Home() {
           />
         </label>
         <label style={styles.filterItem}>
+          Min Raised
+          <input
+            type="number"
+            min="0"
+            value={minFunding}
+            onChange={(e) => setFilters({ min_funding: e.target.value })}
+            placeholder={facets ? `${facets.funding?.min ?? 0}` : 'e.g. 100'}
+            style={styles.filterInput}
+            aria-label="Minimum amount raised"
+          />
+        </label>
+        <label style={styles.filterItem}>
+          Max Raised
+          <input
+            type="number"
+            min="0"
+            value={maxFunding}
+            onChange={(e) => setFilters({ max_funding: e.target.value })}
+            placeholder={facets ? `${facets.funding?.max ?? 0}` : 'e.g. 5000'}
+            style={styles.filterInput}
+            aria-label="Maximum amount raised"
+          />
+        </label>
+        <label style={styles.filterItem}>
+          Ending Within
+          <select
+            value={deadlineWithin}
+            onChange={(e) => setFilters({ deadline_within: e.target.value })}
+            style={styles.filterInput}
+            aria-label="Deadline proximity"
+          >
+            <option value="">Any time</option>
+            <option value="3">3 days</option>
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+            <option value="30">30 days</option>
+          </select>
+        </label>
+        {facets?.countries?.length > 0 && (
+          <label style={styles.filterItem}>
+            Location
+            <select
+              value={country}
+              onChange={(e) => setFilters({ country: e.target.value })}
+              style={styles.filterInput}
+              aria-label="Geographic location"
+            >
+              <option value="">Anywhere</option>
+              {facets.countries.map((c) => (
+                <option key={c.country} value={c.country}>
+                  {c.country} ({c.count})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label style={{ ...styles.filterItem, flexDirection: 'row', alignItems: 'center', gap: '0.4rem' }}>
+          <input
+            type="checkbox"
+            checked={creatorVerified === 'true'}
+            onChange={(e) => setFilters({ creator_verified: e.target.checked ? 'true' : '' })}
+            aria-label="Only verified creators"
+          />
+          Verified creators only
+          {typeof facets?.verified_creators === 'number' && ` (${facets.verified_creators})`}
+        </label>
+        <label style={styles.filterItem}>
           Sort by
           {t('home.sortLabel')}
           <select
@@ -413,7 +515,7 @@ export default function Home() {
         </label>
       </div>
 
-      {(search || status || asset || category || minProgress) && (
+      {(search || status || asset || category || minProgress || minFunding || maxFunding || deadlineWithin || creatorVerified || country) && (
         <div style={styles.activeFilters}>
           {search && (
             <button className="filter-chip" onClick={() => setFilters({ search: '' })}>
@@ -438,6 +540,31 @@ export default function Home() {
           {minProgress && (
             <button className="filter-chip" onClick={() => setFilters({ min_progress: '' })}>
               Min Progress: {minProgress}% ✕
+            </button>
+          )}
+          {minFunding && (
+            <button className="filter-chip" onClick={() => setFilters({ min_funding: '' })}>
+              Min Raised: {minFunding} ✕
+            </button>
+          )}
+          {maxFunding && (
+            <button className="filter-chip" onClick={() => setFilters({ max_funding: '' })}>
+              Max Raised: {maxFunding} ✕
+            </button>
+          )}
+          {deadlineWithin && (
+            <button className="filter-chip" onClick={() => setFilters({ deadline_within: '' })}>
+              Ending within: {deadlineWithin}d ✕
+            </button>
+          )}
+          {creatorVerified === 'true' && (
+            <button className="filter-chip" onClick={() => setFilters({ creator_verified: '' })}>
+              Verified creators ✕
+            </button>
+          )}
+          {country && (
+            <button className="filter-chip" onClick={() => setFilters({ country: '' })}>
+              Location: {country} ✕
             </button>
           )}
         </div>

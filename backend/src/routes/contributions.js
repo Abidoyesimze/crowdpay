@@ -40,6 +40,7 @@ const { assertUserKycVerified } = require('../services/kycService');
 const asyncHandler = require('../utils/asyncHandler');
 const { getReferralCodeFromRequest } = require('../services/referralService');
 const { reserveTierSlot } = require('../services/rewardTierService');
+const { hashDeviceFingerprint } = require('../utils/deviceFingerprint');
 
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
 const PREPARED_CONTRIBUTION_EXPIRES_IN = '10m';
@@ -437,7 +438,7 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
       campaign_id,
       sender_public_key,
       unsigned_xdr: unsignedXdr,
-      flow_metadata: { ...withReferralMetadata(intent.flowMetadata, campaign_id, req), ip_address: req.ip },
+      flow_metadata: { ...withReferralMetadata(intent.flowMetadata, campaign_id, req), ip_address: req.ip, device_fingerprint: hashDeviceFingerprint(req.body.device_fingerprint) },
       conversion_quote: intent.conversionQuote,
     });
 
@@ -661,6 +662,7 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
       displayName: display_name,
       referralCode: getReferralCodeFromRequest(campaign_id, req),
       ipAddress: req.ip,
+      deviceFingerprint: hashDeviceFingerprint(req.body.device_fingerprint),
       client,
       tierId: reservedTier ? reservedTier.id : null,
     });
