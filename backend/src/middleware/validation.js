@@ -117,6 +117,10 @@ const createCampaignValidation = [
     .withMessage('Asset type is required')
     .isIn(SUPPORTED_ASSETS)
     .withMessage(`Asset type must be one of: ${SUPPORTED_ASSETS.join(', ')}`),
+  body('template_id')
+    .optional({ nullable: true, checkFalsy: true })
+    .custom(isUuid)
+    .withMessage('template_id must be a valid UUID'),
   body('deadline')
     .optional({ nullable: true, checkFalsy: true })
     .isISO8601()

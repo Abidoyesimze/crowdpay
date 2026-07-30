@@ -1386,7 +1386,7 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
    *       403:
    *         description: Forbidden
    */
-  const { title, description, target_amount, asset_type, deadline, milestones, min_contribution, max_contribution, reward_tiers } = req.body;
+  const { title, description, target_amount, asset_type, deadline, milestones, min_contribution, max_contribution, reward_tiers, template_id, category } = req.body;
 
   let normalizedMilestones;
   try {
@@ -1401,6 +1401,16 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
     normalizedTiers = validateTiersInput(reward_tiers, asset_type);
   } catch (err) {
     return res.status(400).json({ error: err.message });
+  }
+
+  if (template_id) {
+    const { rows: templateRows } = await db.query(
+      'SELECT id FROM campaign_templates WHERE id = $1 AND is_active = TRUE',
+      [template_id]
+    );
+    if (!templateRows.length) {
+      return res.status(400).json({ error: 'Selected campaign template is unavailable' });
+    }
   }
 
   // Get creator's info
@@ -1491,19 +1501,29 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
   let campaign;
   try {
     await client.query('BEGIN');
+    if (template_id) {
+      const { rows: templateRows } = await client.query(
+        'SELECT id FROM campaign_templates WHERE id = $1 AND is_active = TRUE FOR UPDATE',
+        [template_id]
+      );
+      if (!templateRows.length) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Selected campaign template is unavailable' });
+      }
+    }
     const { rows } = await client.query(
       `INSERT INTO campaigns
          (title, description, target_amount, asset_type, wallet_public_key, creator_id, deadline, 
           min_contribution, max_contribution, escrow_contract_id, milestones_contract_id, platform_fee_bps,
           contract_address, contract_deployed_at, content_fingerprint, is_flagged_duplicate,
-          contract_deployment_status, contract_deployment_error, last_deployment_attempt_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+          contract_deployment_status, contract_deployment_error, last_deployment_attempt_at, template_id, category)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
        RETURNING *`,
       [title, description, target_amount, asset_type, wallet.publicKey, req.user.userId, deadline, 
        min_contribution || null, max_contribution || null, escrowContractId, milestonesContractId, platformFeeBps,
        contractAddress, contractDeploymentStatus === 'deployed' ? new Date() : null,
        contentFingerprint, isFlaggedDuplicate,
-       contractDeploymentStatus, contractDeploymentError, new Date()]
+       contractDeploymentStatus, contractDeploymentError, new Date(), template_id || null, category || null]
     );
     campaign = rows[0];
 
@@ -1531,6 +1551,13 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
 
     if (normalizedTiers.length) {
       await insertTiers(client, campaign.id, normalizedTiers);
+    }
+
+    if (template_id) {
+      await client.query(
+        'UPDATE campaign_templates SET use_count = use_count + 1, updated_at = NOW() WHERE id = $1',
+        [template_id]
+      );
     }
 
     await client.query('COMMIT');

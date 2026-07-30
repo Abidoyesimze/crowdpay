@@ -390,6 +390,7 @@ export const api = {
   scheduleCampaignPublish: (id, body) => request('POST', `/campaigns/${id}/schedule-publish`, body),
   checkDuplicateCampaign: (body) => request('POST', '/campaigns/check-duplicate', body),
   createCampaign: (body) => request('POST', '/campaigns', body),
+  getCampaignTemplates: () => request('GET', '/campaign-templates'),
   updateCampaign: (id, body) => request('PATCH', `/campaigns/${id}`, body),
   deleteCampaign: (id) => request('DELETE', `/campaigns/${id}`),
   uploadCampaignCoverImage: (campaignId, file) => {
