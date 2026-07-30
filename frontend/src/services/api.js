@@ -630,4 +630,25 @@ export const api = {
     request('POST', `/campaigns/${campaignId}/translations`, { language, title, description }),
   deleteTranslation: (campaignId, language) =>
     request('DELETE', `/campaigns/${campaignId}/translations/${language}`),
+  // ── Stretch Goals (#585) ──────────────────────────────────────────
+  getStretchGoals: (campaignId) =>
+    request('GET', `/campaigns/${campaignId}/stretch-goals`),
+  createStretchGoal: (campaignId, body) =>
+    request('POST', `/campaigns/${campaignId}/stretch-goals`, body),
+  updateStretchGoal: (campaignId, goalId, body) =>
+    request('PATCH', `/campaigns/${campaignId}/stretch-goals/${goalId}`, body),
+  deleteStretchGoal: (campaignId, goalId) =>
+    request('DELETE', `/campaigns/${campaignId}/stretch-goals/${goalId}`),
+  // ── Creator Public Profile (#588) ────────────────────────────────
+  getCreatorProfile: (userId) =>
+    request('GET', `/users/${userId}/public`),
+  // ── Recurring Contributions (#584) ───────────────────────────────
+  getMyRecurringContributions: () =>
+    request('GET', '/users/me/recurring-contributions'),
+  createRecurringContribution: (body) =>
+    request('POST', '/users/me/recurring-contributions', body),
+  updateRecurringContribution: (id, body) =>
+    request('PATCH', `/users/me/recurring-contributions/${id}`, body),
+  deleteRecurringContribution: (id) =>
+    request('DELETE', `/users/me/recurring-contributions/${id}`),
 };
