@@ -7,7 +7,7 @@ const {
   sendCampaignFailedContributorEmail,
   sendEmail,
 } = require('./emailService');
-const { createNotification } = require('./notifications');
+const { createNotification, createNotificationsBulk } = require('./notifications');
 const {
   emitWebhookEventForUser,
   emitWebhookEventForCampaign,
@@ -208,43 +208,39 @@ async function emitFailedWebhooks(campaign) {
 }
 
 async function createFundedNotifications(campaign, contributors) {
-  await createNotification(campaign.creator_id, {
-    type: 'goal_reached',
-    title: 'Goal reached!',
-    body: `Your campaign "${campaign.title}" has reached its funding goal.`,
-    link: `/campaigns/${campaign.id}`,
-  });
-
-  await Promise.all(
-    contributors.map((contributor) =>
-      createNotification(contributor.id, {
-        type: 'campaign_funded',
-        title: 'Campaign fully funded',
-        body: `"${campaign.title}" has reached its funding goal.`,
-        link: `/campaigns/${campaign.id}`,
-      })
-    )
-  );
+  const contributorIds = contributors.map((c) => c.id);
+  await Promise.all([
+    createNotification(campaign.creator_id, {
+      type: 'goal_reached',
+      title: 'Goal reached!',
+      body: `Your campaign "${campaign.title}" has reached its funding goal.`,
+      link: `/campaigns/${campaign.id}`,
+    }),
+    contributorIds.length ? createNotificationsBulk(contributorIds, {
+      type: 'campaign_funded',
+      title: 'Campaign fully funded',
+      body: `"${campaign.title}" has reached its funding goal.`,
+      link: `/campaigns/${campaign.id}`,
+    }) : Promise.resolve(),
+  ]);
 }
 
 async function createFailedNotifications(campaign, contributors) {
-  await createNotification(campaign.creator_id, {
-    type: 'campaign_failed',
-    title: 'Campaign ended',
-    body: `"${campaign.title}" ended without reaching its goal.`,
-    link: `/campaigns/${campaign.id}`,
-  });
-
-  await Promise.all(
-    contributors.map((contributor) =>
-      createNotification(contributor.id, {
-        type: 'refund_available',
-        title: 'Refund available',
-        body: `"${campaign.title}" ended below its goal. You can claim a refund.`,
-        link: `/campaigns/${campaign.id}?refund=1`,
-      })
-    )
-  );
+  const contributorIds = contributors.map((c) => c.id);
+  await Promise.all([
+    createNotification(campaign.creator_id, {
+      type: 'campaign_failed',
+      title: 'Campaign ended',
+      body: `"${campaign.title}" ended without reaching its goal.`,
+      link: `/campaigns/${campaign.id}`,
+    }),
+    contributorIds.length ? createNotificationsBulk(contributorIds, {
+      type: 'refund_available',
+      title: 'Refund available',
+      body: `"${campaign.title}" ended below its goal. You can claim a refund.`,
+      link: `/campaigns/${campaign.id}?refund=1`,
+    }) : Promise.resolve(),
+  ]);
 }
 
 /**
@@ -288,6 +284,14 @@ async function queueFailedCampaignRefunds(campaignId, actorUserId) {
         `SELECT id, sender_public_key, amount, asset FROM contributions WHERE campaign_id = $1 AND refunded = FALSE ORDER BY created_at ASC`,
         [campaignId]
       );
+      const walletKeys = contributions.map((c) => c.sender_public_key);
+      const { rows: userRows } = await db.query(
+        `SELECT wallet_public_key, email, name FROM users WHERE wallet_public_key = ANY($1::text[])`,
+        [walletKeys]
+      );
+      const userByWallet = {};
+      for (const u of userRows) userByWallet[u.wallet_public_key] = u;
+
       for (const contribution of contributions) {
         try {
           await refundWithRetry(campaign.escrow_contract_id, contribution.sender_public_key, contribution.id);
@@ -300,18 +304,15 @@ async function queueFailedCampaignRefunds(campaignId, actorUserId) {
             contribution_id: contribution.id,
           });
 
-          const { rows: users } = await db.query(
-            `SELECT email, name FROM users WHERE wallet_public_key = $1`,
-            [contribution.sender_public_key]
-          );
+          const contributor = userByWallet[contribution.sender_public_key];
 
-          if (users.length && users[0].email) {
+          if (contributor?.email) {
             await sendEmail({
-              to: users[0].email,
+              to: contributor.email,
               subject: `Refund processed for campaign "${campaign.title}"`,
-              text: `Hi ${users[0].name || 'there'},\n\nYour contribution of ${contribution.amount} ${contribution.asset} to the campaign "${campaign.title}" has been refunded because the campaign did not meet its funding goal by the deadline.\n\nThank you for using CrowdPay.`,
+              text: `Hi ${contributor.name || 'there'},\n\nYour contribution of ${contribution.amount} ${contribution.asset} to the campaign "${campaign.title}" has been refunded because the campaign did not meet its funding goal by the deadline.\n\nThank you for using CrowdPay.`,
             }).catch((emailErr) => {
-              logger.error(`Failed to send refund email to ${users[0].email}:`, { error: emailErr.message });
+              logger.error(`Failed to send refund email to ${contributor.email}:`, { error: emailErr.message });
             });
           }
 
