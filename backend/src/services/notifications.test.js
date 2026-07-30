@@ -8,6 +8,7 @@ function buildService({ settings = null, prefs = [] } = {}) {
     inApp: [],
     queued: [],
     delivered: [],
+    pushed: [],
     flushed: [],
   };
 
@@ -58,6 +59,12 @@ function buildService({ settings = null, prefs = [] } = {}) {
     '../config/database': db,
     '../config/logger': { info: () => {}, error: () => {}, warn: () => {} },
     './notificationChannels': stubChannels,
+    './fcmPushService': {
+      sendToUser: async (userId, message) => {
+        state.pushed.push({ userId, message });
+        return true;
+      },
+    },
   });
 
   return { service, state };
@@ -93,6 +100,25 @@ test('createNotification delivers to configured channels outside quiet hours', a
   assert.equal(state.delivered.length, 1);
   assert.equal(state.delivered[0].channel, 'slack');
   assert.equal(state.queued.length, 0);
+});
+
+test('createNotification delivers push notifications to registered FCM devices', async () => {
+  const { service, state } = buildService({
+    settings: {
+      user_id: 'user-1',
+      push_token: null,
+      push_enabled: true,
+      slack_webhook_url: null,
+      discord_webhook_url: null,
+      sms_phone_number: null,
+      quiet_hours_start: null,
+      quiet_hours_end: null,
+    },
+  });
+  await service.createNotification('user-1', { type: 'campaign_update', title: 'Update', link: '/campaigns/1' });
+  assert.equal(state.pushed.length, 1);
+  assert.equal(state.pushed[0].userId, 'user-1');
+  assert.equal(state.pushed[0].message.link, '/campaigns/1');
 });
 
 test('createNotification respects a per-event channel disable override', async () => {

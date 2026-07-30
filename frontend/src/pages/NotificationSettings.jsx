@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { api } from '../services/api';
+import { subscribeToPush, unsubscribeFromPush } from '../services/pushNotifications';
 
 const CHANNELS = [
   { id: 'email', label: 'Email', icon: '✉' },
@@ -92,9 +93,10 @@ export default function NotificationSettings() {
 
   const loadPreferences = useCallback(async () => {
     try {
-      const [prefRows, channelSettings, myCampaigns] = await Promise.all([
+      const [prefRows, channelSettings, pushSubscription, myCampaigns] = await Promise.all([
         api.getNotificationPreferences().catch(() => []),
         api.getChannelSettings().catch(() => ({})),
+        api.getPushSubscriptionStatus().catch(() => ({ subscribed: false })),
         api.getMyCampaigns({ limit: 50 }).catch(() => ({ campaigns: [] })),
       ]);
 
@@ -119,6 +121,7 @@ export default function NotificationSettings() {
           chEnabled[ch.id] = true;
         }
       }
+      chEnabled.push = pushSubscription.subscribed;
       setChannelEnabled(chEnabled);
 
       // Quiet hours from channel settings
@@ -174,6 +177,15 @@ export default function NotificationSettings() {
       });
 
       try {
+        if (channelId === 'push') {
+          if (enabled) {
+            const token = await subscribeToPush();
+            await api.registerPushSubscription(token);
+          } else {
+            const token = await unsubscribeFromPush();
+            if (token) await api.removePushSubscription(token);
+          }
+        }
         // Save each event type preference for this channel
         const promises = EVENT_TYPES.map((evt) =>
           api.updateNotificationPreference({

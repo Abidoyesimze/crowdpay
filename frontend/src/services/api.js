@@ -596,6 +596,9 @@ export const api = {
   updateNotificationPreference: (body) => request('PUT', '/notifications/preferences', body),
   getChannelSettings: () => request('GET', '/notifications/channel-settings'),
   updateChannelSettings: (body) => request('PUT', '/notifications/channel-settings', body),
+  getPushSubscriptionStatus: () => request('GET', '/notifications/push-subscriptions'),
+  registerPushSubscription: (token) => request('POST', '/notifications/push-subscriptions', { token }),
+  removePushSubscription: (token) => request('DELETE', '/notifications/push-subscriptions', { token }),
 
   getReferralCode: (campaignId) => request('GET', `/campaigns/${campaignId}/referral`),
   getReferralLeaderboard: (campaignId) => request('GET', `/campaigns/${campaignId}/referrals`),
