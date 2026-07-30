@@ -7,6 +7,21 @@ on:
     branches: [main]
 
 jobs:
+  secret-hygiene:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Fail if any .env file is tracked by git
+        run: node .husky/check-env.js --tracked
+
   backend-checks:
     runs-on: ubuntu-latest
     services:

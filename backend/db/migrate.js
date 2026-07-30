@@ -51,7 +51,9 @@ async function migrate() {
 
     console.log(`[migrate] Done. ${count} migration(s) applied.`);
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch((rollbackErr) => {
+      console.error('[migrate] ROLLBACK failed:', rollbackErr.message);
+    });
     console.error('[migrate] Failed:', err.message);
     process.exit(1);
   } finally {

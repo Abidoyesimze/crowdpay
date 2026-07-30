@@ -630,7 +630,11 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
               });
             }
           })
-          .catch(() => {});
+          .catch((err) =>
+            logger.warn("Ledger stream health check failed", {
+              error: err.message,
+            }),
+          );
       },
       5 * 60 * 1000,
     );
