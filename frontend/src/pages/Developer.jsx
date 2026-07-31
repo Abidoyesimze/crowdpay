@@ -141,16 +141,21 @@ export default function Developer() {
     setExplorerError('');
   }, [explorerEndpoint, v1Endpoints]);
 
+  // Debounce localStorage writes so typing in the body/params does not
+  // stringify + setItem on every keystroke (see #575).
   useEffect(() => {
     if (!explorerEndpoint) return;
-    localStorage.setItem(
-      `cp_explorer_params_${explorerEndpoint}`,
-      JSON.stringify({
-        pathParams: explorerPathParams,
-        query: explorerQuery,
-        body: explorerBody,
-      })
-    );
+    const timer = setTimeout(() => {
+      localStorage.setItem(
+        `cp_explorer_params_${explorerEndpoint}`,
+        JSON.stringify({
+          pathParams: explorerPathParams,
+          query: explorerQuery,
+          body: explorerBody,
+        })
+      );
+    }, 400);
+    return () => clearTimeout(timer);
   }, [explorerPathParams, explorerQuery, explorerBody, explorerEndpoint]);
 
   if (!user) {

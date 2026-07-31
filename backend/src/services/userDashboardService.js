@@ -32,10 +32,74 @@ async function listCreatorCampaignsCached(userId) {
   });
 }
 
+// Whitelisted columns for ?fields= on GET /campaigns/mine.
+// Keeps SQL injection-safe field selection for lightweight consumers
+// (e.g. NotificationSettings only needs id/title/status/raised_amount).
+const CREATOR_CAMPAIGN_FIELDS = {
+  id: 'c.id',
+  title: 'c.title',
+  status: 'c.status',
+  asset_type: 'c.asset_type',
+  target_amount: 'c.target_amount',
+  raised_amount: 'c.raised_amount',
+  deadline: 'c.deadline',
+  created_at: 'c.created_at',
+  is_hidden: 'c.is_hidden',
+  contributor_count:
+    'COALESCE(stats.contributor_count, 0) AS contributor_count',
+  has_milestones: `EXISTS (
+              SELECT 1 FROM milestones m WHERE m.campaign_id = c.id LIMIT 1
+            ) AS has_milestones`,
+};
+
+const DEFAULT_CREATOR_CAMPAIGN_FIELDS = [
+  'id',
+  'title',
+  'status',
+  'asset_type',
+  'target_amount',
+  'raised_amount',
+  'deadline',
+  'created_at',
+  'is_hidden',
+  'contributor_count',
+  'has_milestones',
+];
+
+function parseCreatorCampaignFields(fieldsParam) {
+  if (fieldsParam === undefined || fieldsParam === null || fieldsParam === '') {
+    return DEFAULT_CREATOR_CAMPAIGN_FIELDS;
+  }
+  const requested = String(fieldsParam)
+    .split(',')
+    .map((f) => f.trim())
+    .filter(Boolean);
+  const selected = [];
+  for (const name of requested) {
+    if (CREATOR_CAMPAIGN_FIELDS[name] && !selected.includes(name)) {
+      selected.push(name);
+    }
+  }
+  if (!selected.length) return DEFAULT_CREATOR_CAMPAIGN_FIELDS;
+  // Always include id so clients can key list items.
+  if (!selected.includes('id')) selected.unshift('id');
+  return selected;
+}
+
 async function listCreatorCampaigns(userId, options = {}) {
   const page = Math.max(1, parseInt(options.page, 10) || 1);
   const limit = Math.min(Math.max(1, parseInt(options.limit, 10) || 20), 100);
   const offset = (page - 1) * limit;
+  const selectedFields = parseCreatorCampaignFields(options.fields);
+  const needsContributorCount = selectedFields.includes('contributor_count');
+  const selectSql = selectedFields.map((name) => CREATOR_CAMPAIGN_FIELDS[name]).join(',\n            ');
+  const joinSql = needsContributorCount
+    ? `LEFT JOIN LATERAL (
+       SELECT COUNT(DISTINCT sender_public_key)::int AS contributor_count
+       FROM contributions ctr
+       WHERE ctr.campaign_id = c.id
+     ) stats ON TRUE`
+    : '';
 
   const countResult = await db.query(
     'SELECT COUNT(*)::int AS total FROM campaigns WHERE creator_id = $1',
@@ -45,18 +109,9 @@ async function listCreatorCampaigns(userId, options = {}) {
   const totalPages = Math.ceil(total / limit);
 
   const { rows } = await db.query(
-    `SELECT c.id, c.title, c.status, c.asset_type, c.target_amount, c.raised_amount,
-            c.deadline, c.created_at, c.is_hidden,
-            COALESCE(stats.contributor_count, 0) AS contributor_count,
-            EXISTS (
-              SELECT 1 FROM milestones m WHERE m.campaign_id = c.id LIMIT 1
-            ) AS has_milestones
+    `SELECT ${selectSql}
      FROM campaigns c
-     LEFT JOIN LATERAL (
-       SELECT COUNT(DISTINCT sender_public_key)::int AS contributor_count
-       FROM contributions ctr
-       WHERE ctr.campaign_id = c.id
-     ) stats ON TRUE
+     ${joinSql}
      WHERE c.creator_id = $1
      ORDER BY c.created_at DESC
      LIMIT $2 OFFSET $3`,

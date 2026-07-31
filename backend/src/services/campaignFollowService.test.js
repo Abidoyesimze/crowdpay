@@ -4,12 +4,12 @@ const proxyquire = require('proxyquire').noCallThru();
 
 const CAMPAIGN_ID = '11111111-1111-1111-1111-111111111111';
 
-function buildService({ queryImpl, onNotification = () => {} }) {
+function buildService({ queryImpl, onBulkNotification = () => {} }) {
   return proxyquire('./campaignFollowService', {
     '../config/database': { query: queryImpl },
     '../config/logger': { info: () => {}, error: () => {}, warn: () => {}, debug: () => {} },
     './notifications': {
-      createNotification: async (userId, message) => onNotification(userId, message),
+      createNotificationsBulk: async (userIds, message) => onBulkNotification(userIds, message),
     },
   });
 }
@@ -22,7 +22,7 @@ test('notifyFollowers skips users already notified through another path', async 
       calls.push({ text, params });
       return { rows: [{ user_id: 'follower-1' }, { user_id: 'follower-2' }] };
     },
-    onNotification: (userId) => notified.push(userId),
+    onBulkNotification: (userIds) => notified.push(...userIds),
   });
 
   const count = await service.notifyFollowers(
@@ -47,14 +47,11 @@ test('notifyFollowers rejects a preference column that does not exist', async ()
   );
 });
 
-test('notifyFollowers keeps going when one follower notification fails', async () => {
+test('notifyFollowers passes all follower IDs to bulk notification', async () => {
   const notified = [];
   const service = buildService({
     queryImpl: async () => ({ rows: [{ user_id: 'follower-1' }, { user_id: 'follower-2' }] }),
-    onNotification: (userId) => {
-      if (userId === 'follower-1') throw new Error('channel down');
-      notified.push(userId);
-    },
+    onBulkNotification: (userIds) => notified.push(...userIds),
   });
 
   const count = await service.notifyFollowers(CAMPAIGN_ID, 'notify_funding', {
@@ -62,8 +59,8 @@ test('notifyFollowers keeps going when one follower notification fails', async (
     title: '50%',
   });
 
-  assert.equal(count, 1);
-  assert.deepEqual(notified, ['follower-2']);
+  assert.equal(count, 2);
+  assert.deepEqual(notified, ['follower-1', 'follower-2']);
 });
 
 test('highestThresholdReached picks the largest threshold crossed', () => {
@@ -91,7 +88,7 @@ test('announceFundingProgress notifies followers once per threshold', async () =
       }
       return { rows: [{ user_id: 'follower-1' }] };
     },
-    onNotification: (userId, message) => notified.push(message.title),
+    onBulkNotification: (userIds, message) => notified.push(message.title),
   });
 
   assert.equal(await service.announceFundingProgress(CAMPAIGN_ID), 50);

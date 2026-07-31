@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 const backendEnv = {
   NODE_ENV: 'development',
   PORT: '3001',
-  JWT_SECRET: 'testsecret',
+  JWT_SECRET: 'playwright-e2e-jwt-secret-do-not-use-in-prod-32char',
   STELLAR_NETWORK: 'testnet',
   USDC_ISSUER: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
   PLATFORM_SECRET_KEY: 'SCVMQUS5EMTHWBLJTE5XCSCMHB2ZOVKRR4ATVTRPUNRCOGKRENIL3LHR',

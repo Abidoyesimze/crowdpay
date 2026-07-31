@@ -8,28 +8,32 @@ vi.mock('../../context/AuthContext', () => ({
 }));
 
 const apiMocks = vi.hoisted(() => ({
-  getMyContributions: vi.fn().mockResolvedValue([
-    {
-      id: 'c1',
-      campaign_id: 'campaign-1',
-      campaign_title: 'Support project',
-      campaign_status: 'active',
-      amount: '100',
-      asset: 'XLM',
-      created_at: '2024-01-01T00:00:00.000Z',
-      tx_hash: 'ABC12345XYZ',
+  getMyContributions: vi.fn(),
+  getContributorDashboard: vi.fn().mockResolvedValue({
+    stats: {
+      total_contributed: 0,
+      campaigns_backed: 0,
+      active_campaigns_backed: 0,
+      campaigns_completed: 0,
+      avg_contribution: 0,
+      total_refunded: 0,
+      badges: [],
     },
-  ]),
+    campaigns: [],
+  }),
+  getFavorites: vi.fn().mockResolvedValue([]),
+  exportContributionsCsv: vi.fn(),
 }));
 
 vi.mock('../../services/api', () => ({ api: apiMocks }));
 
 describe('MyContributions page', () => {
-  it('renders contribution records from the API', async () => {
+  it('renders ContributorDashboard as the sole data source', async () => {
     renderWithProviders(<MyContributions />);
 
     expect(await screen.findByRole('heading', { name: /My Contributions/i })).toBeInTheDocument();
-    expect(screen.getByText(/Support project/i)).toBeInTheDocument();
-    expect(screen.getByText(/100 XLM/i)).toBeInTheDocument();
+    expect(await screen.findByText(/You have not backed any campaigns yet/i)).toBeInTheDocument();
+    expect(apiMocks.getMyContributions).not.toHaveBeenCalled();
+    expect(apiMocks.getContributorDashboard).toHaveBeenCalledTimes(1);
   });
 });

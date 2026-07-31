@@ -15,7 +15,7 @@ const { sendAlert } = require('../services/alerting');
 const cache = require('../utils/cache');
 const { Keypair } = require('@stellar/stellar-sdk');
 const { encryptSecret } = require('../services/walletService');
-const { watchCampaignWallet, addSSEClient, removeSSEClient } = require('../services/ledgerMonitor');
+const { watchCampaignWallet, addSSEClient, removeSSEClient, cleanupStreamForWallet } = require('../services/ledgerMonitor');
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { refreshCampaignStatus, refreshActiveCampaignStatuses } = require('../services/campaignStatusService');
 const { queueFailedCampaignRefunds } = require('../services/campaignStatusActions');
@@ -503,8 +503,8 @@ router.get('/facets', asyncHandler(async (req, res) => {
 
 
 router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
-  const { page, limit } = req.query;
-  const result = await listCreatorCampaigns(req.user.userId, { page, limit });
+  const { page, limit, fields } = req.query;
+  const result = await listCreatorCampaigns(req.user.userId, { page, limit, fields });
   res.json(result);
 }));
 
@@ -896,6 +896,9 @@ router.delete('/:id', requireAuth, requireCampaignMember('owner'), asyncHandler(
       details: stellarErr.message,
     });
   }
+
+  // Cleanup ledger stream registry and reconnect attempts for this wallet
+  cleanupStreamForWallet(campaign.wallet_public_key);
 
   const { rows: updated } = await db.query(
     `UPDATE campaigns SET deleted_at = NOW() WHERE id = $1 RETURNING id, title, deleted_at`,
@@ -1546,10 +1549,13 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
     }
   }
 
-  // 1. Create the on-chain campaign wallet
-  const wallet = await createCampaignWallet(creatorPublicKey);
+  // Generate the campaign keypair locally before any on-chain or DB writes.
+  // This gives us the wallet_public_key for the DB record without a network call,
+  // eliminating the risk of an orphaned Stellar wallet if the DB insert fails.
+  const campaignKeypair = Keypair.random();
+  const walletPublicKey = campaignKeypair.publicKey();
 
-  // 2. Deploy Soroban contract instances
+  // Deploy Soroban contract instances
   const platformPublicKey = Keypair.fromSecret(process.env.PLATFORM_SECRET_KEY).publicKey();
   const platformFeeBps = parseInt(process.env.PLATFORM_FEE_BPS || '0', 10);
   const deadlineUnix = deadline ? Math.floor(new Date(deadline).getTime() / 1000) : 0;
@@ -1597,6 +1603,8 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
   }
   const contractAddress = escrowContractId || null;
 
+  // Insert the campaign DB record BEFORE creating the Stellar wallet so that
+  // a DB failure never leaves an untracked (orphaned) on-chain wallet.
   const client = await db.connect();
   let campaign;
   try {
@@ -1621,7 +1629,7 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
           contract_deployment_status, contract_deployment_error, last_deployment_attempt_at, country)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        RETURNING *`,
-      [title, description, target_amount, asset_type, wallet.publicKey, req.user.userId, deadline, 
+      [title, description, target_amount, asset_type, walletPublicKey, req.user.userId, deadline, 
        min_contribution || null, max_contribution || null, escrowContractId, milestonesContractId, platformFeeBps,
        contractAddress, contractDeploymentStatus === 'deployed' ? new Date() : null,
        contentFingerprint, isFlaggedDuplicate,
@@ -1666,19 +1674,36 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
-    logger.error('[campaigns] DB insert failed after wallet creation. Orphaned wallet:', {
-      publicKey: wallet.publicKey,
+    logger.error('[campaigns] DB insert failed during campaign creation', {
       creatorUserId: req.user.userId,
       error: err.message,
     });
-    return res.status(500).json({
-      error: 'Campaign could not be saved. Wallet creation may have succeeded — contact support.',
-    });
+    return res.status(500).json({ error: 'Campaign could not be saved.' });
   } finally {
     client.release();
   }
 
-  watchCampaignWallet(campaign.id, wallet.publicKey);
+  // Now create the Stellar wallet on-chain. The DB record already exists, so
+  // even if this fails we have tracked state and can retry later.
+  try {
+    await createCampaignWallet(creatorPublicKey, campaignKeypair);
+  } catch (err) {
+    logger.error('[campaigns] Stellar wallet creation failed after DB insert. Campaign orphaned:', {
+      campaign_id: campaign.id,
+      publicKey: walletPublicKey,
+      error: err.message,
+    });
+    // Best-effort cleanup: mark the campaign so support can investigate
+    await db.query(
+      `UPDATE campaigns SET contract_deployment_status = 'failed', contract_deployment_error = $2 WHERE id = $1`,
+      [campaign.id, `Wallet creation failed: ${err.message}`]
+    ).catch(() => {});
+    return res.status(500).json({
+      error: 'Campaign saved but wallet creation failed. Please contact support.',
+    });
+  }
+
+  watchCampaignWallet(campaign.id, walletPublicKey);
 
   res.status(201).json(campaign);
 }));

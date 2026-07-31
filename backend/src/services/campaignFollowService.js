@@ -1,6 +1,6 @@
 const db = require('../config/database');
 const logger = require('../config/logger');
-const { createNotification } = require('./notifications');
+const { createNotificationsBulk } = require('./notifications');
 
 // Campaign follow/watch (#592). Followers are users who want updates about a
 // campaign without necessarily contributing to it. Each follow row carries its
@@ -132,20 +132,17 @@ async function notifyFollowers(campaignId, preference, message, exclude) {
     [campaignId, excluded]
   );
 
-  let notified = 0;
-  for (const follower of followers) {
-    try {
-      await createNotification(follower.user_id, message);
-      notified += 1;
-    } catch (err) {
-      logger.error('Follower notification failed', {
-        campaign_id: campaignId,
-        user_id: follower.user_id,
-        error: err.message,
-      });
-    }
+  const userIds = followers.map((f) => f.user_id);
+  try {
+    await createNotificationsBulk(userIds, message);
+  } catch (err) {
+    logger.error('Bulk follower notification failed', {
+      campaign_id: campaignId,
+      count: userIds.length,
+      error: err.message,
+    });
   }
-  return notified;
+  return userIds.length;
 }
 
 function highestThresholdReached(raisedAmount, targetAmount) {

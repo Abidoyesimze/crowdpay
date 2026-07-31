@@ -23,6 +23,39 @@ function passwordStrength(pw) {
   return { label: 'Strong', color: '#10b981', width: '100%' };
 }
 
+const styles = {
+  container: { paddingTop: '4rem', maxWidth: '400px' },
+  heading: { fontSize: '1.6rem', fontWeight: 800, marginBottom: '0.5rem' },
+  subtitle: { color: 'var(--color-text-hint)', marginBottom: '1.5rem', fontSize: '0.9rem' },
+  form: { display: 'flex', flexDirection: 'column', gap: '0.85rem' },
+  passwordWrapper: { position: 'relative' },
+  passwordInput: { paddingRight: '2.5rem', width: '100%' },
+  passwordToggle: {
+    position: 'absolute',
+    right: '0.6rem',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    color: '#888',
+    padding: '0.2rem',
+    minHeight: 'auto',
+    fontSize: '0.85rem',
+  },
+  strengthBarOuter: { height: '4px', borderRadius: '99px', background: '#e5e5e5', overflow: 'hidden' },
+  strengthBarInner: { height: '100%', borderRadius: '99px', transition: 'width 0.2s, background 0.2s' },
+  strengthLabel: { fontSize: '0.78rem', fontWeight: 600 },
+  strengthMargin: { marginTop: '-0.4rem' },
+  confirmInput: { paddingRight: '2.5rem' },
+  freighterRow: { display: 'flex', gap: '0.5rem', alignItems: 'center' },
+  freighterLabel: { display: 'flex', alignItems: 'center', gap: '0.35rem' },
+  error: { color: 'var(--color-status-error)', fontSize: '0.875rem' },
+  submitBtn: { padding: '0.8rem' },
+  bottomText: { marginTop: '1.25rem', color: 'var(--color-text-hint)', fontSize: '0.9rem' },
+  logInLink: { color: 'var(--color-accent)', fontWeight: 600 },
+};
+
 export default function Register() {
   const { t } = useTranslation();
   const { login } = useAuth();
@@ -114,17 +147,17 @@ export default function Register() {
   }
 
   return (
-    <main className="container" style={{ paddingTop: '4rem', maxWidth: '400px' }}>
-      <h1 style={{ fontSize: '1.6rem', fontWeight: 800, marginBottom: '0.5rem' }}>
+    <main className="container" style={styles.container}>
+      <h1 style={styles.heading}>
         {t('register.title')}
       </h1>
-      <p style={{ color: 'var(--color-text-hint)', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
+      <p style={styles.subtitle}>
         {t('register.subtitle')}
       </p>
       <form
         noValidate
         onSubmit={handleSubmit}
-        style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}
+        style={styles.form}
       >
         <input
           placeholder={t('register.fullName')}
@@ -139,7 +172,7 @@ export default function Register() {
           onChange={set('email')}
           required
         />
-        <div style={{ position: 'relative' }}>
+        <div style={styles.passwordWrapper}>
           <input
             id="reg-password"
             type={showPassword ? 'text' : 'password'}
@@ -149,25 +182,13 @@ export default function Register() {
             required
             minLength={8}
             autoComplete="new-password"
-            style={{ paddingRight: '2.5rem', width: '100%' }}
+            style={styles.passwordInput}
           />
           <button
             type="button"
             aria-label={showPassword ? t('login.hidePassword') : t('login.showPassword')}
             onClick={() => setShowPassword((v) => !v)}
-            style={{
-              position: 'absolute',
-              right: '0.6rem',
-              top: '50%',
-              transform: 'translateY(-50%)',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              color: '#888',
-              padding: '0.2rem',
-              minHeight: 'auto',
-              fontSize: '0.85rem',
-            }}
+            style={styles.passwordToggle}
           >
             {showPassword ? t('common.hide') : t('common.show')}
           </button>
@@ -176,32 +197,23 @@ export default function Register() {
           (() => {
             const s = passwordStrength(form.password);
             return (
-              <div style={{ marginTop: '-0.4rem' }}>
-                <div
-                  style={{
-                    height: '4px',
-                    borderRadius: '99px',
-                    background: '#e5e5e5',
-                    overflow: 'hidden',
-                  }}
-                >
+              <div style={styles.strengthMargin}>
+                <div style={styles.strengthBarOuter}>
                   <div
                     style={{
-                      height: '100%',
+                      ...styles.strengthBarInner,
                       width: s.width,
                       background: s.color,
-                      transition: 'width 0.2s, background 0.2s',
-                      borderRadius: '99px',
                     }}
                   />
                 </div>
-                <span style={{ fontSize: '0.78rem', color: s.color, fontWeight: 600 }}>
+                <span style={{ ...styles.strengthLabel, color: s.color }}>
                   {s.label}
                 </span>
               </div>
             );
           })()}
-        <div className="form-stack" style={{ position: 'relative' }}>
+        <div className="form-stack" style={styles.passwordWrapper}>
           <label className="label-strong" htmlFor="reg-confirm">
             {t('register.confirmPassword')}
           </label>
@@ -212,25 +224,13 @@ export default function Register() {
             onChange={set('confirmPassword')}
             required
             autoComplete="new-password"
-            style={{ paddingRight: '2.5rem' }}
+            style={styles.confirmInput}
           />
           <button
             type="button"
             aria-label={showConfirmPassword ? t('login.hidePassword') : t('login.showPassword')}
             onClick={() => setShowConfirmPassword((v) => !v)}
-            style={{
-              position: 'absolute',
-              right: '0.6rem',
-              top: '50%',
-              transform: 'translateY(-50%)',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              color: '#888',
-              padding: '0.2rem',
-              minHeight: 'auto',
-              fontSize: '0.85rem',
-            }}
+            style={styles.passwordToggle}
           >
             {showConfirmPassword ? t('common.hide') : t('common.show')}
           </button>
@@ -240,8 +240,8 @@ export default function Register() {
           <option value="creator">{t('register.creator')}</option>
         </select>
         {freighterAvailable && (
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <div style={styles.freighterRow}>
+            <label style={styles.freighterLabel}>
               <input
                 type="checkbox"
                 checked={usingFreighter}
@@ -257,21 +257,21 @@ export default function Register() {
           </div>
         )}
         {error && (
-          <p style={{ color: 'var(--color-status-error)', fontSize: '0.875rem' }}>{error}</p>
+          <p style={styles.error}>{error}</p>
         )}
         <button
           type="submit"
           className="btn-primary"
           data-testid="register-submit"
           disabled={loading}
-          style={{ padding: '0.8rem' }}
+          style={styles.submitBtn}
         >
           {loading ? t('register.loading') : t('common.signUp')}
         </button>
       </form>
-      <p style={{ marginTop: '1.25rem', color: 'var(--color-text-hint)', fontSize: '0.9rem' }}>
+      <p style={styles.bottomText}>
         {t('register.haveAccount')}{' '}
-        <Link to="/login" style={{ color: 'var(--color-accent)', fontWeight: 600 }}>
+        <Link to="/login" style={styles.logInLink}>
           {t('register.logIn')}
         </Link>
       </p>

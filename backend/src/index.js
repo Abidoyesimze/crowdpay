@@ -264,12 +264,15 @@ app.use("/api/auth", require("./routes/sessions"));
 // Referral routes
 app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api/users", require("./routes/users"));
+app.use("/api", require("./routes/sponsorMatching"));
 app.use("/api/invites", require("./routes/invites"));
 app.use("/api/campaigns", require("./routes/campaignUpdates"));
 app.use("/api/campaigns", require("./routes/campaignComments"));
 app.use("/api/campaigns", require("./routes/campaignFollowers"));
 app.use("/api/campaigns", require("./routes/campaigns"));
 app.use("/api/campaign-templates", require("./routes/campaignTemplates"));
+app.use("/api/campaigns", require("./routes/impactReports"));
+app.use("/api/campaigns", require("./routes/sponsorMatching"));
 app.use("/api/campaigns", require("./routes/translations"));
 app.use("/api/anchor", require("./routes/anchor"));
 app.use("/api/contributions", require("./routes/contributions"));
