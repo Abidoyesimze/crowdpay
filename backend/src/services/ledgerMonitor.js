@@ -46,6 +46,26 @@ function removeSSEClient(campaignId, res) {
   }
 }
 
+/**
+ * Cleanup stream registry and reconnect attempts for a wallet.
+ * Called when streams are closed, campaigns are deleted, or reconnects are abandoned.
+ */
+function cleanupStreamForWallet(walletPublicKey) {
+  const entry = streamRegistry.get(walletPublicKey);
+  if (entry && typeof entry.close === "function") {
+    try {
+      entry.close();
+    } catch (err) {
+      logger.warn("Failed to close stream during cleanup", {
+        wallet_public_key: walletPublicKey,
+        error: err.message,
+      });
+    }
+  }
+  streamRegistry.delete(walletPublicKey);
+  reconnectAttempts.delete(walletPublicKey);
+}
+
 function broadcastCampaignUpdate(campaignId, data) {
   const clients = sseClients.get(campaignId);
   if (!clients || clients.size === 0) return;
@@ -60,6 +80,7 @@ function broadcastCampaignUpdate(campaignId, data) {
 }
 
 const MAX_RECONNECT_DELAY_MS = 60_000;
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 function extractPagingToken(record) {
   if (!record || typeof record !== "object") return null;
@@ -491,6 +512,17 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
 }
 
   function scheduleStreamReconnect(campaignId, walletPublicKey, attempt) {
+    if (attempt > MAX_RECONNECT_ATTEMPTS) {
+      logger.error("Ledger stream reconnect abandoned after max attempts", {
+        wallet_public_key: walletPublicKey,
+        campaign_id: campaignId,
+        attempt,
+        max_attempts: MAX_RECONNECT_ATTEMPTS,
+      });
+      cleanupStreamForWallet(walletPublicKey);
+      return;
+    }
+
     const delay = Math.min(
       MAX_RECONNECT_DELAY_MS,
       1000 * 2 ** Math.max(0, attempt - 1),
@@ -556,15 +588,9 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
             campaign_id: campaignId,
             error: err.message,
           });
-          const snap = streamRegistry.get(walletPublicKey);
           const attempt = (reconnectAttempts.get(walletPublicKey) || 0) + 1;
           reconnectAttempts.set(walletPublicKey, attempt);
-          try {
-            if (snap && typeof snap.close === "function") snap.close();
-          } catch {
-            // ignore
-          }
-          streamRegistry.delete(walletPublicKey);
+          cleanupStreamForWallet(walletPublicKey);
           scheduleStreamReconnect(campaignId, walletPublicKey, attempt);
         },
       });
@@ -714,4 +740,5 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     getLedgerStreamHealth,
     addSSEClient,
     removeSSEClient,
+    cleanupStreamForWallet,
   };

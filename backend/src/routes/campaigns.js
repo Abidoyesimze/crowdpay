@@ -15,7 +15,7 @@ const { sendAlert } = require('../services/alerting');
 const cache = require('../utils/cache');
 const { Keypair } = require('@stellar/stellar-sdk');
 const { encryptSecret } = require('../services/walletService');
-const { watchCampaignWallet, addSSEClient, removeSSEClient } = require('../services/ledgerMonitor');
+const { watchCampaignWallet, addSSEClient, removeSSEClient, cleanupStreamForWallet } = require('../services/ledgerMonitor');
 const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { refreshCampaignStatus, refreshActiveCampaignStatuses } = require('../services/campaignStatusService');
 const { queueFailedCampaignRefunds } = require('../services/campaignStatusActions');
@@ -896,6 +896,9 @@ router.delete('/:id', requireAuth, requireCampaignMember('owner'), asyncHandler(
       details: stellarErr.message,
     });
   }
+
+  // Cleanup ledger stream registry and reconnect attempts for this wallet
+  cleanupStreamForWallet(campaign.wallet_public_key);
 
   const { rows: updated } = await db.query(
     `UPDATE campaigns SET deleted_at = NOW() WHERE id = $1 RETURNING id, title, deleted_at`,
