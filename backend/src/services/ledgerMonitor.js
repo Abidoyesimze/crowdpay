@@ -19,6 +19,7 @@ const {
   emitWebhookEventForCampaign,
   WEBHOOK_EVENTS,
 } = require("./webhookDispatcher");
+const { processContributionMatch } = require("./sponsorMatchingService");
 const cache = require("../utils/cache");
 const Sentry = require("@sentry/node");
 
@@ -335,6 +336,23 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
 
     if (referralCode) {
       await attributeContributionToReferrer(campaignId, referralCode, client);
+    }
+
+    // Process sponsor matching
+    let matchAmount = 0;
+    try {
+      matchAmount = await processContributionMatch({
+        campaignId,
+        contributionId: inserted[0].id,
+        contributionAmount: destinationAmount,
+        client,
+      });
+    } catch (matchErr) {
+      logger.warn('Sponsor matching processing failed (non-blocking)', {
+        campaign_id: campaignId,
+        contribution_id: inserted[0].id,
+        error: matchErr.message,
+      });
     }
 
     if (anchorMetadata?.anchor_deposit_id) {
