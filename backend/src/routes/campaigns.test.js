@@ -564,6 +564,29 @@ test('GET /api/campaigns/mine parses page and limit parameters', async () => {
   assert.equal(response.body.pagination.limit, 10);
 });
 
+test('GET /api/campaigns/mine forwards fields parameter', async () => {
+  let passedOptions = {};
+  const app = buildApp({
+    authUser: { userId: 'creator-1', role: 'creator' },
+    listCreatorCampaignsImpl: async (_userId, options) => {
+      passedOptions = options;
+      return {
+        data: [{ id: 'c-1', title: 'Lean Campaign', status: 'active', raised_amount: '5' }],
+        pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+      };
+    },
+  });
+
+  const response = await request(app)
+    .get('/api/campaigns/mine?limit=50&fields=id,title,status,raised_amount')
+    .set('Authorization', 'Bearer token');
+
+  assert.equal(response.status, 200);
+  assert.equal(passedOptions.limit, '50');
+  assert.equal(passedOptions.fields, 'id,title,status,raised_amount');
+  assert.equal(response.body.data[0].title, 'Lean Campaign');
+});
+
 function buildListingApp(queries) {
   return buildApp({
     queryImpl: async (text, params) => {
