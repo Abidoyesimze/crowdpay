@@ -70,6 +70,7 @@ export default function CreateCampaign() {
     max_contribution: location.state?.prefill?.max_contribution || '',
     max_per_user: location.state?.prefill?.max_per_user || '',
     show_backer_amounts: location.state?.prefill?.show_backer_amounts ?? true,
+    template_id: '',
     milestones: [],
     reward_tiers: [],
 
@@ -90,6 +91,7 @@ export default function CreateCampaign() {
   const [draftSavedAt, setDraftSavedAt] = useState(null);
   const [draftSaving, setDraftSaving] = useState(false);
   const [draftId, setDraftId] = useState(null);
+  const [templates, setTemplates] = useState([]);
 
   // Local storage save (immediate indicator, updated by server save)
   const localSaveTimer = useRef(null);
@@ -206,6 +208,7 @@ export default function CreateCampaign() {
       max_contribution: '',
       max_per_user: '',
       show_backer_amounts: true,
+      template_id: '',
       milestones: [],
       reward_tiers: [],
     });
@@ -227,6 +230,17 @@ export default function CreateCampaign() {
       .catch(() => {});
   }, [user, updateUser]);
 
+  useEffect(() => {
+    if (typeof api.getCampaignTemplates !== 'function') return;
+    let cancelled = false;
+    api.getCampaignTemplates()
+      .then((result) => {
+        if (!cancelled) setTemplates(Array.isArray(result) ? result : []);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   function setField(field) {
     return (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
   }
@@ -237,6 +251,26 @@ export default function CreateCampaign() {
 
   function selectAsset(value) {
     setForm((f) => ({ ...f, asset_type: value }));
+  }
+
+  function applyTemplate(templateId) {
+    const template = templates.find((item) => item.id === templateId);
+    if (!template) {
+      setForm((f) => ({ ...f, template_id: '' }));
+      return;
+    }
+    const data = template.template_data || {};
+    setForm((f) => ({
+      ...f,
+      template_id: template.id,
+      title: data.title || f.title,
+      description: data.description || f.description,
+      target_amount: data.target_amount || f.target_amount,
+      category: template.category || f.category,
+      milestones: Array.isArray(data.milestones) ? data.milestones : f.milestones,
+      reward_tiers: Array.isArray(data.reward_tiers) ? data.reward_tiers : f.reward_tiers,
+    }));
+    setError('');
   }
 
   function setCoverImage(file) {
@@ -487,11 +521,21 @@ export default function CreateCampaign() {
         min_contribution: form.min_contribution ? Number(form.min_contribution) : undefined,
         max_contribution: form.max_contribution ? Number(form.max_contribution) : undefined,
         max_per_user: form.max_per_user ? Number(form.max_per_user) : undefined,
+        template_id: form.template_id || undefined,
         milestones: form.milestones.length
           ? form.milestones.map((milestone) => ({
               title: milestone.title.trim(),
               description: milestone.description.trim(),
               release_percentage: Number(milestone.release_percentage),
+          }))
+          : undefined,
+        reward_tiers: form.reward_tiers.length
+          ? form.reward_tiers.map((tier) => ({
+              title: tier.title.trim(),
+              description: tier.description.trim() || undefined,
+              min_amount: Number(tier.min_amount),
+              limit: tier.limit ? Number(tier.limit) : undefined,
+              estimated_delivery: tier.estimated_delivery || undefined,
             }))
           : undefined,
         reward_tiers: form.reward_tiers.length
@@ -701,6 +745,30 @@ export default function CreateCampaign() {
         )}
         {step === 1 && (
           <>
+            {templates.length > 0 && (
+              <div className="form-stack" style={{ marginBottom: '1rem' }}>
+                <label className="label-strong" htmlFor="cc-template">
+                  Start with a template (Optional)
+                </label>
+                <select
+                  id="cc-template"
+                  value={form.template_id}
+                  onChange={(event) => applyTemplate(event.target.value)}
+                >
+                  <option value="">Start from scratch</option>
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name} — {template.description}
+                    </option>
+                  ))}
+                </select>
+                {form.template_id && (
+                  <small style={{ color: 'var(--color-text-hint)' }}>
+                    The template filled in your campaign details. You can customize every field.
+                  </small>
+                )}
+              </div>
+            )}
             <div className="form-stack">
               <label className="label-strong" htmlFor="cc-title">
                 {t('createCampaign.campaignTitle')}
