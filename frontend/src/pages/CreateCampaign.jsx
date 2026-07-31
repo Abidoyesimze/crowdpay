@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import SimpleMDE from 'react-simplemde-editor';
@@ -8,6 +8,10 @@ import { useAuth } from '../context/AuthContext';
 import OnboardingCallout from '../components/OnboardingCallout';
 import KycPrompt from '../components/KycPrompt';
 import { isCreatorOnboardingVisible, dismissCreatorOnboarding } from '../lib/onboarding';
+import { saveDraft, loadDraft, clearDraft, hasDraftContent } from '../lib/campaignDraft';
+
+const DRAFT_SAVE_DEBOUNCE_MS = 800;
+const SERVER_DRAFT_SAVE_MS = 30_000;
 
 const ASSETS = [
   {
@@ -38,7 +42,7 @@ function emptyMilestone() {
 }
 
 function emptyTier() {
-  return { title: '', description: '', min_amount: '', limit: '', estimated_delivery: '' };
+  return { title: '', description: '', min_amount: '', limit: '', estimated_delivery: '', nft_enabled: false, nft_metadata_url: '', nft_artwork_url: '' };
 }
 
 function milestonePercentTotal(milestones) {
@@ -61,11 +65,13 @@ export default function CreateCampaign() {
     asset_type: location.state?.prefill?.asset_type || 'USDC',
     deadline: '',
     category: '',
+    country: '',
     min_contribution: location.state?.prefill?.min_contribution || '',
     max_contribution: location.state?.prefill?.max_contribution || '',
     max_per_user: location.state?.prefill?.max_per_user || '',
     show_backer_amounts: location.state?.prefill?.show_backer_amounts ?? true,
     milestones: [],
+    reward_tiers: [],
 
   });
   const [coverImageFile, setCoverImageFile] = useState(null);
@@ -76,6 +82,136 @@ export default function CreateCampaign() {
   const [duplicateWarning, setDuplicateWarning] = useState(null);
   const today = new Date().toISOString().split('T')[0];
   const [showCreatorTips, setShowCreatorTips] = useState(isCreatorOnboardingVisible);
+  // A draft found in storage on load. Auto-save stays paused until the creator
+  // restores or discards it, so an untouched form cannot overwrite it.
+  const [pendingDraft, setPendingDraft] = useState(() =>
+    location.state?.prefill ? null : loadDraft()
+  );
+  const [draftSavedAt, setDraftSavedAt] = useState(null);
+  const [draftSaving, setDraftSaving] = useState(false);
+  const [draftId, setDraftId] = useState(null);
+
+  // Local storage save (immediate indicator, updated by server save)
+  const localSaveTimer = useRef(null);
+
+  useEffect(() => {
+    if (pendingDraft) return;
+    if (!hasDraftContent(form)) return;
+
+    if (localSaveTimer.current) clearTimeout(localSaveTimer.current);
+    localSaveTimer.current = setTimeout(() => {
+      const draft = saveDraft(form, step);
+      if (draft && !draftId) setDraftSavedAt(draft.saved_at);
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+
+    return () => {
+      if (localSaveTimer.current) clearTimeout(localSaveTimer.current);
+    };
+  }, [form, step, pendingDraft, draftId]);
+
+  // Server auto-save every 30s (debounced, with indicator)
+  const serverSaveTimer = useRef(null);
+
+  useEffect(() => {
+    if (pendingDraft) return;
+    if (!hasDraftContent(form)) return;
+    if (!user) return;
+
+    if (serverSaveTimer.current) clearTimeout(serverSaveTimer.current);
+
+    serverSaveTimer.current = setTimeout(async () => {
+      setDraftSaving(true);
+      try {
+        const result = await api.saveCampaignDraft({ form_data: form, step });
+        setDraftId(result.id);
+        setDraftSavedAt(result.saved_at);
+        saveDraft(form, step);
+      } catch {
+        // server save failed — local storage is the fallback
+      }
+      setDraftSaving(false);
+    }, SERVER_DRAFT_SAVE_MS);
+
+    return () => {
+      if (serverSaveTimer.current) clearTimeout(serverSaveTimer.current);
+    };
+  }, [form, step, pendingDraft, user]);
+
+  // On mount, check for a server draft and offer to restore it
+  useEffect(() => {
+    if (!user) return;
+    if (location.state?.prefill) return;
+
+    let cancelled = false;
+
+    api.getMyCampaignDraft()
+      .then((serverDraft) => {
+        if (cancelled) return;
+        const localDraft = loadDraft();
+
+        const serverTime = new Date(serverDraft.saved_at).getTime();
+        const localTime = localDraft ? new Date(localDraft.saved_at).getTime() : 0;
+
+        if (serverTime > localTime) {
+          setPendingDraft({
+            form: serverDraft.form_data,
+            step: serverDraft.step,
+            saved_at: serverDraft.saved_at,
+          });
+          setDraftId(serverDraft.id);
+        } else if (localDraft) {
+          setDraftId(null);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+      });
+
+    return () => { cancelled = true; };
+  }, [user, location.state?.prefill]);
+
+  function restoreDraft() {
+    setForm(pendingDraft.form);
+    setStep(pendingDraft.step || 1);
+    setDraftSavedAt(pendingDraft.saved_at);
+    setPendingDraft(null);
+  }
+
+  function discardDraft() {
+    if (draftId) {
+      api.deleteCampaignDraft(draftId).catch(() => {});
+    }
+    clearDraft();
+    setPendingDraft(null);
+    setDraftSavedAt(null);
+    setDraftId(null);
+  }
+
+  function discardCurrentDraft() {
+    if (draftId) {
+      api.deleteCampaignDraft(draftId).catch(() => {});
+    }
+    clearDraft();
+    setDraftSavedAt(null);
+    setDraftId(null);
+    setForm({
+      title: '',
+      description: '',
+      target_amount: '',
+      asset_type: 'USDC',
+      deadline: '',
+      category: '',
+      country: '',
+      min_contribution: '',
+      max_contribution: '',
+      max_per_user: '',
+      show_backer_amounts: true,
+      milestones: [],
+      reward_tiers: [],
+    });
+    setStep(1);
+    setError('');
+  }
 
   useEffect(() => {
     if (ready && !user) {
@@ -347,6 +483,7 @@ export default function CreateCampaign() {
         asset_type: form.asset_type,
         deadline: formattedDeadline,
         category: form.category || undefined,
+        country: form.country?.trim() || undefined,
         min_contribution: form.min_contribution ? Number(form.min_contribution) : undefined,
         max_contribution: form.max_contribution ? Number(form.max_contribution) : undefined,
         max_per_user: form.max_per_user ? Number(form.max_per_user) : undefined,
@@ -357,7 +494,25 @@ export default function CreateCampaign() {
               release_percentage: Number(milestone.release_percentage),
             }))
           : undefined,
+        reward_tiers: form.reward_tiers.length
+          ? form.reward_tiers.map((tier) => ({
+              title: tier.title.trim(),
+              description: tier.description.trim() || null,
+              min_amount: Number(tier.min_amount),
+              limit: tier.limit ? parseInt(tier.limit, 10) : null,
+              estimated_delivery: tier.estimated_delivery || null,
+              nft_enabled: Boolean(tier.nft_enabled),
+              nft_metadata_url: tier.nft_metadata_url?.trim() || null,
+              nft_artwork_url: tier.nft_artwork_url?.trim() || null,
+            }))
+          : undefined,
       });
+
+      clearDraft();
+      if (draftId) {
+        api.deleteCampaignDraft(draftId).catch(() => {});
+        setDraftId(null);
+      }
 
       let coverUploadError = '';
       if (coverImageFile) {
@@ -439,13 +594,13 @@ export default function CreateCampaign() {
           }}
         >
           <li aria-current={step === 1 ? 'step' : undefined}>
-            <span style={{ color: step === 1 ? '#7c3aed' : '#999' }}>
+            <span style={{ color: step === 1 ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>
               {t('createCampaign.steps.goalAsset')}
             </span>
           </li>
           <li aria-hidden="true">→</li>
           <li aria-current={step === 2 ? 'step' : undefined}>
-            <span style={{ color: step === 2 ? '#7c3aed' : '#999' }}>
+            <span style={{ color: step === 2 ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>
               {t('createCampaign.steps.detailsLaunch')}
             </span>
           </li>
@@ -480,6 +635,62 @@ export default function CreateCampaign() {
             <li>{t('createCampaign.tip3')}</li>
           </ul>
         </OnboardingCallout>
+      )}
+
+      {pendingDraft && (
+        <div className="alert alert--info" style={{ marginBottom: '1.25rem' }} role="status">
+          <p>
+            You have an unsaved draft from{' '}
+            <strong>{new Date(pendingDraft.saved_at).toLocaleString()}</strong>.
+          </p>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.65rem' }}>
+            <button type="button" className="btn-primary" onClick={restoreDraft}>
+              Restore draft
+            </button>
+            <button type="button" className="btn-secondary" onClick={discardDraft}>
+              Discard draft
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!pendingDraft && (draftSaving || draftSavedAt) && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.65rem',
+            flexWrap: 'wrap',
+            marginBottom: '1rem',
+            fontSize: '0.8rem',
+            color: 'var(--color-text-hint)',
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          <span>
+            {draftSaving
+              ? 'Saving draft…'
+              : `Draft saved ${new Date(draftSavedAt).toLocaleTimeString()}`}
+          </span>
+          {draftSavedAt && (
+            <button
+              type="button"
+              onClick={discardCurrentDraft}
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                color: 'var(--color-accent)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontSize: '0.8rem',
+              }}
+            >
+              Discard draft
+            </button>
+          )}
+        </div>
       )}
 
       <form onSubmit={handleSubmit}>
@@ -622,6 +833,23 @@ export default function CreateCampaign() {
               </select>
             </div>
 
+            <div className="form-group" style={{ marginTop: '1rem' }}>
+              <label className="label-strong" htmlFor="cc-country">
+                Location{' '}
+                <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                  (optional)
+                </span>
+              </label>
+              <input
+                id="cc-country"
+                type="text"
+                value={form.country}
+                onChange={setField('country')}
+                placeholder="e.g. United States, Kenya, Global"
+                maxLength={80}
+              />
+            </div>
+
             {error && (
               <p className="alert alert--error" style={{ marginTop: '1rem' }} role="alert">
                 {error}
@@ -649,8 +877,8 @@ export default function CreateCampaign() {
                 flexWrap: 'wrap',
                 alignItems: 'center',
                 gap: '0.75rem',
-                background: '#f8fafc',
-                border: '1px solid #d1d5db',
+                background: 'var(--color-surface)',
+                border: '1px solid var(--color-border-lightest)',
                 borderRadius: '12px',
                 padding: '1rem',
                 marginBottom: '1rem',
@@ -711,10 +939,10 @@ export default function CreateCampaign() {
                 onDragLeave={() => setIsDragOverCover(false)}
                 onDrop={handleCoverImageDrop}
                 style={{
-                  border: `2px dashed ${isDragOverCover ? '#7c3aed' : '#d4d4d8'}`,
+                  border: `2px dashed ${isDragOverCover ? 'var(--color-accent)' : 'var(--color-border-lightest)'}`,
                   borderRadius: '12px',
                   padding: '0.9rem',
-                  background: isDragOverCover ? '#f5f3ff' : '#fafafa',
+                  background: isDragOverCover ? 'var(--color-accent-lightest)' : 'var(--color-surface)',
                 }}
               >
                 <input
@@ -727,7 +955,7 @@ export default function CreateCampaign() {
                   style={{
                     marginTop: '0.45rem',
                     marginBottom: 0,
-                    color: '#666',
+                    color: 'var(--color-text-hint)',
                     fontSize: '0.8rem',
                   }}
                 >
@@ -1068,6 +1296,39 @@ export default function CreateCampaign() {
                         value={tier.estimated_delivery}
                         onChange={(e) => setTierField(index, 'estimated_delivery', e.target.value)}
                       />
+                    </div>
+                    <div className="campaign-card" style={{ marginTop: '0.75rem', padding: '0.85rem' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 700 }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(tier.nft_enabled)}
+                          onChange={(e) => setTierField(index, 'nft_enabled', e.target.checked)}
+                        />
+                        Issue an NFT proof of support for this tier
+                      </label>
+                      <p style={{ marginTop: '0.45rem', marginBottom: '0.65rem', fontSize: '0.84rem', color: 'var(--color-text-secondary)' }}>
+                        Contributors who unlock this tier will receive a unique NFT reward record linked to the campaign.
+                      </p>
+                      {Boolean(tier.nft_enabled) && (
+                        <div style={{ display: 'grid', gap: '0.65rem' }}>
+                          <div className="form-stack">
+                            <label className="label-strong">Metadata URL <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+                            <input
+                              value={tier.nft_metadata_url || ''}
+                              onChange={(e) => setTierField(index, 'nft_metadata_url', e.target.value)}
+                              placeholder="https://ipfs.io/ipfs/..."
+                            />
+                          </div>
+                          <div className="form-stack">
+                            <label className="label-strong">Artwork URL <span style={{ fontWeight: 500, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+                            <input
+                              value={tier.nft_artwork_url || ''}
+                              onChange={(e) => setTierField(index, 'nft_artwork_url', e.target.value)}
+                              placeholder="https://ipfs.io/ipfs/..."
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}

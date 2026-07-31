@@ -79,6 +79,25 @@ async function authenticate(req) {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
     const isImpersonation = Boolean(payload.impersonated_by);
 
+    // Validate JWT standard claims (sub, iss, aud)
+    if (!payload.sub || !payload.iss || !payload.aud) {
+      logger.warn('JWT missing standard claims - re-login required', {
+        userId: payload.userId,
+        hasSub: Boolean(payload.sub),
+        hasIss: Boolean(payload.iss),
+        hasAud: Boolean(payload.aud),
+      });
+      throw new Error('Session expired - please log in again');
+    }
+    if (payload.iss !== 'https://crowdpay.io') {
+      logger.warn('JWT invalid issuer', { iss: payload.iss });
+      throw new Error('Session expired - please log in again');
+    }
+    if (payload.aud !== 'crowdpay-api') {
+      logger.warn('JWT invalid audience', { aud: payload.aud });
+      throw new Error('Session expired - please log in again');
+    }
+
     req.user = { ...payload };
     req.auth = { kind: 'jwt', scopes: null, impersonated: isImpersonation };
     if (isImpersonation) {
@@ -106,7 +125,10 @@ async function authenticate(req) {
         }
       }
     }
-  } catch {
+  } catch (err) {
+    if (err.message === 'Session expired - please log in again') {
+      throw err;
+    }
     throw new Error('Invalid token');
   }
 }

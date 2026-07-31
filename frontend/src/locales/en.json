@@ -429,7 +429,8 @@
   "campaignStatus": {
     "goalReached": "Goal reached",
     "campaignEnded": "Campaign ended",
-    "campaignClosed": "Campaign closed"
+    "campaignClosed": "Campaign closed",
+    "draft": "Draft"
   },
   "dashboard": {
     "title": "Dashboard",
@@ -495,6 +496,7 @@
     "tabs": {
       "campaigns": "My Campaigns",
       "contributions": "My Contributions",
+      "following": "Following",
       "analytics": "Analytics",
       "apiKeys": "API Keys",
       "referrals": "Referrals"

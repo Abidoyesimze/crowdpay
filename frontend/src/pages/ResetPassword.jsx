@@ -86,7 +86,9 @@ export default function ResetPassword() {
           onSubmit={handleSubmit}
           style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}
         >
+          <label htmlFor="new-password" className="sr-only">New password</label>
           <input
+            id="new-password"
             type="password"
             placeholder="New password"
             value={password}
@@ -94,7 +96,9 @@ export default function ResetPassword() {
             required
             minLength={8}
           />
+          <label htmlFor="confirm-password" className="sr-only">Confirm new password</label>
           <input
+            id="confirm-password"
             type="password"
             placeholder="Confirm new password"
             value={confirmPassword}

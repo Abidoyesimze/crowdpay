@@ -1,6 +1,7 @@
 const db = require('../config/database');
 const logger = require('../config/logger');
 const channels = require('./notificationChannels');
+const fcmPush = require('./fcmPushService');
 
 // Multi-channel notification orchestration (issue #429).
 //
@@ -24,7 +25,8 @@ async function insertInApp(userId, { type, title, body, link }) {
 async function loadChannelSettings(userId) {
   const { rows } = await db.query(
     `SELECT push_token, slack_webhook_url, discord_webhook_url, sms_phone_number,
-            quiet_hours_start, quiet_hours_end
+            quiet_hours_start, quiet_hours_end,
+            EXISTS (SELECT 1 FROM push_subscriptions WHERE user_id = $1) AS push_enabled
      FROM notification_channel_settings
      WHERE user_id = $1`,
     [userId]
@@ -49,9 +51,24 @@ async function loadPreferences(userId, eventType) {
 // it has a destination configured and the user has not explicitly disabled it
 // for this event type.
 function channelEnabled(channel, prefs, settings) {
+  if (channel === 'push' && settings?.push_enabled) {
+    return prefs.push === undefined ? true : prefs.push === true;
+  }
   if (!channels.destinationFor(channel, settings)) return false;
   const override = prefs[channel];
   return override === undefined ? true : override === true;
+}
+
+async function deliverChannel(userId, channel, settings, message) {
+  if (channel === 'push' && settings.push_enabled) {
+    try {
+      return await fcmPush.sendToUser(userId, message);
+    } catch (err) {
+      logger.error('FCM notification delivery failed', { user_id: userId, type: message.type, error: err.message });
+      return false;
+    }
+  }
+  return channels.deliver(channel, settings, message);
 }
 
 // Determine whether `nowHour` (0-23) falls inside the user's quiet-hours
@@ -130,7 +147,7 @@ async function createNotification(userId, { type, title, body, link }, { nowHour
       continue;
     }
 
-    await channels.deliver(channel, settings, message);
+    await deliverChannel(userId, channel, settings, message);
   }
 }
 
@@ -175,7 +192,7 @@ async function flushQuietHours({ nowHour } = {}) {
       link: null,
     };
 
-    const delivered = await channels.deliver(channel, settings, digest);
+    const delivered = await deliverChannel(settings.user_id, channel, settings, digest);
     if (delivered) {
       const ids = items.map((i) => i.id);
       await db.query(
@@ -189,8 +206,173 @@ async function flushQuietHours({ nowHour } = {}) {
   return flushedUsers.size;
 }
 
+/**
+ * Create in-app notifications for multiple users in a single multi-row INSERT.
+ */
+async function insertInAppBulk(userIds, { type, title, body, link }) {
+  if (!userIds.length) return;
+  const placeholders = userIds.map((_, i) => `($${i * 5 + 1}, $${i * 5 + 2}, $${i * 5 + 3}, $${i * 5 + 4}, $${i * 5 + 5})`);
+  const values = userIds.flatMap((uid) => [uid, type, title, body || null, link || null]);
+  await db.query(
+    `INSERT INTO notifications (user_id, type, title, body, link) VALUES ${placeholders.join(', ')}`,
+    values
+  );
+}
+
+/**
+ * Bulk-load channel settings for many users at once.
+ */
+async function loadChannelSettingsBulk(userIds) {
+  if (!userIds.length) return new Map();
+  const { rows } = await db.query(
+    `SELECT user_id, push_token, slack_webhook_url, discord_webhook_url, sms_phone_number,
+            quiet_hours_start, quiet_hours_end,
+            EXISTS (SELECT 1 FROM push_subscriptions WHERE user_id = notification_channel_settings.user_id) AS push_enabled
+     FROM notification_channel_settings
+     WHERE user_id = ANY($1::uuid[])`,
+    [userIds]
+  );
+  const map = new Map();
+  for (const r of rows) map.set(r.user_id, r);
+  return map;
+}
+
+/**
+ * Bulk-load notification preferences for many users and a single event type.
+ * Returns Map<user_id, Map<channel, enabled>>.
+ */
+async function loadPreferencesBulk(userIds, eventType) {
+  if (!userIds.length) return new Map();
+  const { rows } = await db.query(
+    `SELECT user_id, channel, enabled
+     FROM notification_preferences
+     WHERE user_id = ANY($1::uuid[]) AND event_type = $2`,
+    [userIds, eventType]
+  );
+  const map = new Map();
+  for (const r of rows) {
+    if (!map.has(r.user_id)) map.set(r.user_id, {});
+    map.get(r.user_id)[r.channel] = r.enabled;
+  }
+  return map;
+}
+
+/**
+ * Queue multiple digest entries in a single multi-row INSERT.
+ */
+async function queueForDigestBulk(userChannelEntries, message) {
+  if (!userChannelEntries.length) return;
+  const placeholders = userChannelEntries.map((_, i) => `($${i * 6 + 1}, $${i * 6 + 2}, $${i * 6 + 3}, $${i * 6 + 4}, $${i * 6 + 5}, $${i * 6 + 6})`);
+  const values = userChannelEntries.flatMap(({ userId, channel }) =>
+    [userId, channel, message.type, message.title, message.body || null, message.link || null]
+  );
+  await db.query(
+    `INSERT INTO notification_queue (user_id, channel, type, title, body, link) VALUES ${placeholders.join(', ')}`,
+    values
+  );
+}
+
+/**
+ * Fan out a notification to many users, batching DB operations and limiting
+ * external channel delivery concurrency to avoid connection-pool exhaustion.
+ *
+ * @param {string[]} userIds
+ * @param {{type, title, body?, link?}} message
+ * @param {object} [opts]
+ * @param {number} [opts.concurrency=10]  Max concurrent external deliveries
+ * @param {number} [opts.nowHour]         Injectable for testing
+ */
+async function createNotificationsBulk(userIds, message, { concurrency = 10, nowHour } = {}) {
+  if (!userIds.length) return;
+
+  // 1. Batch in-app notification inserts
+  try {
+    await insertInAppBulk(userIds, message);
+  } catch (err) {
+    logger.error('Failed to bulk-create in-app notifications', { type: message.type, count: userIds.length, error: err.message });
+  }
+
+  // 2. Bulk-load settings and preferences
+  let settingsMap;
+  let prefsMap;
+  try {
+    [settingsMap, prefsMap] = await Promise.all([
+      loadChannelSettingsBulk(userIds),
+      loadPreferencesBulk(userIds, message.type),
+    ]);
+  } catch (err) {
+    logger.error('Failed to bulk-load notification settings', { type: message.type, count: userIds.length, error: err.message });
+    return;
+  }
+
+  // 3. Partition users by what to do
+  const critical = channels.isCriticalEvent(message.type);
+  const currentHour = typeof nowHour === 'number' ? nowHour : new Date().getHours();
+  const externalChannels = channels.CHANNELS.filter((c) => c !== 'in_app');
+  const toDeliver = [];
+  const toQueue = [];
+
+  for (const userId of userIds) {
+    const settings = settingsMap.get(userId);
+    if (!settings) continue;
+
+    const prefs = prefsMap.get(userId) || {};
+    const quiet = !critical && inQuietHours(settings, currentHour);
+
+    for (const channel of externalChannels) {
+      if (!channelEnabled(channel, prefs, settings)) continue;
+      if (quiet) {
+        toQueue.push({ userId, channel });
+      } else {
+        toDeliver.push({ userId, channel, settings });
+      }
+    }
+  }
+
+  // 4. Batch queue digest entries
+  if (toQueue.length) {
+    try {
+      await queueForDigestBulk(toQueue, message);
+    } catch (err) {
+      logger.error('Failed to bulk-queue notifications for digest', { type: message.type, count: toQueue.length, error: err.message });
+    }
+  }
+
+  // 5. Deliver external channels with bounded concurrency
+  if (toDeliver.length) {
+    const results = await asyncPool(concurrency, toDeliver, async ({ userId, channel, settings }) => {
+      try {
+        await deliverChannel(userId, channel, settings, message);
+      } catch (err) {
+        logger.error('Bulk notification delivery failed', { user_id: userId, channel, type: message.type, error: err.message });
+      }
+    });
+  }
+}
+
+/**
+ * Simple async pool — run an async function over items with bounded concurrency.
+ */
+async function asyncPool(concurrency, items, fn) {
+  const results = [];
+  const executing = new Set();
+  for (const item of items) {
+    const p = Promise.resolve().then(() => fn(item)).then((r) => {
+      executing.delete(p);
+      return r;
+    });
+    executing.add(p);
+    results.push(p);
+    if (executing.size >= concurrency) {
+      await Promise.race(executing);
+    }
+  }
+  return Promise.all(results);
+}
+
 module.exports = {
   createNotification,
+  createNotificationsBulk,
   flushQuietHours,
   // exported for testing / reuse
   inQuietHours,

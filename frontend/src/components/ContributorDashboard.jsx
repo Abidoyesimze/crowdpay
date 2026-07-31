@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { stellarExpertTxUrl } from '../config/stellar';
 import CampaignStatusBadge from './CampaignStatusBadge';
+import { BadgeChip } from './ContributorBadges';
 import { useToast } from '../context/ToastContext';
 
 function milestoneStatusLabel(status) {
@@ -234,10 +235,65 @@ function BackedCampaignCard({ campaign, onRefundClaimed }) {
   );
 }
 
+function FavoritesSection() {
+  const [favorites, setFavorites] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api
+      .getFavorites()
+      .then(setFavorites)
+      .catch(() => setFavorites([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading || favorites.length === 0) return null;
+
+  return (
+    <div style={{ marginBottom: '1.25rem' }}>
+      <div style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: '0.5rem' }}>
+        Favorites ({favorites.length})
+      </div>
+      <div style={{ display: 'grid', gap: '0.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+        {favorites.map((campaign) => (
+          <Link
+            key={campaign.id}
+            to={`/campaigns/${campaign.id}`}
+            className="campaign-card"
+            style={{ minHeight: 'auto', padding: '0.6rem 0.75rem', color: 'inherit' }}
+          >
+            <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{campaign.title}</div>
+            <CampaignStatusBadge status={campaign.status} />
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BadgesRow({ badges }) {
+  if (!badges?.length) return null;
+  return (
+    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
+      {badges.map((badge) => (
+        <BadgeChip key={badge.id} badge={badge} />
+      ))}
+      <Link
+        to="/leaderboard"
+        style={{ alignSelf: 'center', color: 'var(--color-accent)', fontWeight: 600, fontSize: '0.78rem' }}
+      >
+        Leaderboard
+      </Link>
+    </div>
+  );
+}
+
 export default function ContributorDashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const toast = useToast();
 
   function load() {
     setLoading(true);
@@ -247,6 +303,25 @@ export default function ContributorDashboard() {
       .then(setData)
       .catch((err) => setError(err.message || 'Could not load contributions'))
       .finally(() => setLoading(false));
+  }
+
+  async function exportCsv() {
+    setExporting(true);
+    try {
+      const { blob, filename } = await api.exportContributionsCsv();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast?.(err.message || 'Could not export contributions', 'error');
+    } finally {
+      setExporting(false);
+    }
   }
 
   useEffect(() => {
@@ -263,13 +338,16 @@ export default function ContributorDashboard() {
 
   if (!data?.campaigns?.length) {
     return (
-      <p className="alert alert--info">
-        You have not backed any campaigns yet.{' '}
-        <Link to="/discover" style={{ color: 'var(--color-accent)', fontWeight: 600 }}>
-          Browse campaigns
-        </Link>
-        .
-      </p>
+      <div>
+        <FavoritesSection />
+        <p className="alert alert--info">
+          You have not backed any campaigns yet.{' '}
+          <Link to="/discover" style={{ color: 'var(--color-accent)', fontWeight: 600 }}>
+            Browse campaigns
+          </Link>
+          .
+        </p>
+      </div>
     );
   }
 
@@ -277,6 +355,27 @@ export default function ContributorDashboard() {
 
   return (
     <div>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '0.5rem',
+          marginBottom: '0.75rem',
+        }}
+      >
+        <div style={{ fontSize: '0.85rem', color: 'var(--color-text-hint)' }}>Your portfolio</div>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          <Link to="/tax-receipts" style={{ fontSize: '0.8rem', color: 'var(--color-accent)', fontWeight: 700 }}>
+            Tax receipts
+          </Link>
+          <button type="button" onClick={exportCsv} disabled={exporting} style={{ fontSize: '0.8rem' }}>
+            {exporting ? 'Exporting…' : 'Export CSV'}
+          </button>
+        </div>
+      </div>
+
       <div
         style={{
           display: 'grid',
@@ -287,7 +386,10 @@ export default function ContributorDashboard() {
       >
         {[
           ['Total contributed', stats.total_contributed.toLocaleString()],
+          ['Campaigns backed', stats.campaigns_backed],
           ['Active campaigns', stats.active_campaigns_backed],
+          ['Campaigns completed', stats.campaigns_completed],
+          ['Avg. contribution', stats.avg_contribution.toLocaleString(undefined, { maximumFractionDigits: 2 })],
           ['Total refunded', stats.total_refunded.toLocaleString()],
         ].map(([label, value]) => (
           <div key={label} className="campaign-card" style={{ minHeight: 'auto', padding: '0.75rem' }}>
@@ -298,6 +400,9 @@ export default function ContributorDashboard() {
           </div>
         ))}
       </div>
+
+      <BadgesRow badges={stats.badges} />
+      <FavoritesSection />
 
       <div style={{ display: 'grid', gap: '0.85rem' }}>
         {campaigns.map((campaign) => (

@@ -8,9 +8,21 @@ const {
   sendDisputeResolvedContributorEmail,
 } = require('../services/emailService');
 const logger = require('../config/logger');
+const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
+const { parsePagination } = require('../utils/pagination');
+const asyncHandler = require('../utils/asyncHandler');
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+}
+
+function isValidEvidenceUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    return u.protocol === 'https:' || u.protocol === 'http:';
+  } catch {
+    return false;
+  }
 }
 
 async function logDisputeEvent(client, { disputeId, actorId, action, note }) {
@@ -31,6 +43,9 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   }
   if (!description || !description.trim()) {
     return res.status(422).json({ error: 'description is required' });
+  }
+  if (evidence_url !== undefined && evidence_url !== null && evidence_url !== '' && !isValidEvidenceUrl(evidence_url)) {
+    return res.status(422).json({ error: 'evidence_url must be a valid http(s) URL' });
   }
 
   const { rows: campaigns } = await db.query(
@@ -120,6 +135,17 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
     );
 
     logger.info('Dispute raised', { dispute_id: dispute.id, campaign_id: campaign.id });
+
+    setImmediate(() => {
+      const payload = { dispute, campaign_id: campaign.id };
+      emitWebhookEventForUser(campaign.creator_id, WEBHOOK_EVENTS.DISPUTE_OPENED, payload).catch((err) =>
+        logger.error('Dispute opened webhook emit failed', { error: err.message })
+      );
+      emitWebhookEventForCampaign(campaign.id, WEBHOOK_EVENTS.DISPUTE_OPENED, payload).catch((err) =>
+        logger.error('Dispute opened webhook emit failed', { error: err.message })
+      );
+    });
+
     res.status(201).json(dispute);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -134,17 +160,26 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
 });
 
 // GET /campaigns/:id/disputes — admin only
-router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), async (req, res) => {
+router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
+
+  const countResult = await db.query(
+    'SELECT COUNT(*)::int AS total FROM disputes WHERE campaign_id = $1',
+    [req.params.id]
+  );
+  const total = countResult.rows[0].total;
+
   const { rows } = await db.query(
     `SELECT d.*, u.name AS raised_by_name, u.email AS raised_by_email
      FROM disputes d
      JOIN users u ON u.id = d.raised_by
      WHERE d.campaign_id = $1
-     ORDER BY d.created_at DESC`,
-    [req.params.id]
+     ORDER BY d.created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [req.params.id, limit, offset]
   );
-  res.json(rows);
-});
+  res.json({ data: rows, total, limit, offset });
+}));
 
 // PATCH /disputes/:id — admin updates status + resolution note
 router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res) => {
@@ -161,6 +196,11 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
   );
   if (!disputes.length) return res.status(404).json({ error: 'Dispute not found' });
   const dispute = disputes[0];
+
+  const { rows: disputeCampaigns } = await db.query('SELECT creator_id FROM campaigns WHERE id = $1', [
+    dispute.campaign_id,
+  ]);
+  const campaignCreatorId = disputeCampaigns[0]?.creator_id;
 
   const client = await db.connect();
   try {
@@ -259,12 +299,20 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
 
     if (status === 'resolved_creator') {
       // Unfreeze pending on_hold withdrawals for this campaign
-      await client.query(
+      const { rows: unfrozen } = await client.query(
         `UPDATE withdrawal_requests
          SET status = 'pending', dispute_id = NULL
-         WHERE campaign_id = $1 AND status = 'on_hold' AND dispute_id = $2`,
+         WHERE campaign_id = $1 AND status = 'on_hold' AND dispute_id = $2
+         RETURNING *`,
         [dispute.campaign_id, dispute.id]
       );
+      for (const withdrawal of unfrozen) {
+        setImmediate(() =>
+          emitWebhookEventForUser(campaignCreatorId, WEBHOOK_EVENTS.WITHDRAWAL_UPDATED, {
+            withdrawal,
+          }).catch((err) => logger.error('Withdrawal updated webhook emit failed', { error: err.message }))
+        );
+      }
 
       const { rows: creatorRows } = await db.query(
         `SELECT u.email, u.name, c.title
@@ -286,6 +334,19 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
     }
 
     await client.query('COMMIT');
+
+    if (['resolved_creator', 'resolved_contributor', 'closed'].includes(status)) {
+      setImmediate(() => {
+        const payload = { dispute: updated[0], campaign_id: dispute.campaign_id };
+        emitWebhookEventForUser(campaignCreatorId, WEBHOOK_EVENTS.DISPUTE_RESOLVED, payload).catch((err) =>
+          logger.error('Dispute resolved webhook emit failed', { error: err.message })
+        );
+        emitWebhookEventForCampaign(dispute.campaign_id, WEBHOOK_EVENTS.DISPUTE_RESOLVED, payload).catch((err) =>
+          logger.error('Dispute resolved webhook emit failed', { error: err.message })
+        );
+      });
+    }
+
     res.json(updated[0]);
   } catch (err) {
     await client.query('ROLLBACK');
@@ -297,7 +358,7 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
 });
 
 // GET /disputes/:id/events — audit log (admin only)
-router.get('/disputes/:id/events', requireAuth, requireRole('admin'), async (req, res) => {
+router.get('/disputes/:id/events', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT de.*, u.name AS actor_name
      FROM dispute_events de
@@ -307,6 +368,6 @@ router.get('/disputes/:id/events', requireAuth, requireRole('admin'), async (req
     [req.params.id]
   );
   res.json(rows);
-});
+}));
 
 module.exports = router;

@@ -11,6 +11,9 @@ if (!process.env.PLATFORM_SECRET_KEY) {
 if (!process.env.USDC_ISSUER) {
   process.env.USDC_ISSUER = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 }
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/crowdpay_test';
+}
 
 function buildApp({
   queryImpl,
@@ -22,6 +25,7 @@ function buildApp({
   sorobanDeployImpl,
   sorobanInvokeImpl,
   listCreatorCampaignsImpl,
+  getRecommendedCampaignsImpl,
 }) {
   const router = proxyquire('./campaigns', {
     '../services/campaignStatusService': campaignStatusImpl || {
@@ -98,15 +102,26 @@ function buildApp({
     '../services/userDashboardService': {
       listCreatorCampaigns: listCreatorCampaignsImpl || (async () => []),
     },
+    '../services/campaignRecommendationService': {
+      getRecommendedCampaigns: getRecommendedCampaignsImpl || (async () => []),
+    },
     '../middleware/validation': {
       createCampaignValidation: [],
       createCampaignUpdateValidation: [],
       getCampaignsValidation: [],
       validateRequest: (_req, _res, next) => next(),
     },
+    '../services/analyticsService': {
+      getCampaignAnalytics: async () => ({ overview: {}, chart: [] }),
+      getCampaignContributors: async () => ([]),
+      getCampaignBackers: async () => ([]),
+    },
     '../utils/asyncHandler': (fn) => (req, res, next) => fn(req, res, next).catch(next),
     '../middleware/auth': {
-      requireAuth: (req, _res, next) => {
+      requireAuth: (req, res, next) => {
+        if (authUser === null) {
+          return res.status(401).json({ error: 'Unauthorized' });
+        }
         req.user = authUser || { userId: 'platform-1', role: 'admin' };
         next();
       },
@@ -121,6 +136,23 @@ function buildApp({
   app.use('/api/campaigns', router);
   return app;
 }
+
+test('GET /api/campaigns/recommended returns personalized campaign suggestions', async () => {
+  const app = buildApp({
+    authUser: { userId: 'user-1', role: 'contributor' },
+    getRecommendedCampaignsImpl: async () => [
+      { id: 'campaign-1', title: 'Recommended campaign', category: 'technology' },
+    ],
+  });
+
+  const response = await request(app)
+    .get('/api/campaigns/recommended')
+    .set('Authorization', 'Bearer token');
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.length, 1);
+  assert.equal(response.body[0].title, 'Recommended campaign');
+});
 
 test('POST /api/campaigns/cron/fail-expired returns failed and funded campaigns', async () => {
   const app = buildApp({
@@ -439,6 +471,74 @@ test('GET /api/campaigns supports search, asset filter, and sort', async () => {
   assert.ok(listQuery.params.includes('USDC'));
 });
 
+test('GET /api/campaigns applies faceted filters (funding range, deadline, verified, country)', async () => {
+  const queries = [];
+  const app = buildApp({
+    queryImpl: async (text, params) => {
+      queries.push({ text, params });
+      if (text.includes('COUNT(*)')) {
+        return { rows: [{ total: 0 }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app).get(
+    '/api/campaigns?min_funding=100&max_funding=500&deadline_within=7&creator_verified=true&country=US'
+  );
+
+  assert.equal(response.status, 200);
+  const listQuery = queries.find((q) => q.text.includes('ORDER BY'));
+  assert.ok(listQuery);
+  // Funding range is parameterized against raised_amount.
+  assert.match(listQuery.text, /c\.raised_amount >= \$/);
+  assert.match(listQuery.text, /c\.raised_amount <= \$/);
+  assert.ok(listQuery.params.includes(100));
+  assert.ok(listQuery.params.includes(500));
+  // Deadline proximity uses CURRENT_DATE window.
+  assert.match(listQuery.text, /c\.deadline <= CURRENT_DATE/);
+  assert.ok(listQuery.params.includes(7));
+  // Creator reputation via KYC verification (no injectable param).
+  assert.match(listQuery.text, /u\.kyc_status = 'verified'/);
+  // Geographic facet parameterized.
+  assert.match(listQuery.text, /c\.country = \$/);
+  assert.ok(listQuery.params.includes('US'));
+  // Count query must also join users so the verified filter resolves.
+  const countQuery = queries.find((q) => q.text.includes('COUNT(*)'));
+  assert.match(countQuery.text, /JOIN users u/);
+});
+
+test('GET /api/campaigns/facets returns facet counts and funding bounds', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('GROUP BY category')) {
+        return { rows: [{ category: 'technology', count: 3 }] };
+      }
+      if (text.includes('GROUP BY asset_type')) {
+        return { rows: [{ asset_type: 'USDC', count: 5 }] };
+      }
+      if (text.includes('GROUP BY country')) {
+        return { rows: [{ country: 'US', count: 2 }] };
+      }
+      if (text.includes('MIN(raised_amount)')) {
+        return { rows: [{ min_funding: '0', max_funding: '900' }] };
+      }
+      if (text.includes("kyc_status = 'verified'")) {
+        return { rows: [{ count: 4 }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app).get('/api/campaigns/facets');
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.categories, [{ category: 'technology', count: 3 }]);
+  assert.deepEqual(response.body.assets, [{ asset_type: 'USDC', count: 5 }]);
+  assert.deepEqual(response.body.countries, [{ country: 'US', count: 2 }]);
+  assert.equal(response.body.funding.max, 900);
+  assert.equal(response.body.verified_creators, 4);
+});
+
 test('GET /api/campaigns/mine parses page and limit parameters', async () => {
   let passedOptions = {};
   const app = buildApp({
@@ -462,6 +562,29 @@ test('GET /api/campaigns/mine parses page and limit parameters', async () => {
   assert.equal(response.body.data.length, 1);
   assert.equal(response.body.pagination.page, 2);
   assert.equal(response.body.pagination.limit, 10);
+});
+
+test('GET /api/campaigns/mine forwards fields parameter', async () => {
+  let passedOptions = {};
+  const app = buildApp({
+    authUser: { userId: 'creator-1', role: 'creator' },
+    listCreatorCampaignsImpl: async (_userId, options) => {
+      passedOptions = options;
+      return {
+        data: [{ id: 'c-1', title: 'Lean Campaign', status: 'active', raised_amount: '5' }],
+        pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+      };
+    },
+  });
+
+  const response = await request(app)
+    .get('/api/campaigns/mine?limit=50&fields=id,title,status,raised_amount')
+    .set('Authorization', 'Bearer token');
+
+  assert.equal(response.status, 200);
+  assert.equal(passedOptions.limit, '50');
+  assert.equal(passedOptions.fields, 'id,title,status,raised_amount');
+  assert.equal(response.body.data[0].title, 'Lean Campaign');
 });
 
 function buildListingApp(queries) {
@@ -508,4 +631,86 @@ test('GET /api/campaigns sort=relevance without search falls back to newest', as
   const listQuery = queries.find((q) => q.text.includes('ORDER BY'));
   assert.match(listQuery.text, /ORDER BY c\.created_at DESC/);
   assert.doesNotMatch(listQuery.text, /ts_rank/);
+});
+
+test('Analytics routes enforce requireAuth and requireCampaignMember', async () => {
+  // 1. Unauthenticated request returns 401
+  const unauthApp = buildApp({ authUser: null });
+  const res1 = await request(unauthApp).get('/api/campaigns/c-123/analytics');
+  assert.equal(res1.status, 401);
+
+  const res1Contrib = await request(unauthApp).get('/api/campaigns/c-123/analytics/contributors');
+  assert.equal(res1Contrib.status, 401);
+
+  const res1Backers = await request(unauthApp).get('/api/campaigns/c-123/analytics/backers');
+  assert.equal(res1Backers.status, 401);
+
+  // 2. Non-member non-owner user returns 403
+  const nonMemberApp = buildApp({
+    authUser: { userId: 'stranger-1', role: 'user' },
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return { rows: [{ creator_id: 'creator-1' }] };
+      }
+      if (text.includes('FROM campaign_members')) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const res2 = await request(nonMemberApp).get('/api/campaigns/c-123/analytics');
+  assert.equal(res2.status, 403);
+
+  const res2Contrib = await request(nonMemberApp).get('/api/campaigns/c-123/analytics/contributors');
+  assert.equal(res2Contrib.status, 403);
+
+  const res2Backers = await request(nonMemberApp).get('/api/campaigns/c-123/analytics/backers');
+  assert.equal(res2Backers.status, 403);
+
+  // 3. Campaign creator returns 200
+  const creatorApp = buildApp({
+    authUser: { userId: 'creator-1', role: 'user' },
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return { rows: [{ creator_id: 'creator-1' }] };
+      }
+      if (text.includes('FROM campaign_members')) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const res3 = await request(creatorApp).get('/api/campaigns/c-123/analytics');
+  assert.equal(res3.status, 200);
+
+  const res3Contrib = await request(creatorApp).get('/api/campaigns/c-123/analytics/contributors');
+  assert.equal(res3Contrib.status, 200);
+
+  const res3Backers = await request(creatorApp).get('/api/campaigns/c-123/analytics/backers');
+  assert.equal(res3Backers.status, 200);
+
+  // 4. Accepted campaign member returns 200
+  const memberApp = buildApp({
+    authUser: { userId: 'member-1', role: 'user' },
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return { rows: [{ creator_id: 'creator-1' }] };
+      }
+      if (text.includes('FROM campaign_members')) {
+        return { rows: [{ role: 'viewer', accepted_at: '2026-01-01' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const res4 = await request(memberApp).get('/api/campaigns/c-123/analytics');
+  assert.equal(res4.status, 200);
+
+  const res4Contrib = await request(memberApp).get('/api/campaigns/c-123/analytics/contributors');
+  assert.equal(res4Contrib.status, 200);
+
+  const res4Backers = await request(memberApp).get('/api/campaigns/c-123/analytics/backers');
+  assert.equal(res4Backers.status, 200);
 });

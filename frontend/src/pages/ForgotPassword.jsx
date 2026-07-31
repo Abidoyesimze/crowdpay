@@ -51,7 +51,9 @@ export default function ForgotPassword() {
           onSubmit={handleSubmit}
           style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}
         >
+          <label htmlFor="forgot-email" className="sr-only">Email</label>
           <input
+            id="forgot-email"
             type="email"
             placeholder="Email"
             value={email}

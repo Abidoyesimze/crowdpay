@@ -32,6 +32,10 @@ const {
   CUSTODIAL_ACCOUNT_PER_TRUSTLINE_XLM,
 } = require("../config/constants");
 
+const logger = require('../config/logger');
+const db = require('../config/database');
+const { withDecryptedWalletSecret } = require('./walletSecrets');
+
 const PLATFORM_KEYPAIR = Keypair.fromSecret(process.env.PLATFORM_SECRET_KEY);
 
 function calcFee(amount) {
@@ -166,8 +170,8 @@ function normalizeAsset(record) {
  * Both the creator's key and the platform key are added as signers.
  * Medium threshold is set to 2 — both must sign to move funds.
  */
-async function createCampaignWallet(creatorPublicKey) {
-  const campaignKeypair = Keypair.random();
+async function createCampaignWallet(creatorPublicKey, campaignKeypair) {
+  if (!campaignKeypair) campaignKeypair = Keypair.random();
   const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
 
   const creditCodes = listCreditAssetCodes();
@@ -609,6 +613,203 @@ async function friendbotFund(publicKey) {
   return response.json();
 }
 
+/**
+ * Revoke platform multisig, sweep non-native/native balances to platform, and close Stellar account.
+ * Used during campaign deletion.
+ * @param {Object} campaign - Campaign database row or object containing wallet_public_key, creator_id, etc.
+ * @returns {Promise<Object>} Status object { cleanedUp: boolean, hash?: string, reason?: string }
+ */
+async function revokeAndCloseCampaignWallet(campaign) {
+  const walletPublicKey = campaign?.wallet_public_key;
+  if (!walletPublicKey) {
+    return { cleanedUp: false, reason: 'no_wallet_public_key' };
+  }
+
+  const exists = await accountExistsOnLedger(walletPublicKey);
+  if (!exists) {
+    return { cleanedUp: false, reason: 'account_not_on_ledger' };
+  }
+
+  const account = await server.loadAccount(walletPublicKey);
+
+  let creatorSecret = null;
+  const creatorId = campaign.creator_id;
+  if (creatorId) {
+    try {
+      const { rows: userRows } = await db.query(
+        'SELECT id, wallet_public_key, wallet_secret_encrypted FROM users WHERE id = $1',
+        [creatorId]
+      );
+      if (userRows.length && userRows[0].wallet_secret_encrypted) {
+        const userRow = userRows[0];
+        await withDecryptedWalletSecret(
+          userRow.wallet_secret_encrypted,
+          { userId: userRow.id, walletPublicKey: userRow.wallet_public_key },
+          async (secret) => {
+            creatorSecret = secret;
+          }
+        );
+      }
+    } catch (err) {
+      logger.warn('Failed to retrieve/decrypt creator secret during campaign deletion', {
+        creatorId,
+        error: err.message,
+      });
+    }
+  }
+
+  let campaignSecret = null;
+  if (campaign.wallet_secret_encrypted) {
+    try {
+      await withDecryptedWalletSecret(
+        campaign.wallet_secret_encrypted,
+        { walletPublicKey: campaign.wallet_public_key },
+        async (secret) => {
+          campaignSecret = secret;
+        }
+      );
+    } catch (_err) {
+      // ignore if campaign wallet secret decryption fails
+    }
+  }
+
+  const builder = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  });
+
+  // 1. Sweep non-native credit assets to platform and remove trustlines (limit 0)
+  for (const b of account.balances) {
+    if (b.asset_type !== 'native') {
+      const asset = new Asset(b.asset_code, b.asset_issuer);
+      const balanceVal = parseFloat(b.balance);
+      if (balanceVal > 0) {
+        builder.addOperation(
+          Operation.payment({
+            destination: PLATFORM_KEYPAIR.publicKey(),
+            asset,
+            amount: b.balance,
+          })
+        );
+      }
+      builder.addOperation(
+        Operation.changeTrust({
+          asset,
+          limit: '0',
+        })
+      );
+    }
+  }
+
+  // 2. Remove Platform Signer
+  builder.addOperation(
+    Operation.setOptions({
+      signer: {
+        ed25519PublicKey: PLATFORM_KEYPAIR.publicKey(),
+        weight: 0,
+      },
+    })
+  );
+
+  // 3. Account Merge (sweeps all native XLM and closes account entry on-chain)
+  builder.addOperation(
+    Operation.accountMerge({
+      destination: PLATFORM_KEYPAIR.publicKey(),
+    })
+  );
+
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
+
+  tx.sign(PLATFORM_KEYPAIR);
+
+  if (creatorSecret) {
+    try {
+      const creatorKeypair = Keypair.fromSecret(creatorSecret);
+      tx.sign(creatorKeypair);
+    } catch (_err) {
+      // ignore invalid creator keypair
+    }
+  }
+
+  if (campaignSecret) {
+    try {
+      const campaignKeypair = Keypair.fromSecret(campaignSecret);
+      tx.sign(campaignKeypair);
+    } catch (_err) {
+      // ignore invalid campaign keypair
+    }
+  }
+
+  const result = await server.submitTransaction(tx);
+  return { cleanedUp: true, hash: result.hash };
+}
+
+/**
+ * Close a just-created campaign wallet by submitting a merge transaction back
+ * to the platform.  The wallet secret is known (fresh from createCampaignWallet)
+ * so we can build and sign everything without needing a DB record.
+ *
+ * Used to clean up orphaned wallets when the campaign DB insert fails.
+ */
+async function closeCampaignWalletBySecret(walletPublicKey, walletSecret) {
+  try {
+    const account = await server.loadAccount(walletPublicKey);
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
+      // Remove campaign keypair as signer
+      .addOperation(
+        Operation.setOptions({
+          signer: {
+            ed25519PublicKey: walletPublicKey,
+            weight: 0,
+          },
+        })
+      )
+      // Remove platform signer
+      .addOperation(
+        Operation.setOptions({
+          signer: {
+            ed25519PublicKey: PLATFORM_KEYPAIR.publicKey(),
+            weight: 0,
+          },
+        })
+      )
+      // Set low threshold to 1 so the merge can go through with just the
+      // platform key when the campaign wallet signer is disabled.
+      .addOperation(
+        Operation.setOptions({
+          lowThreshold: 1,
+          medThreshold: 1,
+          highThreshold: 1,
+        })
+      )
+      .addOperation(
+        Operation.accountMerge({
+          destination: PLATFORM_KEYPAIR.publicKey(),
+        })
+      )
+      .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
+      .build();
+
+    const campaignKeypair = Keypair.fromSecret(walletSecret);
+    tx.sign(PLATFORM_KEYPAIR);
+    tx.sign(campaignKeypair);
+    await server.submitTransaction(tx);
+    logger.info('Orphaned campaign wallet closed and merged back to platform', {
+      walletPublicKey,
+    });
+    return true;
+  } catch (err) {
+    logger.error('Failed to close orphaned campaign wallet', {
+      walletPublicKey,
+      error: err.message,
+    });
+    return false;
+  }
+}
+
 module.exports = {
   createCampaignWallet,
   toStellarAsset,
@@ -634,7 +835,10 @@ module.exports = {
   recoverWalletFromSecret,
   getWalletTransactionHistory,
   getWalletPayments,
+  revokeAndCloseCampaignWallet,
+  closeCampaignWalletBySecret,
 
+  accountExistsOnLedger,
   getCampaignBalance,
   friendbotFund,
   PLATFORM_PUBLIC_KEY: PLATFORM_KEYPAIR.publicKey(),

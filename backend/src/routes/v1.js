@@ -99,8 +99,7 @@ router.get('/campaigns', getCampaignsValidation, validateRequest, asyncHandler(a
     newest: 'c.created_at DESC',
     ending_soon: 'c.deadline ASC NULLS LAST',
     most_funded: 'c.raised_amount DESC',
-    most_backed:
-      '(SELECT COUNT(*) FROM contributions ctr WHERE ctr.campaign_id = c.id) DESC',
+    most_backed: 'COALESCE(con.total_contributions, 0) DESC',
   };
   if (searchParamIdx !== null) {
     sortExpressions.relevance = `ts_rank(c.search_vector, websearch_to_tsquery('english', $${searchParamIdx})) DESC, c.created_at DESC`;
@@ -113,9 +112,15 @@ router.get('/campaigns', getCampaignsValidation, validateRequest, asyncHandler(a
   const { rows } = await db.query(
     `SELECT c.id, c.title, c.description, c.target_amount, c.raised_amount,
             c.asset_type, c.status, c.deadline, c.created_at,
-            (SELECT COUNT(DISTINCT sender_public_key)::int
-             FROM contributions con WHERE con.campaign_id = c.id) AS contributor_count
+            COALESCE(con.contributor_count, 0)::int AS contributor_count
      FROM campaigns c
+     LEFT JOIN (
+       SELECT campaign_id,
+              COUNT(DISTINCT sender_public_key)::int AS contributor_count,
+              COUNT(*)::int AS total_contributions
+       FROM contributions
+       GROUP BY campaign_id
+     ) con ON con.campaign_id = c.id
      ${whereClause}
      ORDER BY ${orderBy}
      LIMIT $${params.length + 1}
@@ -148,9 +153,14 @@ router.get('/campaigns/:id', asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT c.id, c.title, c.description, c.target_amount, c.raised_amount,
             c.asset_type, c.status, c.deadline, c.created_at, c.wallet_public_key,
-            (SELECT COUNT(DISTINCT sender_public_key)::int
-             FROM contributions con WHERE con.campaign_id = c.id) AS contributor_count
+            COALESCE(con.contributor_count, 0)::int AS contributor_count
      FROM campaigns c
+     LEFT JOIN (
+       SELECT campaign_id, COUNT(DISTINCT sender_public_key)::int AS contributor_count
+       FROM contributions
+       WHERE campaign_id = $1
+       GROUP BY campaign_id
+     ) con ON con.campaign_id = c.id
      WHERE c.id = $1 AND c.deleted_at IS NULL`,
     [req.params.id]
   );

@@ -174,4 +174,99 @@ describe('FraudService', () => {
     assert.ok(updateQueryCalled);
     assert.ok(alertsSent);
   });
+
+  test('evaluateCampaign scores same-device clustering signal', async () => {
+    let capturedSignals = null;
+    const dbMock = {
+      query: async (text, params) => {
+        if (text.includes('SELECT') && text.includes('target_amount') && text.includes('campaigns')) {
+          return {
+            rows: [{
+              id: 'campaign-3',
+              title: 'Device Cluster Campaign',
+              target_amount: 1000,
+              raised_amount: 100,
+              created_at: new Date(Date.now() - 10 * 3600 * 1000).toISOString(),
+              status: 'active',
+              is_flagged_fraud: false,
+            }],
+          };
+        }
+        if (text.includes('ip_address') && text.includes('HAVING COUNT(*)')) return { rows: [] };
+        if (text.includes('JOIN users')) return { rows: [{ count: 0 }] };
+        if (text.includes('COALESCE(SUM(amount)')) return { rows: [{ window_amount: 0 }] };
+        if (text.includes('SUM(amount)') && text.includes('GROUP BY sender_public_key')) {
+          return { rows: [{ sender_public_key: 'G1', total_amount: 100 }] };
+        }
+        // Signal 5: one device with 5 contributions (5 - 3 = 2 over) -> 2 * 25 = 50
+        if (text.includes('device_fingerprint') && text.includes('HAVING COUNT(*)')) {
+          return { rows: [{ device_fingerprint: 'abcdef1234567890', count: 5 }] };
+        }
+        // Signal 6: no cross-campaign cluster
+        if (text.includes('COUNT(DISTINCT other.campaign_id)')) {
+          return { rows: [] };
+        }
+        if (text.includes('UPDATE campaigns')) {
+          capturedSignals = JSON.parse(params[2]);
+          return { rows: [] };
+        }
+        return { rows: [] };
+      },
+    };
+
+    const fraudService = buildFraudService({ db: dbMock });
+    const result = await fraudService.evaluateCampaign('campaign-3');
+
+    assert.strictEqual(result.score, 50);
+    assert.strictEqual(result.is_flagged_fraud, true); // 50 >= FRAUD_THRESHOLD
+    assert.strictEqual(result.auto_suspended, false); // 50 < auto-pause 80
+    assert.strictEqual(capturedSignals.same_device.score, 50);
+    // Fingerprint must never be exposed in full; only a short prefix appears.
+    assert.ok(!capturedSignals.same_device.detail.includes('abcdef1234567890'));
+    assert.ok(capturedSignals.same_device.detail.includes('abcdef12'));
+  });
+
+  test('evaluateCampaign scores coordinated device-cluster signal across campaigns', async () => {
+    let capturedSignals = null;
+    const dbMock = {
+      query: async (text, params) => {
+        if (text.includes('SELECT') && text.includes('target_amount') && text.includes('campaigns')) {
+          return {
+            rows: [{
+              id: 'campaign-4',
+              title: 'Coordinated Campaign',
+              target_amount: 1000,
+              raised_amount: 100,
+              created_at: new Date(Date.now() - 10 * 3600 * 1000).toISOString(),
+              status: 'active',
+              is_flagged_fraud: false,
+            }],
+          };
+        }
+        if (text.includes('ip_address') && text.includes('HAVING COUNT(*)')) return { rows: [] };
+        if (text.includes('JOIN users')) return { rows: [{ count: 0 }] };
+        if (text.includes('COALESCE(SUM(amount)')) return { rows: [{ window_amount: 0 }] };
+        if (text.includes('SUM(amount)') && text.includes('GROUP BY sender_public_key')) {
+          return { rows: [{ sender_public_key: 'G1', total_amount: 100 }] };
+        }
+        if (text.includes('device_fingerprint') && text.includes('HAVING COUNT(*)')) return { rows: [] };
+        // Signal 6: device active across 4 other campaigns -> flat weight 45
+        if (text.includes('COUNT(DISTINCT other.campaign_id)')) {
+          return { rows: [{ device_fingerprint: 'deadbeefcafebabe', other_campaigns: 4 }] };
+        }
+        if (text.includes('UPDATE campaigns')) {
+          capturedSignals = JSON.parse(params[2]);
+          return { rows: [] };
+        }
+        return { rows: [] };
+      },
+    };
+
+    const fraudService = buildFraudService({ db: dbMock });
+    const result = await fraudService.evaluateCampaign('campaign-4');
+
+    assert.strictEqual(capturedSignals.device_cluster.score, 45);
+    assert.ok(capturedSignals.device_cluster.detail.includes('4 other campaign'));
+    assert.strictEqual(result.score, 45);
+  });
 });

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
+import MilestoneProgressBar, { normalizeWidgetSize } from '../components/MilestoneProgressBar';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const BASE_URL = `${API_BASE_URL}/api`;
@@ -10,6 +11,8 @@ function isDocumentVisible() {
 
 export default function Widget() {
   const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const size = normalizeWidgetSize(searchParams.get('size'));
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
 
@@ -52,7 +55,7 @@ export default function Widget() {
     };
 
     const stop = () => {
-      if (intervalId !== null) return;
+      if (intervalId === null) return;
       window.clearInterval(intervalId);
       intervalId = null;
       controller?.abort();
@@ -94,7 +97,7 @@ export default function Widget() {
     <div style={styles.shell}>
       <div style={styles.card}>
         <div style={styles.title}>{data.title}</div>
-        <div style={styles.progressTrack}>
+        <div style={styles.progressTrack} role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
           <div style={{ ...styles.progressFill, width: `${pct}%` }} />
         </div>
         <div style={styles.meta}>
@@ -108,6 +111,11 @@ export default function Widget() {
             </>
           )}
         </div>
+        <MilestoneProgressBar
+          milestones={data.milestones}
+          summary={data.milestone_summary}
+          size={size}
+        />
         <a
           href={campaignUrl}
           target="_blank"

@@ -1,13 +1,17 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Link, useParams, useLocation, useNavigate } from 'react-router-dom';
 import DOMPurify from 'dompurify';
+import * as Sentry from '@sentry/react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import ContributeModal from '../components/ContributeModal';
 import RelativeTime from '../components/RelativeTime';
 import DisputeModal from '../components/DisputeModal';
 import TransactionHistory from '../components/TransactionHistory';
+import WithdrawalHistoryTimeline from '../components/WithdrawalHistoryTimeline';
 import MilestoneTracker from '../components/MilestoneTracker';
+import MilestoneVotePanel from '../components/MilestoneVotePanel';
 import WithdrawalsSection from '../components/WithdrawalsSection';
 import CampaignDetailSkeleton from '../components/skeletons/CampaignDetailSkeleton';
 import ContributionListSkeleton from '../components/skeletons/ContributionListSkeleton';
@@ -17,7 +21,10 @@ import { stellarExpertTxUrl } from '../config/stellar';
 import CampaignQRCode from '../components/CampaignQRCode';
 import { getNetwork, signTransaction } from '@stellar/freighter-api';
 import { isConnected, getPublicKey } from '@stellar/freighter-api';
-import BackerInsightsCard from '../components/BackerInsightsCard';
+const BackerInsightsCard = React.lazy(() => import('../components/BackerInsightsCard'));
+import CampaignComments from '../components/CampaignComments';
+import FollowCampaignButton from '../components/FollowCampaignButton';
+import LanguageToggle from '../components/LanguageToggle';
 import { addRecentlyViewed } from '../lib/recentlyViewed';
 
 
@@ -46,11 +53,163 @@ function markdownToHtml(markdown) {
 }
 
 function progressColor(pct, status) {
-  if (status === 'funded' || pct >= 100) return '#10b981'; // green — goal reached
+  if (status === 'funded' || pct >= 100) return 'var(--color-teal)';
   if (status === 'closed' || status === 'withdrawn' || status === 'refunded' || status === 'failed')
-    return '#6b7280'; // grey — ended
-  if (pct >= 75) return '#3b82f6'; // blue — nearly there
-  return '#7c3aed'; // default purple
+    return 'var(--color-text-hint)';
+  if (pct >= 75) return 'var(--color-accent-light)';
+  return 'var(--color-accent)';
+}
+
+function FavoriteToggle({ campaignId }) {
+  const [favorited, setFavorited] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function toggle() {
+    setBusy(true);
+    try {
+      if (favorited) {
+        await api.removeFavorite(campaignId);
+        setFavorited(false);
+      } else {
+        await api.addFavorite(campaignId);
+        setFavorited(true);
+      }
+    } catch {
+      // no-op — leave state unchanged on failure
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={busy}
+      title={favorited ? 'Remove from favorites' : 'Add to favorites'}
+      style={{
+        background: 'none',
+        border: '1px solid var(--color-border-lighter)',
+        borderRadius: '999px',
+        fontSize: '0.85rem',
+        padding: '0.2rem 0.6rem',
+        cursor: 'pointer',
+        color: favorited ? 'var(--color-accent)' : 'var(--color-text-hint)',
+      }}
+    >
+      {favorited ? '★ Favorited' : '☆ Favorite'}
+    </button>
+  );
+}
+
+function CampaignPublishControls({ campaign, isOwner, navigate }) {
+  const [cloning, setCloning] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [error, setError] = useState('');
+
+  if (!isOwner) return null;
+
+  async function clone() {
+    setCloning(true);
+    setError('');
+    try {
+      const newCampaign = await api.cloneCampaign(campaign.id);
+      navigate(`/campaigns/${newCampaign.id}`);
+    } catch (err) {
+      setError(err.message || 'Could not clone campaign');
+      setCloning(false);
+    }
+  }
+
+  async function publishNow() {
+    setPublishing(true);
+    setError('');
+    try {
+      await api.publishCampaign(campaign.id);
+      window.location.reload();
+    } catch (err) {
+      setError(err.message || 'Could not publish campaign');
+      setPublishing(false);
+    }
+  }
+
+  async function schedulePublish(e) {
+    e.preventDefault();
+    setScheduling(true);
+    setError('');
+    try {
+      await api.scheduleCampaignPublish(campaign.id, { scheduled_publish_at: scheduledAt || null });
+      window.location.reload();
+    } catch (err) {
+      setError(err.message || 'Could not schedule publishing');
+      setScheduling(false);
+    }
+  }
+
+  return (
+    <div data-no-print style={{ marginBottom: '1.25rem' }}>
+      {campaign.status === 'draft' && (
+        <div
+          className="campaign-card"
+          style={{
+            minHeight: 'auto',
+            padding: '0.85rem',
+            marginBottom: '0.75rem',
+            display: 'grid',
+            gap: '0.6rem',
+          }}
+        >
+          <strong style={{ fontSize: '0.9rem' }}>This campaign is a draft</strong>
+          <p style={{ fontSize: '0.82rem', color: 'var(--color-text-hint)', margin: 0 }}>
+            No wallet or on-chain contracts exist yet. Publish now, or schedule an automatic
+            publish time.
+          </p>
+          {campaign.scheduled_publish_at && (
+            <p style={{ fontSize: '0.82rem', margin: 0 }}>
+              Scheduled to auto-publish at {new Date(campaign.scheduled_publish_at).toLocaleString()}
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button type="button" className="btn-primary" onClick={publishNow} disabled={publishing}>
+              {publishing ? 'Publishing…' : 'Publish now'}
+            </button>
+          </div>
+          <form onSubmit={schedulePublish} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              type="datetime-local"
+              value={scheduledAt}
+              onChange={(e) => setScheduledAt(e.target.value)}
+              style={{ fontSize: '0.85rem' }}
+            />
+            <button type="submit" className="btn-secondary" disabled={scheduling} style={{ fontSize: '0.85rem' }}>
+              {scheduling ? 'Saving…' : 'Schedule publish'}
+            </button>
+          </form>
+          {error && (
+            <p className="alert alert--error" style={{ fontSize: '0.8rem', margin: 0 }}>
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+      <button
+        type="button"
+        className="btn-secondary"
+        style={{ fontSize: '0.85rem' }}
+        onClick={clone}
+        disabled={cloning}
+      >
+        {cloning ? 'Cloning…' : 'Clone campaign'}
+      </button>
+      {campaign.status !== 'draft' && error && (
+        <p className="alert alert--error" style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function ContributionRow({ c }) {
@@ -109,7 +268,7 @@ function ContributionRow({ c }) {
               href={stellarExpertTxUrl(c.tx_hash)}
               target="_blank"
               rel="noopener noreferrer"
-              style={{ fontSize: '0.75rem', color: '#7c3aed', fontWeight: 600 }}
+              style={{ fontSize: '0.75rem', color: 'var(--color-accent)', fontWeight: 600 }}
             >
               View on chain ↗
             </a>
@@ -131,8 +290,10 @@ export default function Campaign() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, token } = useAuth();
+  const toast = useToast();
 
   const [campaign, setCampaign] = useState(null);
+  const [translation, setTranslation] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [contributions, setContributions] = useState(null);
   const [totalContributions, setTotalContributions] = useState(0);
@@ -147,6 +308,7 @@ export default function Campaign() {
   const [coverUploadError, setCoverUploadError] = useState(location.state?.coverUploadError || '');
   const [updates, setUpdates] = useState([]);
   const [milestones, setMilestones] = useState([]);
+  const [stretchGoals, setStretchGoals] = useState([]);
   const [updateForm, setUpdateForm] = useState({ title: '', body: '' });
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updatesError, setUpdatesError] = useState('');
@@ -190,6 +352,7 @@ export default function Campaign() {
   const [referralUrl, setReferralUrl] = useState(null);
   const [referralLeaderboard, setReferralLeaderboard] = useState(null);
   const [tiers, setTiers] = useState([]);
+  const [nftRewards, setNftRewards] = useState([]);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [milestonesLoading, setMilestonesLoading] = useState(false);
   const [contractStatus, setContractStatus] = useState(null);
@@ -199,6 +362,9 @@ export default function Campaign() {
   const [contributorRefundBusy, setContributorRefundBusy] = useState(false);
   const [contributorRefundError, setContributorRefundError] = useState('');
   const [contributorRefundSuccess, setContributorRefundSuccess] = useState('');
+  const editModalRef = useRef(null);
+  const deleteModalRef = useRef(null);
+
   const refParam = new URLSearchParams(location.search).get('ref');
 
   const currentUserId = user?.id || user?.userId;
@@ -219,6 +385,60 @@ export default function Campaign() {
       })
       .catch(() => { });
   }, [user, id]);
+
+  useEffect(() => {
+    if (!isEditingCampaign) return;
+    const onKey = (e) => { if (e.key === 'Escape') handleCloseEditModal(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isEditingCampaign, handleCloseEditModal]);
+
+  useEffect(() => {
+    if (!isEditingCampaign) return;
+    const modal = editModalRef.current;
+    if (!modal) return;
+    const focusable = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    first?.focus();
+    function trapTab(e) {
+      if (e.key !== 'Tab') return;
+      if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last?.focus(); } }
+      else { if (document.activeElement === last) { e.preventDefault(); first?.focus(); } }
+    }
+    modal.addEventListener('keydown', trapTab);
+    return () => modal.removeEventListener('keydown', trapTab);
+  }, [isEditingCampaign]);
+
+  useEffect(() => {
+    if (!showDeleteDialog) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        setShowDeleteDialog(false);
+        setDeleteConfirmation('');
+        setDeleteError('');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showDeleteDialog]);
+
+  useEffect(() => {
+    if (!showDeleteDialog) return;
+    const modal = deleteModalRef.current;
+    if (!modal) return;
+    const focusable = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    first?.focus();
+    function trapTab(e) {
+      if (e.key !== 'Tab') return;
+      if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last?.focus(); } }
+      else { if (document.activeElement === last) { e.preventDefault(); first?.focus(); } }
+    }
+    modal.addEventListener('keydown', trapTab);
+    return () => modal.removeEventListener('keydown', trapTab);
+  }, [showDeleteDialog]);
 
   useEffect(() => {
     if (!isOwner || !id) return;
@@ -289,6 +509,7 @@ export default function Campaign() {
       .then(setMilestones)
       .catch(() => setMilestones([]))
       .finally(() => setMilestonesLoading(false));
+    api.getStretchGoals(id).then(setStretchGoals).catch(() => setStretchGoals([]));
     api
       .getContractStatus(id)
       .then((data) => {
@@ -303,6 +524,10 @@ export default function Campaign() {
       .getCampaignTiers(id)
       .then((data) => setTiers(Array.isArray(data) ? data : []))
       .catch(() => setTiers([]));
+    api
+      .getCampaignNftRewards(id)
+      .then((data) => setNftRewards(Array.isArray(data?.rewards) ? data.rewards : []))
+      .catch(() => setNftRewards([]));
     api
       .getCampaignUpdates(id, { limit: 20 })
       .then(setUpdates)
@@ -398,43 +623,66 @@ export default function Campaign() {
   useEffect(() => {
     if (!window.EventSource) return;
 
-    const es = new EventSource(`/api/campaigns/${id}/stream`);
+    let es = null;
+    let retryDelay = 1000;
+    let retryTimeout = null;
+    let isUnmounted = false;
 
-    es.onopen = () => setIsLive(true);
+    function connect() {
+      if (isUnmounted) return;
 
-    es.onmessage = (e) => {
-      let msg;
-      try {
-        msg = JSON.parse(e.data);
-      } catch {
-        return;
-      }
+      es = new EventSource(`/api/campaigns/${id}/stream`);
 
-      if (msg.type === 'contribution') {
-        setCampaign((prev) => (prev ? { ...prev, raised_amount: msg.raised_amount } : prev));
-        setContributions((prev) => {
-          const current = prev || [];
-          const exists = current.some((c) => c.tx_hash === msg.contribution.tx_hash);
-          if (exists) return current;
+      es.onopen = () => {
+        setIsLive(true);
+        retryDelay = 1000;
+      };
 
-          setTotalContributions((t) => t + 1);
+      es.onmessage = (e) => {
+        let msg;
+        try {
+          msg = JSON.parse(e.data);
+        } catch {
+          return;
+        }
 
-          const updated = [msg.contribution, ...current];
-          if (!showAll && updated.length > 10) {
-            return updated.slice(0, 10);
-          }
-          return updated;
-        });
-      }
-    };
+        if (msg.type === 'contribution') {
+          setCampaign((prev) => (prev ? { ...prev, raised_amount: msg.raised_amount } : prev));
+          setContributions((prev) => {
+            const current = prev || [];
+            const exists = current.some((c) => c.tx_hash === msg.contribution.tx_hash);
+            if (exists) return current;
 
-    es.onerror = () => {
-      setIsLive(false);
-      es.close();
-    };
+            setTotalContributions((t) => t + 1);
+
+            const updated = [msg.contribution, ...current];
+            if (!showAll && updated.length > 10) {
+              return updated.slice(0, 10);
+            }
+            return updated;
+          });
+        }
+      };
+
+      es.onerror = () => {
+        setIsLive(false);
+        es.close();
+
+        if (!isUnmounted) {
+          retryTimeout = setTimeout(() => {
+            connect();
+            retryDelay = Math.min(retryDelay * 2, 30000);
+          }, retryDelay);
+        }
+      };
+    }
+
+    connect();
 
     return () => {
-      es.close();
+      isUnmounted = true;
+      if (es) es.close();
+      if (retryTimeout) clearTimeout(retryTimeout);
       setIsLive(false);
     };
   }, [id, showAll]);
@@ -692,9 +940,10 @@ export default function Campaign() {
 
   useEffect(() => {
     if (!campaign) return;
-    document.title = `${campaign.title} | CrowdPay`;
+    const tTitle = translation?.title || campaign.title;
+    const tDesc = translation?.description || campaign.description || '';
+    document.title = `${tTitle} | CrowdPay`;
 
-    // Basic meta tag updates (SPA approach)
     const updateMeta = (name, content, property = false) => {
       let el = document.querySelector(
         property ? `meta[property="${name}"]` : `meta[name="${name}"]`
@@ -708,18 +957,18 @@ export default function Campaign() {
       el.setAttribute('content', content);
     };
 
-    updateMeta('description', campaign.description || '');
-    updateMeta('og:title', campaign.title, true);
-    updateMeta('og:description', campaign.description || '', true);
+    updateMeta('description', tDesc);
+    updateMeta('og:title', tTitle, true);
+    updateMeta('og:description', tDesc, true);
     updateMeta('og:url', window.location.href, true);
     if (campaign.cover_image_url) {
       updateMeta('og:image', campaign.cover_image_url, true);
       updateMeta('twitter:image', campaign.cover_image_url);
     }
     updateMeta('twitter:card', 'summary_large_image');
-    updateMeta('twitter:title', campaign.title);
-    updateMeta('twitter:description', campaign.description || '');
-  }, [campaign]);
+    updateMeta('twitter:title', tTitle);
+    updateMeta('twitter:description', tDesc);
+  }, [campaign, translation]);
 
   if (loadError && !campaign) {
     return (
@@ -924,8 +1173,8 @@ export default function Campaign() {
             disabled={refundBusy}
             onClick={handleInitiateRefund}
             style={{
-              background: refundBusy ? undefined : '#dc2626',
-              borderColor: refundBusy ? undefined : '#dc2626',
+              background: refundBusy ? undefined : 'var(--color-status-error)',
+              borderColor: refundBusy ? undefined : 'var(--color-status-error)',
               fontSize: '0.9rem',
             }}
           >
@@ -957,6 +1206,8 @@ export default function Campaign() {
           <span style={styles.asset}>{campaign.asset_type}</span>
           <CampaignStatusBadge status={campaign.status} />
           <VerificationBadge status={campaign.creator_kyc_status} />
+          {user && <FavoriteToggle campaignId={campaign.id} />}
+          {user && <FollowCampaignButton campaignId={campaign.id} />}
           {campaign.contract_address && (
             <span
               title="This campaign is backed by a Soroban smart contract"
@@ -976,15 +1227,43 @@ export default function Campaign() {
             </span>
           )}
         </div>
-        <h1 style={styles.title}>{campaign.title}</h1>
+        <LanguageToggle
+          campaignId={campaign.id}
+          defaultLanguage="en"
+          defaultTitle={campaign.title}
+          defaultDescription={campaign.description || ''}
+          onTranslationChange={setTranslation}
+        />
+        <h1 style={styles.title}>{translation?.title || campaign.title}</h1>
         {campaign.creator_name && <p style={styles.creator}>by {campaign.creator_name}</p>}
         <div
           style={{ ...styles.desc, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
           dangerouslySetInnerHTML={{
-            __html: DOMPurify.sanitize(markdownToHtml(campaign.description)),
+            __html: DOMPurify.sanitize(markdownToHtml(translation?.description || campaign.description)),
           }}
         />
       </div>
+
+      <CampaignComments campaignId={campaign.id} campaign={campaign} />
+
+      {nftRewards.length > 0 && (
+        <div style={{ marginBottom: "1rem" }}>
+          <h2 style={styles.sectionTitle}>NFT proof of support</h2>
+          <div style={{ display: "grid", gap: "0.75rem" }}>
+            {nftRewards.slice(0, 3).map((reward) => (
+              <div key={reward.id} style={{ ...styles.card, marginBottom: 0 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", flexWrap: "wrap" }}>
+                  <strong>{reward.reward_tier_title || 'NFT reward'}</strong>
+                  <span style={styles.small}>{reward.status || 'configured'}</span>
+                </div>
+                {reward.serial_number && (
+                  <p style={{ ...styles.small, marginTop: '0.4rem' }}>Serial: {reward.serial_number}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {tiers.length > 0 && (
         <div style={{ marginBottom: "1rem" }}>
@@ -1147,6 +1426,7 @@ export default function Campaign() {
             }}
             onClick={async () => {
               try {
+                api.trackShare(campaign.id, 'native').catch(() => {});
                 await navigator.share({
                   title: campaign.title,
                   text: campaign.description,
@@ -1154,7 +1434,8 @@ export default function Campaign() {
                 });
               } catch (err) {
                 if (err.name !== 'AbortError') {
-                  console.error('Share failed:', err);
+                  toast?.('Could not share this campaign. Please try again.', 'error');
+                  Sentry.captureException(err);
                 }
               }
             }}
@@ -1174,6 +1455,7 @@ export default function Campaign() {
             gap: '0.5rem',
           }}
           onClick={() => {
+            api.trackShare(campaign.id, 'twitter').catch(() => {});
             const shareUrl = referralUrl || window.location.href;
             const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
             const daysLeft = Math.max(0, Math.ceil((new Date(campaign.end_date) - new Date()) / (1000 * 60 * 60 * 24)));
@@ -1196,6 +1478,7 @@ export default function Campaign() {
             gap: '0.5rem',
           }}
           onClick={() => {
+            api.trackShare(campaign.id, 'whatsapp').catch(() => {});
             const shareUrl = referralUrl || window.location.href;
             const pct = Math.min(100, (campaign.raised_amount / campaign.target_amount) * 100).toFixed(1);
             const text = encodeURIComponent(`Hey! Check out this campaign on CrowdPay: ${campaign.title}. They're ${pct}% funded and need your help. ${shareUrl}`);
@@ -1217,6 +1500,7 @@ export default function Campaign() {
             gap: '0.5rem',
           }}
           onClick={() => {
+            api.trackShare(campaign.id, 'linkedin').catch(() => {});
             const shareUrl = referralUrl || window.location.href;
             const linkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`;
             window.open(linkedInUrl, '_blank');
@@ -1224,6 +1508,48 @@ export default function Campaign() {
           aria-label="Share on LinkedIn"
         >
           LinkedIn
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{
+            flex: 1,
+            fontSize: '0.85rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '0.5rem',
+          }}
+          onClick={() => {
+            api.trackShare(campaign.id, 'telegram').catch(() => {});
+            const shareUrl = referralUrl || window.location.href;
+            const text = encodeURIComponent(`Check out this campaign: ${campaign.title}`);
+            window.open(`https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${text}`, '_blank');
+          }}
+          aria-label="Share on Telegram"
+        >
+          Telegram
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          style={{
+            flex: 1,
+            fontSize: '0.85rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '0.5rem',
+          }}
+          onClick={() => {
+            api.trackShare(campaign.id, 'discord').catch(() => {});
+            navigator.clipboard.writeText(referralUrl || window.location.href);
+            toast?.('Link copied! Paste it in Discord to share.', 'success');
+            setTimeout(() => window.open('https://discord.com/app', '_blank'), 1500);
+          }}
+          aria-label="Share on Discord"
+        >
+          Discord
         </button>
         <div style={{ position: 'relative', flex: 1 }}>
           <button
@@ -1238,10 +1564,11 @@ export default function Campaign() {
               width: '100%',
               background: linkCopied ? 'var(--color-success-text)' : undefined,
               borderColor: linkCopied ? 'var(--color-success-text)' : undefined,
-              color: linkCopied ? '#fff' : undefined,
+              color: linkCopied ? 'var(--color-bg)' : undefined,
               transition: 'all 0.2s ease',
             }}
             onClick={() => {
+              api.trackShare(campaign.id, 'copy').catch(() => {});
               navigator.clipboard.writeText(referralUrl || window.location.href);
               setLinkCopied(true);
               setTimeout(() => setLinkCopied(false), 2000);
@@ -1251,6 +1578,10 @@ export default function Campaign() {
           </button>
         </div>
       </div>
+
+      {user && campaign && isOwner && (
+        <CampaignPublishControls campaign={campaign} isOwner={isOwner} navigate={navigate} />
+      )}
 
       {/* Edit campaign — owner or editor */}
       {user && campaign && canEditCampaign && (
@@ -1282,7 +1613,7 @@ export default function Campaign() {
               type="button"
               className="btn-secondary"
               style={{
-                color: '#dc2626',
+                color: 'var(--color-status-error)',
                 fontSize: '0.85rem',
                 display: 'flex',
                 alignItems: 'center',
@@ -1307,6 +1638,7 @@ export default function Campaign() {
           type="button"
           className="btn-secondary"
           data-no-print
+          aria-expanded={showQR}
           onClick={() => setShowQR((v) => !v)}
         >
           {showQR ? 'Hide QR code' : 'Show QR code'}
@@ -1381,6 +1713,7 @@ export default function Campaign() {
             <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>Embed this campaign</h3>
             <button
               type="button"
+              aria-expanded={showEmbedSection}
               onClick={() => setShowEmbedSection(!showEmbedSection)}
               style={{
                 background: 'transparent',
@@ -1584,10 +1917,57 @@ export default function Campaign() {
         isCreator={!!(user?.id && campaign.creator_id === user.id)}
       />
 
+      <WithdrawalHistoryTimeline campaignId={campaign.id} token={token} />
+
       <MilestoneTracker milestones={milestones} assetType={campaign.asset_type} />
+      <MilestoneVotePanel milestones={milestones} />
+
+      {/* Stretch Goals (#585) */}
+      {stretchGoals.length > 0 && (
+        <div className="campaign-card" style={{ marginBottom: '1.5rem' }}>
+          <h3 style={{ margin: '0 0 0.75rem', fontSize: '1rem', fontWeight: 700 }}>
+            🚀 Stretch Goals
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            {stretchGoals.map((goal) => {
+              const reached = Number(campaign.raised_amount) >= Number(goal.amount);
+              return (
+                <div
+                  key={goal.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '0.75rem',
+                    padding: '0.65rem 0.9rem',
+                    borderRadius: 8,
+                    border: `1px solid ${reached ? 'var(--color-success, #22c55e)' : 'var(--color-border)'}`,
+                    background: reached ? 'var(--color-success-bg, #f0fdf4)' : 'transparent',
+                  }}
+                >
+                  <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>{reached ? '✅' : '🎯'}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <strong style={{ fontSize: '0.9rem' }}>{goal.title}</strong>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-text-hint)', fontWeight: 600, flexShrink: 0 }}>
+                        {Number(goal.amount).toLocaleString()} {campaign.asset_type}
+                      </span>
+                    </div>
+                    {goal.description && (
+                      <p style={{ margin: '0.2rem 0 0', fontSize: '0.82rem', color: 'var(--color-text-secondary)' }}>
+                        {goal.description}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {canManageTeam && (
         <div style={{ marginBottom: '2rem' }} data-no-print>
           <div
+            role="tablist"
             style={{
               display: 'flex',
               gap: '0.5rem',
@@ -1598,10 +1978,12 @@ export default function Campaign() {
           >
             <button
               type="button"
+              role="tab"
+              aria-selected={activeTab === 'team'}
               onClick={() => setActiveTab('team')}
               style={{
                 background: activeTab === 'team' ? 'var(--color-accent)' : 'transparent',
-                color: activeTab === 'team' ? '#fff' : 'var(--color-text-primary)',
+                color: activeTab === 'team' ? 'var(--color-bg)' : 'var(--color-text-primary)',
                 border: '1px solid var(--color-border-light)',
                 borderRadius: '6px',
                 padding: '0.4rem 0.9rem',
@@ -1615,10 +1997,12 @@ export default function Campaign() {
             {canViewAnalytics && (
               <button
                 type="button"
+                role="tab"
+                aria-selected={activeTab === 'analytics'}
                 onClick={() => setActiveTab('analytics')}
                 style={{
                   background: activeTab === 'analytics' ? 'var(--color-accent)' : 'transparent',
-                  color: activeTab === 'analytics' ? '#fff' : 'var(--color-text-primary)',
+                  color: activeTab === 'analytics' ? 'var(--color-bg)' : 'var(--color-text-primary)',
                   border: '1px solid var(--color-border-light)',
                   borderRadius: '6px',
                   padding: '0.4rem 0.9rem',
@@ -1635,6 +2019,30 @@ export default function Campaign() {
           {activeTab !== 'analytics' && (
             <>
               <h2 style={styles.sectionTitle}>Team</h2>
+              <div
+                className="campaign-card"
+                style={{ marginBottom: '1.5rem', fontSize: '0.85rem' }}
+              >
+                <strong style={{ display: 'block', marginBottom: '0.5rem' }}>
+                  Role permissions
+                </strong>
+                <ul style={{ margin: 0, paddingLeft: '1.1rem', color: 'var(--color-text-hint)' }}>
+                  <li>
+                    <strong>Owner</strong> — full control: manage team, assign roles (including
+                    owner), edit content, post updates, withdraw funds.
+                  </li>
+                  <li>
+                    <strong>Manager</strong> — invite members, post updates, submit milestones, view
+                    analytics.
+                  </li>
+                  <li>
+                    <strong>Editor</strong> — edit campaign content.
+                  </li>
+                  <li>
+                    <strong>Viewer</strong> — read-only access to analytics.
+                  </li>
+                </ul>
+              </div>
               <div className="campaign-card" style={{ marginBottom: '1.5rem' }}>
                 <strong style={{ marginBottom: '0.75rem', display: 'block' }}>
                   Invite Team Member
@@ -1912,14 +2320,18 @@ export default function Campaign() {
           <strong style={{ marginBottom: '0.5rem', display: 'block' }}>
             {editingUpdateId ? 'Edit update' : 'Post update'}
           </strong>
+          <label htmlFor="update-title" className="sr-only">Update title</label>
           <input
+            id="update-title"
             placeholder="Update title"
             value={updateForm.title}
             onChange={(e) => setUpdateForm((s) => ({ ...s, title: e.target.value }))}
             required
             style={{ marginBottom: '0.5rem' }}
           />
+          <label htmlFor="update-body" className="sr-only">Update body</label>
           <textarea
+            id="update-body"
             placeholder="Write markdown update..."
             value={updateForm.body}
             onChange={(e) => setUpdateForm((s) => ({ ...s, body: e.target.value }))}
@@ -1990,12 +2402,17 @@ export default function Campaign() {
         </article>
       ))}
 
+      <div style={{ marginTop: '2rem', marginBottom: '2rem' }} data-no-print>
+        <CampaignComments campaignId={campaign.id} campaign={campaign} />
+      </div>
+
       {/* Analytics Section */}
       {canViewAnalytics && (canManageTeam ? activeTab === 'analytics' : true) && (
         <div style={{ marginBottom: '2rem' }}>
           <h2 style={styles.sectionTitle}>Analytics</h2>
 
           <div
+            role="tablist"
             style={{
               display: 'flex',
               gap: '0.5rem',
@@ -2006,10 +2423,12 @@ export default function Campaign() {
           >
             <button
               type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'overview'}
               onClick={() => setAnalyticsTab('overview')}
               style={{
                 background: analyticsTab === 'overview' ? 'var(--color-accent)' : 'transparent',
-                color: analyticsTab === 'overview' ? '#fff' : 'var(--color-text-primary)',
+                color: analyticsTab === 'overview' ? 'var(--color-bg)' : 'var(--color-text-primary)',
                 border: '1px solid var(--color-border-light)',
                 borderRadius: '6px',
                 padding: '0.4rem 0.9rem',
@@ -2023,10 +2442,12 @@ export default function Campaign() {
 
             <button
               type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'backers'}
               onClick={() => setAnalyticsTab('backers')}
               style={{
                 background: analyticsTab === 'backers' ? 'var(--color-accent)' : 'transparent',
-                color: analyticsTab === 'backers' ? '#fff' : 'var(--color-text-primary)',
+                color: analyticsTab === 'backers' ? 'var(--color-bg)' : 'var(--color-text-primary)',
                 border: '1px solid var(--color-border-light)',
                 borderRadius: '6px',
                 padding: '0.4rem 0.9rem',
@@ -2254,6 +2675,9 @@ export default function Campaign() {
       {/* Edit Campaign Modal */}
       {isEditingCampaign && campaign && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-campaign-title"
           style={{
             position: 'fixed',
             top: 0,
@@ -2269,8 +2693,9 @@ export default function Campaign() {
           onClick={handleCloseEditModal}
         >
           <div
+            ref={editModalRef}
             style={{
-              background: '#fff',
+              background: 'var(--color-bg)',
               borderRadius: '12px',
               padding: '2rem',
               maxWidth: '500px',
@@ -2282,6 +2707,7 @@ export default function Campaign() {
             onClick={(e) => e.stopPropagation()}
           >
             <h2
+              id="edit-campaign-title"
               style={{
                 marginTop: 0,
                 marginBottom: '1.5rem',
@@ -2294,10 +2720,10 @@ export default function Campaign() {
             {editError && (
               <p
                 style={{
-                  color: '#d32f2f',
+                  color: 'var(--color-status-error)',
                   marginBottom: '1rem',
                   padding: '0.75rem',
-                  background: '#ffebee',
+                  background: 'var(--color-status-error-bg)',
                   borderRadius: '6px',
                 }}
               >
@@ -2323,7 +2749,7 @@ export default function Campaign() {
                 style={{
                   width: '100%',
                   padding: '0.75rem',
-                  border: '1px solid #ddd',
+                  border: '1px solid var(--color-border-lightest)',
                   borderRadius: '6px',
                   fontSize: '1rem',
                   boxSizing: 'border-box',
@@ -2332,7 +2758,7 @@ export default function Campaign() {
               <p
                 style={{
                   fontSize: '0.85rem',
-                  color: '#888',
+                  color: 'var(--color-text-muted)',
                   margin: '0.25rem 0 0',
                 }}
               >
@@ -2363,7 +2789,7 @@ export default function Campaign() {
                 style={{
                   width: '100%',
                   padding: '0.75rem',
-                  border: '1px solid #ddd',
+                  border: '1px solid var(--color-border-lightest)',
                   borderRadius: '6px',
                   fontSize: '1rem',
                   fontFamily: 'inherit',
@@ -2373,7 +2799,7 @@ export default function Campaign() {
               <p
                 style={{
                   fontSize: '0.85rem',
-                  color: '#888',
+                  color: 'var(--color-text-muted)',
                   margin: '0.25rem 0 0',
                 }}
               >
@@ -2398,7 +2824,7 @@ export default function Campaign() {
                 style={{
                   width: '100%',
                   padding: '0.75rem',
-                  border: '1px solid #ddd',
+                  border: '1px solid var(--color-border-lightest)',
                   borderRadius: '6px',
                   fontSize: '1rem',
                   boxSizing: 'border-box',
@@ -2439,6 +2865,9 @@ export default function Campaign() {
       {/* Delete Campaign Confirmation Dialog */}
       {showDeleteDialog && campaign && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-campaign-title"
           style={{
             position: 'fixed',
             top: 0,
@@ -2453,6 +2882,7 @@ export default function Campaign() {
           }}
         >
           <div
+            ref={deleteModalRef}
             style={{
               background: 'var(--color-surface)',
               borderRadius: '8px',
@@ -2463,6 +2893,7 @@ export default function Campaign() {
             }}
           >
             <h2
+              id="delete-campaign-title"
               style={{
                 fontSize: '1.5rem',
                 fontWeight: 700,
@@ -2543,8 +2974,8 @@ export default function Campaign() {
                 disabled={deleteLoading || deleteConfirmation !== campaign.title}
                 style={{
                   opacity: deleteLoading || deleteConfirmation !== campaign.title ? 0.6 : 1,
-                  background: '#dc2626',
-                  borderColor: '#dc2626',
+                  background: 'var(--color-status-error)',
+                  borderColor: 'var(--color-status-error)',
                 }}
               >
                 {deleteLoading ? 'Deleting...' : 'Delete Campaign'}
@@ -2566,8 +2997,8 @@ const styles = {
     flexWrap: 'wrap',
   },
   asset: {
-    background: '#ede9fe',
-    color: '#7c3aed',
+    background: 'var(--color-accent-lightest)',
+    color: 'var(--color-accent)',
     fontSize: '0.75rem',
     fontWeight: 700,
     padding: '2px 8px',
@@ -2577,13 +3008,13 @@ const styles = {
     fontSize: '1.8rem',
     fontWeight: 800,
     margin: '0.5rem 0',
-    color: '#111',
+    color: 'var(--color-text-primary)',
   },
-  creator: { color: '#666', fontSize: '0.9rem', marginBottom: '0.5rem' },
-  desc: { color: '#555', fontSize: '1rem', lineHeight: 1.6 },
+  creator: { color: 'var(--color-text-hint)', fontSize: '0.9rem', marginBottom: '0.5rem' },
+  desc: { color: 'var(--color-text-secondary)', fontSize: '1rem', lineHeight: 1.6 },
   card: {
-    background: '#fff',
-    border: '1px solid #e5e5e5',
+    background: 'var(--color-bg)',
+    border: '1px solid var(--color-border-light)',
     borderRadius: '10px',
     padding: '1.5rem',
     marginBottom: '1rem',
@@ -2593,19 +3024,19 @@ const styles = {
     justifyContent: 'space-between',
     marginBottom: '1rem',
   },
-  big: { fontSize: '1.5rem', fontWeight: 800, color: '#111' },
-  small: { fontSize: '0.85rem', color: '#888' },
+  big: { fontSize: '1.5rem', fontWeight: 800, color: 'var(--color-text-primary)' },
+  small: { fontSize: '0.85rem', color: 'var(--color-text-muted)' },
   bar: {
-    background: '#f0f0f0',
+    background: 'var(--color-surface)',
     borderRadius: '99px',
     height: '8px',
     marginBottom: '1.25rem',
     overflow: 'hidden',
   },
-  fill: { background: '#7c3aed', height: '100%', borderRadius: '99px' },
+  fill: { background: 'var(--color-accent)', height: '100%', borderRadius: '99px' },
   cta: { width: '100%', padding: '0.85rem', fontSize: '1rem' },
   walletInfo: {
-    background: '#f8f8f8',
+    background: 'var(--color-surface)',
     borderRadius: '8px',
     padding: '0.75rem 1rem',
     marginBottom: '1.75rem',
@@ -2616,10 +3047,10 @@ const styles = {
   walletLabel: {
     fontSize: '0.75rem',
     fontWeight: 600,
-    color: '#888',
+    color: 'var(--color-text-muted)',
     textTransform: 'uppercase',
   },
-  walletKey: { fontSize: '0.8rem', color: '#555', wordBreak: 'break-all' },
+  walletKey: { fontSize: '0.8rem', color: 'var(--color-text-secondary)', wordBreak: 'break-all' },
   detailCoverImage: {
     width: '100%',
     borderRadius: '14px',
@@ -2632,13 +3063,13 @@ const styles = {
     borderRadius: '14px',
     marginBottom: '1.5rem',
     height: '260px',
-    background: 'linear-gradient(135deg, #ede9fe 0%, #e0e7ff 100%)',
-    border: '1px solid #ddd6fe',
+    background: 'linear-gradient(135deg, var(--color-accent-lighter) 0%, var(--color-accent-lightest) 100%)',
+    border: '1px solid var(--color-purple-light)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  detailCoverPlaceholderText: { color: '#6d28d9', fontWeight: 700 },
+  detailCoverPlaceholderText: { color: 'var(--color-accent-hover)', fontWeight: 700 },
   sectionTitle: {
     fontSize: '1.1rem',
     fontWeight: 700,
@@ -2648,18 +3079,18 @@ const styles = {
   row: {
     display: 'flex',
     justifyContent: 'space-between',
-    background: '#fff',
-    border: '1px solid #eee',
+    background: 'var(--color-bg)',
+    border: '1px solid var(--color-border-lighter)',
     borderRadius: '6px',
     padding: '0.6rem 0.85rem',
   },
-  sender: { fontSize: '0.85rem', color: '#555', fontFamily: 'monospace' },
+  sender: { fontSize: '0.85rem', color: 'var(--color-text-secondary)', fontFamily: 'monospace' },
   amount: { fontSize: '0.85rem', fontWeight: 600, flexShrink: 0 },
-  convHint: { fontSize: '0.72rem', color: '#888', marginTop: '0.15rem' },
+  convHint: { fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: '0.15rem' },
   refundTag: {
     marginTop: '0.45rem',
     fontSize: '0.75rem',
-    color: '#7c3aed',
+    color: 'var(--color-accent)',
     fontWeight: 700,
   },
   liveIndicator: {
@@ -2669,7 +3100,7 @@ const styles = {
     marginLeft: '0.5rem',
     fontSize: '0.72rem',
     fontWeight: 600,
-    color: '#16a34a',
+    color: 'var(--color-success-text)',
     verticalAlign: 'middle',
   },
   liveDot: {
@@ -2677,7 +3108,7 @@ const styles = {
     width: '7px',
     height: '7px',
     borderRadius: '50%',
-    background: '#16a34a',
+    background: 'var(--color-success-text)',
     animation: 'pulse 1.5s ease-in-out infinite',
   },
 

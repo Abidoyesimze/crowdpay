@@ -137,6 +137,44 @@ test('GET /api/wallets/:campaignId/transactions honors a custom ?limit=', async 
   assert.equal(receivedLimit, 5);
 });
 
+// #490: limit had no upper bound before parsePagination was adopted here —
+// an unbounded ?limit= could force an unbounded history fetch.
+test('GET /api/wallets/:campaignId/transactions clamps ?limit= to the 100 upper bound', async () => {
+  let receivedLimit;
+  const { app } = buildApp({
+    queryImpl: async () => ({ rows: [campaignRow()] }),
+    stellarImpl: {
+      getWalletTransactionHistory: async (_publicKey, limit) => {
+        receivedLimit = limit;
+        return [];
+      },
+    },
+  });
+
+  const res = await request(app).get(`/api/wallets/${CAMPAIGN_ID}/transactions?limit=999999`);
+
+  assert.equal(res.status, 200);
+  assert.equal(receivedLimit, 100);
+});
+
+test('GET /api/wallets/:campaignId/transactions falls back to the default limit for a non-numeric ?limit=', async () => {
+  let receivedLimit;
+  const { app } = buildApp({
+    queryImpl: async () => ({ rows: [campaignRow()] }),
+    stellarImpl: {
+      getWalletTransactionHistory: async (_publicKey, limit) => {
+        receivedLimit = limit;
+        return [];
+      },
+    },
+  });
+
+  const res = await request(app).get(`/api/wallets/${CAMPAIGN_ID}/transactions?limit=not-a-number`);
+
+  assert.equal(res.status, 200);
+  assert.equal(receivedLimit, 50);
+});
+
 test('GET /api/wallets/:campaignId/transactions returns 404 for unknown campaign', async () => {
   const { app } = buildApp({
     queryImpl: async () => ({ rows: [] }),
@@ -196,6 +234,25 @@ test('GET /api/wallets/:campaignId/payments honors a custom ?limit=', async () =
 
   assert.equal(res.status, 200);
   assert.equal(receivedLimit, 7);
+});
+
+// #490: limit had no upper bound before parsePagination was adopted here.
+test('GET /api/wallets/:campaignId/payments clamps ?limit= to the 200 upper bound', async () => {
+  let receivedLimit;
+  const { app } = buildApp({
+    queryImpl: async () => ({ rows: [campaignRow()] }),
+    stellarImpl: {
+      getWalletPayments: async (_publicKey, limit) => {
+        receivedLimit = limit;
+        return [];
+      },
+    },
+  });
+
+  const res = await request(app).get(`/api/wallets/${CAMPAIGN_ID}/payments?limit=999999`);
+
+  assert.equal(res.status, 200);
+  assert.equal(receivedLimit, 200);
 });
 
 test('GET /api/wallets/:campaignId/payments returns 404 for unknown campaign', async () => {

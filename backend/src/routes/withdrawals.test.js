@@ -140,6 +140,26 @@ test('POST /api/withdrawals/request creates pending request and logs event', asy
   assert.ok(calls.some((c) => c.includes('INSERT INTO stellar_transactions')));
 });
 
+test('POST /api/withdrawals/request rejects an invalid Stellar public key with 422', async () => {
+  const { app, cleanup } = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns WHERE id')) {
+        return { rows: [campaignRow()] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/withdrawals/request')
+    .set('Authorization', 'Bearer token')
+    .send({ campaign_id: '11111111-1111-1111-1111-111111111111', destination_key: 'not-a-valid-key', amount: '10.0000000' });
+
+  cleanup();
+  assert.equal(response.status, 422);
+  assert.match(response.body.error.message, /destination_key must be a valid Stellar public key/);
+});
+
 test('POST /api/withdrawals/request returns 400 for failed campaigns', async () => {
   const { app, cleanup } = buildApp({
     role: 'admin',
@@ -365,6 +385,9 @@ test('POST /api/withdrawals/:id/approve/platform submits with dual signatures', 
           }],
         };
       }
+      if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'approved'")) {
+        return { rows: [{ id: 'w-1', status: 'approved' }] };
+      }
       if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'submitted'")) {
         return { rows: [{ id: 'w-1', status: 'submitted', tx_hash: 'tx-hash' }] };
       }
@@ -386,6 +409,55 @@ test('POST /api/withdrawals/:id/approve/platform submits with dual signatures', 
   assert.equal(response.body.status, 'submitted');
   assert.ok(calls.some((c) => c.includes("status = 'submitted'")));
   assert.ok(calls.some((c) => c.includes('UPDATE stellar_transactions')));
+});
+
+test('POST /api/withdrawals/:id/approve/platform rejects duplicate approval after first request updates status', async () => {
+  let currentStatus = 'pending';
+  const { app, cleanup } = buildApp({
+    role: 'admin',
+    queryImpl: async (text) => {
+      if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes('SELECT wr.*, c.status')) {
+        return {
+          rows: [{
+            id: 'w-1',
+            status: currentStatus,
+            creator_signed: true,
+            platform_signed: false,
+            unsigned_xdr: 'xdr-creator-signed',
+            campaign_status: 'active',
+          }],
+        };
+      }
+      if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'approved'")) {
+        currentStatus = 'approved';
+        return { rows: [{ id: 'w-1', status: 'approved' }] };
+      }
+      if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'submitted'")) {
+        currentStatus = 'submitted';
+        return { rows: [{ id: 'w-1', status: 'submitted', tx_hash: 'tx-hash' }] };
+      }
+      if (text.includes('INSERT INTO withdrawal_approval_events')) return { rows: [] };
+      if (text.includes('UPDATE stellar_transactions') && text.includes("kind = 'withdrawal'")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  await request(app)
+    .post('/api/withdrawals/w-1/approve/platform')
+    .set('Authorization', 'Bearer token')
+    .send({});
+
+  const duplicateResponse = await request(app)
+    .post('/api/withdrawals/w-1/approve/platform')
+    .set('Authorization', 'Bearer token')
+    .send({});
+
+  cleanup();
+  assert.equal(duplicateResponse.status, 409);
+  assert.match(duplicateResponse.body.error, /already being processed|platform has already approved|withdrawal request changed/);
 });
 
 test('POST /api/withdrawals/:id/cancel denies after creator signed', async () => {
@@ -495,6 +567,9 @@ test('POST /api/withdrawals/:id/approve/platform logs failure when Stellar rejec
             campaign_status: 'active',
           }],
         };
+      }
+      if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'approved'")) {
+        return { rows: [{ id: 'w-1', status: 'approved' }] };
       }
       if (text.includes("SET status = 'failed'")) return { rows: [] };
       if (text.includes('INSERT INTO withdrawal_approval_events')) return { rows: [] };

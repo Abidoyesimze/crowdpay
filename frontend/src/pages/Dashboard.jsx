@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
@@ -7,24 +7,19 @@ import KycPrompt from '../components/KycPrompt';
 import VerificationBadge from '../components/VerificationBadge';
 import CampaignStatusBadge from '../components/CampaignStatusBadge';
 import ContributorDashboard from '../components/ContributorDashboard';
+import FollowedCampaigns from '../components/FollowedCampaigns';
 import DepositModal from '../components/DepositModal';
 import ApiKeysPanel from '../components/ApiKeysPanel';
-import BackerInsightsCard from '../components/BackerInsightsCard';
 import { stellarExpertTxUrl, stellarExpertAccountUrl } from '../config/stellar';
 import ThankYouModal from '../components/ThankYouModal';
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from 'recharts';
+
+const BackerInsightsCard = React.lazy(() => import('../components/BackerInsightsCard'));
+const MiniLineChart = React.lazy(() => import('../components/MiniLineChart'));
 
 const TABS = [
   { id: 'campaigns', labelKey: 'dashboard.tabs.campaigns' },
   { id: 'contributions', labelKey: 'dashboard.tabs.contributions' },
+  { id: 'following', labelKey: 'dashboard.tabs.following' },
   { id: 'analytics', labelKey: 'dashboard.tabs.analytics' },
   { id: 'api-keys', labelKey: 'dashboard.tabs.apiKeys' },
 ];
@@ -45,34 +40,6 @@ function exportCSV(rows, filename) {
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
   a.download = filename;
   a.click();
-}
-
-function MiniLineChart({ data, dataKey = 'total_amount', label = '' }) {
-  const { t } = useTranslation();
-  if (!data || data.length === 0) {
-    return (
-      <p style={{ color: 'var(--color-text-hint)', fontSize: '0.9rem' }}>
-        {t('dashboard.noContributionData')}
-      </p>
-    );
-  }
-  return (
-    <ResponsiveContainer width="100%" height={180}>
-      <LineChart data={data} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-        <XAxis dataKey="day" tick={{ fontSize: 11 }} tickFormatter={(d) => d?.slice(5)} />
-        <YAxis tick={{ fontSize: 11 }} width={48} />
-        <Tooltip formatter={(v) => [Number(v).toLocaleString(), label]} />
-        <Line
-          type="monotone"
-          dataKey={dataKey}
-          stroke="var(--color-accent)"
-          dot={false}
-          strokeWidth={2}
-        />
-      </LineChart>
-    </ResponsiveContainer>
-  );
 }
 
 function daysUntil(dateStr) {
@@ -292,13 +259,15 @@ export default function Dashboard() {
   const activeTab =
     tabParam === 'contributions'
       ? 'contributions'
-      : tabParam === 'referrals'
-        ? 'referrals'
-        : tabParam === 'analytics'
-          ? 'analytics'
-          : tabParam === 'api-keys'
-            ? 'api-keys'
-            : 'campaigns';
+      : tabParam === 'following'
+        ? 'following'
+        : tabParam === 'referrals'
+          ? 'referrals'
+          : tabParam === 'analytics'
+            ? 'analytics'
+            : tabParam === 'api-keys'
+              ? 'api-keys'
+              : 'campaigns';
 
   const [stats, setStats] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
@@ -521,6 +490,8 @@ export default function Dashboard() {
   function setTab(tabId) {
     if (tabId === 'contributions') {
       setSearchParams({ tab: 'contributions' });
+    } else if (tabId === 'following') {
+      setSearchParams({ tab: 'following' });
     } else if (tabId === 'analytics') {
       setSearchParams({ tab: 'analytics' });
     } else if (tabId === 'referrals') {
@@ -619,7 +590,7 @@ export default function Dashboard() {
               fontWeight: 600,
               fontSize: '0.9rem',
               background: activeTab === tab.id ? 'var(--color-accent)' : 'transparent',
-              color: activeTab === tab.id ? '#fff' : 'var(--color-text-secondary)',
+              color: activeTab === tab.id ? 'var(--color-bg)' : 'var(--color-text-secondary)',
             }}
           >
             {tab.label ? tab.label : t(tab.labelKey)}
@@ -894,6 +865,12 @@ export default function Dashboard() {
         </section>
       )}
 
+      {activeTab === 'following' && (
+        <section role="tabpanel" aria-labelledby="tab-following">
+          <FollowedCampaigns />
+        </section>
+      )}
+
       {activeTab === 'analytics' && isCreator && (
         <section role="tabpanel" aria-labelledby="tab-analytics">
           {/* Dashboard-wide trend */}
@@ -920,11 +897,13 @@ export default function Dashboard() {
                 </button>
               )}
             </div>
-            <MiniLineChart
-              data={dashAnalytics?.recent_trend}
-              dataKey="total_amount"
-              label={t('dashboard.amount')}
-            />
+            <React.Suspense fallback={<p style={{ color: 'var(--color-text-hint)', fontSize: '0.9rem' }}>Loading chart…</p>}>
+              <MiniLineChart
+                data={dashAnalytics?.recent_trend}
+                dataKey="total_amount"
+                label={t('dashboard.amount')}
+              />
+            </React.Suspense>
             {dashAnalytics?.overview && (
               <div
                 style={{
@@ -968,6 +947,90 @@ export default function Dashboard() {
               </div>
             )}
           </div>
+
+          {/* Funding velocity curves — daily raised per campaign (#593) */}
+          {dashAnalytics?.funding_velocity?.length > 0 && (
+            <div className="campaign-card" style={{ marginBottom: '1rem', minHeight: 'auto' }}>
+              <strong style={{ display: 'block', marginBottom: '0.6rem' }}>
+                Funding Velocity (last 60 days)
+              </strong>
+              <React.Suspense fallback={<p style={{ color: 'var(--color-text-hint)', fontSize: '0.9rem' }}>Loading chart…</p>}>
+                <MiniLineChart
+                  data={dashAnalytics.funding_velocity}
+                  dataKey="daily_amount"
+                  label="Amount"
+                />
+              </React.Suspense>
+            </div>
+          )}
+
+          {/* Contributor retention — new vs returning by month (#593) */}
+          {dashAnalytics?.contributor_retention?.length > 0 && (
+            <div className="campaign-card" style={{ marginBottom: '1rem', minHeight: 'auto' }}>
+              <strong style={{ display: 'block', marginBottom: '0.6rem' }}>
+                Contributor Retention (last 6 months)
+              </strong>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid var(--color-border)', textAlign: 'left' }}>
+                      <th style={{ padding: '0.3rem 0.5rem' }}>Month</th>
+                      <th style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>New</th>
+                      <th style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>Returning</th>
+                      <th style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>Retention %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dashAnalytics.contributor_retention.map((r) => {
+                      const total = (r.new_count || 0) + (r.returning_count || 0);
+                      const pct = total > 0 ? Math.round((r.returning_count / total) * 100) : 0;
+                      return (
+                        <tr key={r.month} style={{ borderBottom: '1px solid var(--color-border-lighter)' }}>
+                          <td style={{ padding: '0.3rem 0.5rem', fontWeight: 600 }}>{r.month}</td>
+                          <td style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>{r.new_count}</td>
+                          <td style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>{r.returning_count}</td>
+                          <td style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>{pct}%</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Referral conversion rate — clicks vs contributions (#593) */}
+          {dashAnalytics?.referral_conversion?.length > 0 && (
+            <div className="campaign-card" style={{ marginBottom: '1rem', minHeight: 'auto' }}>
+              <strong style={{ display: 'block', marginBottom: '0.6rem' }}>
+                Referral Conversion
+              </strong>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid var(--color-border)', textAlign: 'left' }}>
+                      <th style={{ padding: '0.3rem 0.5rem' }}>Referral Code</th>
+                      <th style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>Clicks</th>
+                      <th style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>Contributions</th>
+                      <th style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>Conversion</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dashAnalytics.referral_conversion.map((r) => (
+                      <tr key={r.referral_code} style={{ borderBottom: '1px solid var(--color-border-lighter)' }}>
+                        <td style={{ padding: '0.3rem 0.5rem', fontFamily: 'monospace', fontSize: '0.78rem' }}>
+                          {r.referral_code}
+                        </td>
+                        <td style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>{r.click_count}</td>
+                        <td style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>{r.contribution_count}</td>
+                        <td style={{ padding: '0.3rem 0.5rem', textAlign: 'center' }}>{r.conversion_rate}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Per-campaign drill-down */}
           <div className="campaign-card" style={{ minHeight: 'auto' }}>
@@ -1122,21 +1185,25 @@ export default function Dashboard() {
                 )}
 
                 {campaignBackers && (
-                  <BackerInsightsCard
-                    data={campaignBackers}
-                    assetType={campaignAnalytics?.campaign?.asset_type || 'XLM'}
-                  />
+                  <React.Suspense fallback={<p style={{ color: 'var(--color-text-hint)', fontSize: '0.9rem' }}>Loading chart…</p>}>
+                    <BackerInsightsCard
+                      data={campaignBackers}
+                      assetType={campaignAnalytics?.campaign?.asset_type || 'XLM'}
+                    />
+                  </React.Suspense>
                 )}
 
                 {/* Time-series chart */}
                 <strong style={{ display: 'block', marginBottom: '0.4rem', fontSize: '0.9rem' }}>
                   {t('dashboard.contributionsOverTime')}
                 </strong>
-                <MiniLineChart
-                  data={campaignAnalytics.daily_buckets}
-                  dataKey="total_amount"
-                  label={t('dashboard.amount')}
-                />
+                <React.Suspense fallback={<p style={{ color: 'var(--color-text-hint)', fontSize: '0.9rem' }}>Loading chart…</p>}>
+                  <MiniLineChart
+                    data={campaignAnalytics.daily_buckets}
+                    dataKey="total_amount"
+                    label={t('dashboard.amount')}
+                  />
+                </React.Suspense>
 
                 {/* Milestone funnel */}
                 <MilestoneFunnel campaignId={selectedCampaignId} />

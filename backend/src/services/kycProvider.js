@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const ff = require('./featureFlags');
+const logger = require('../config/logger');
 
 function isKycRequiredForCampaigns() {
   return ff.isEnabled('kyc-required-for-campaigns');
@@ -47,7 +48,13 @@ async function createPersonaInquiry({ user }) {
     }),
   });
 
-  const body = await response.json().catch(() => ({}));
+  const body = await response.json().catch((err) => {
+    logger.warn('Could not parse Persona inquiry response body', {
+      status: response.status,
+      error: err.message,
+    });
+    return {};
+  });
   if (!response.ok) {
     const message = body?.errors?.[0]?.detail || body?.errors?.[0]?.title || 'Could not create KYC session';
     throw new Error(message);

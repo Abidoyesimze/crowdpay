@@ -1,7 +1,11 @@
 const router = require('express').Router();
 const jwt = require('jsonwebtoken');
+const Sentry = require('@sentry/node');
 const db = require('../config/database');
 const logger = require('../config/logger');
+const { TtlCache } = require('../utils/TtlCache');
+
+
 const {
   requireAuth,
   requireAdmin,
@@ -15,8 +19,23 @@ const {
   processCampaignWebhookDelivery,
 } = require('../services/webhookDispatcher');
 const cache = require('../utils/cache');
+const { parsePagination } = require('../utils/pagination');
+const { revokeAndCloseCampaignWallet } = require('../services/stellarService');
+const { sendAlert } = require('../services/alerting');
+const asyncHandler = require('../utils/asyncHandler');
 
-const IMPERSONATION_TTL_SECONDS = 15 * 60;
+const { IMPERSONATION_TTL_SECONDS, ADMIN_AUDIT_LOG_MAX_LIMIT } = require('../config/constants');
+
+// 30-second cache for admin stats (invalidated on mutations)
+const adminStatsCache = new TtlCache(30_000);
+// 60-second cache for admin health checks
+const adminHealthCache = new TtlCache(60_000);
+
+const STATS_KEY = 'admin:stats';
+const HEALTH_KEY = 'admin:health';
+
+router.use(requireAuth);
+router.use(requireAdmin);
 
 /**
  * Log admin action to audit table
@@ -97,6 +116,9 @@ router.post('/impersonate/:userId', async (req, res) => {
     const expiresAt = new Date(Date.now() + IMPERSONATION_TTL_SECONDS * 1000);
     const token = jwt.sign(
       {
+        sub: target.id.toString(),
+        iss: 'https://crowdpay.io',
+        aud: 'crowdpay-api',
         userId: target.id,
         role: target.role || 'contributor',
         impersonated_by: req.user.userId,
@@ -131,28 +153,94 @@ router.post('/impersonate/:userId', async (req, res) => {
 
 /**
  * GET /api/admin/stats
- * Get platform statistics
+ * Get platform statistics (cached 30 s, invalidated on mutations)
  */
 router.get('/stats', async (req, res) => {
   try {
-    const users = await db.query('SELECT COUNT(*) FROM users WHERE is_banned = false');
-    const bannedUsers = await db.query('SELECT COUNT(*) FROM users WHERE is_banned = true');
-    const campaigns = await db.query('SELECT status, COUNT(*) FROM campaigns WHERE deleted_at IS NULL GROUP BY status');
-    const deletedCampaigns = await db.query('SELECT COUNT(*) FROM campaigns WHERE deleted_at IS NOT NULL');
-    const raised = await db.query('SELECT SUM(raised_amount) as total FROM campaigns WHERE deleted_at IS NULL');
-    const contributions = await db.query('SELECT COUNT(*) FROM contributions');
+    const stats = await adminStatsCache.wrap(STATS_KEY, async () => {
+      // Run all 6 queries in parallel instead of sequentially
+      const [
+        users,
+        bannedUsers,
+        campaigns,
+        deletedCampaigns,
+        raised,
+        contributions,
+      ] = await Promise.all([
+        db.query('SELECT COUNT(*) FROM users WHERE is_banned = false'),
+        db.query('SELECT COUNT(*) FROM users WHERE is_banned = true'),
+        db.query('SELECT status, COUNT(*) FROM campaigns WHERE deleted_at IS NULL GROUP BY status'),
+        db.query('SELECT COUNT(*) FROM campaigns WHERE deleted_at IS NOT NULL'),
+        db.query('SELECT SUM(raised_amount) as total FROM campaigns WHERE deleted_at IS NULL'),
+        db.query('SELECT COUNT(*) FROM contributions'),
+      ]);
 
-    res.json({
-      total_users: parseInt(users.rows[0].count),
-      banned_users: parseInt(bannedUsers.rows[0].count),
-      campaign_status: campaigns.rows,
-      deleted_campaigns: parseInt(deletedCampaigns.rows[0].count),
-      total_raised: parseFloat(raised.rows[0]?.total || 0),
-      total_contributions: parseInt(contributions.rows[0].count),
+      return {
+        total_users: parseInt(users.rows[0].count),
+        banned_users: parseInt(bannedUsers.rows[0].count),
+        campaign_status: campaigns.rows,
+        deleted_campaigns: parseInt(deletedCampaigns.rows[0].count),
+        total_raised: parseFloat(raised.rows[0]?.total || 0),
+        total_contributions: parseInt(contributions.rows[0].count),
+      };
     });
+
+    res.set('Cache-Control', 'private, max-age=30');
+    res.json(stats);
   } catch (err) {
     logger.error('Error fetching admin stats', { error: err.message });
     res.status(500).json({ error: 'Failed to fetch statistics' });
+  }
+});
+
+/**
+ * GET /api/admin/health
+ * Deep health check for all platform subsystems (cached 60 s)
+ */
+router.get('/health', async (req, res) => {
+  try {
+    const health = await adminHealthCache.wrap(HEALTH_KEY, async () => {
+      const start = Date.now();
+
+      const [
+        dbCheck,
+        userCount,
+        activeCampaigns,
+        pendingWithdrawals,
+        openDisputes,
+        pendingMilestones,
+        recentContributions,
+      ] = await Promise.all([
+        db.query('SELECT 1 AS ok'),
+        db.query('SELECT COUNT(*) FROM users'),
+        db.query("SELECT COUNT(*) FROM campaigns WHERE status = 'active' AND deleted_at IS NULL"),
+        db.query("SELECT COUNT(*) FROM withdrawals WHERE status = 'pending'"),
+        db.query("SELECT COUNT(*) FROM disputes WHERE status IN ('open','under_review')"),
+        db.query("SELECT COUNT(*) FROM milestones WHERE status = 'pending'"),
+        db.query('SELECT COUNT(*) FROM contributions WHERE created_at > NOW() - INTERVAL \'1 hour\''),
+      ]);
+
+      return {
+        status: 'ok',
+        latency_ms: Date.now() - start,
+        database: dbCheck.rows[0].ok === 1 ? 'ok' : 'error',
+        platform: {
+          total_users: parseInt(userCount.rows[0].count),
+          active_campaigns: parseInt(activeCampaigns.rows[0].count),
+          pending_withdrawals: parseInt(pendingWithdrawals.rows[0].count),
+          open_disputes: parseInt(openDisputes.rows[0].count),
+          pending_milestones: parseInt(pendingMilestones.rows[0].count),
+          contributions_last_hour: parseInt(recentContributions.rows[0].count),
+        },
+        cached_at: new Date().toISOString(),
+      };
+    });
+
+    res.set('Cache-Control', 'private, max-age=60');
+    res.json(health);
+  } catch (err) {
+    logger.error('Error fetching admin health', { error: err.message });
+    res.status(500).json({ error: 'Health check failed', details: err.message });
   }
 });
 
@@ -163,6 +251,7 @@ router.get('/stats', async (req, res) => {
 router.get('/campaigns', async (req, res) => {
   try {
     const { status, include_deleted, flagged_only, contract_deployment_status } = req.query;
+    const { limit, offset } = parsePagination(req.query, { limit: 50, max: 200 });
     const params = [];
     let where = 'WHERE 1=1';
 
@@ -184,20 +273,30 @@ router.get('/campaigns', async (req, res) => {
       where += ` AND c.contract_deployment_status = $${params.length}`;
     }
 
+    const countSql = `SELECT COUNT(*)::int AS total FROM campaigns c ${where}`;
+    const countResult = await db.query(countSql, params);
+    const total = countResult.rows[0].total;
+
     const { rows } = await db.query(
       `SELECT c.id, c.title, c.status, c.raised_amount, c.target_amount, 
               c.asset_type, c.created_at, c.deleted_at, c.is_flagged_duplicate,
               c.contract_deployment_status, c.contract_deployment_error,
               c.escrow_contract_id,
               u.id as creator_id, u.name as creator_name, u.email as creator_email,
-              (SELECT COUNT(*) FROM contributions WHERE campaign_id = c.id) as contribution_count
+              COALESCE(con.contribution_count, 0)::int as contribution_count
        FROM campaigns c 
        JOIN users u ON c.creator_id = u.id
+       LEFT JOIN (
+         SELECT campaign_id, COUNT(*)::int as contribution_count
+         FROM contributions
+         GROUP BY campaign_id
+       ) con ON con.campaign_id = c.id
        ${where}
-       ORDER BY c.created_at DESC`,
-      params
+       ORDER BY c.created_at DESC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
     );
-    res.json(rows);
+    res.json({ data: rows, total, limit, offset });
   } catch (err) {
     logger.error('Error fetching campaigns for admin', { error: err.message });
     res.status(500).json({ error: 'Failed to fetch campaigns' });
@@ -210,6 +309,14 @@ router.get('/campaigns', async (req, res) => {
  */
 router.get('/fraud/flagged', async (req, res) => {
   try {
+    const { limit, offset } = parsePagination(req.query, { limit: 50, max: 200 });
+
+    const countResult = await db.query(
+      `SELECT COUNT(*)::int AS total FROM campaigns c
+       WHERE c.is_flagged_fraud = TRUE AND c.deleted_at IS NULL`
+    );
+    const total = countResult.rows[0].total;
+
     const { rows } = await db.query(
       `SELECT c.id, c.title, c.status, c.raised_amount, c.target_amount, c.asset_type,
               c.is_flagged_fraud, c.fraud_score, c.fraud_signals, c.created_at,
@@ -217,9 +324,11 @@ router.get('/fraud/flagged', async (req, res) => {
        FROM campaigns c
        JOIN users u ON c.creator_id = u.id
        WHERE c.is_flagged_fraud = TRUE AND c.deleted_at IS NULL
-       ORDER BY c.fraud_score DESC`
+       ORDER BY c.fraud_score DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
     );
-    res.json(rows);
+    res.json({ data: rows, total, limit, offset });
   } catch (err) {
     logger.error('Error fetching flagged campaigns', { error: err.message });
     res.status(500).json({ error: 'Failed to fetch flagged campaigns' });
@@ -359,6 +468,7 @@ router.patch('/campaigns/:id/suspend', async (req, res) => {
       was_flagged_fraud: Boolean(campaign.is_flagged_fraud)
     });
 
+    adminStatsCache.invalidate(STATS_KEY);
     logger.info('Campaign suspended', { campaignId: id, adminId: req.user.userId, reason });
     cache.invalidate(`campaigns:id:${id}`);
     cache.invalidatePrefix('campaigns:list:');
@@ -401,6 +511,7 @@ router.patch('/campaigns/:id/restore', async (req, res) => {
       previous_status: campaign.status 
     });
 
+    adminStatsCache.invalidate(STATS_KEY);
     logger.info('Campaign restored', { campaignId: id, adminId: req.user.userId });
     cache.invalidate(`campaigns:id:${id}`);
     cache.invalidatePrefix('campaigns:list:');
@@ -421,12 +532,33 @@ router.delete('/campaigns/:id', async (req, res) => {
     const { reason } = req.body;
 
     const { rows: campaignRows } = await db.query(
-      'SELECT id, title FROM campaigns WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id, title, creator_id, wallet_public_key, wallet_secret_encrypted FROM campaigns WHERE id = $1 AND deleted_at IS NULL',
       [id]
     );
 
     if (!campaignRows.length) {
       return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    const campaign = campaignRows[0];
+
+    // Revoke platform multisig, sweep non-zero funds to platform, and close Stellar account
+    try {
+      await revokeAndCloseCampaignWallet(campaign);
+    } catch (stellarErr) {
+      logger.error('Failed to revoke platform multisig / close Stellar account for deleted campaign', {
+        campaignId: id,
+        error: stellarErr.message,
+      });
+      await sendAlert('Campaign wallet cleanup failed on deletion', {
+        campaignId: id,
+        walletPublicKey: campaign.wallet_public_key,
+        error: stellarErr.message,
+      });
+      return res.status(502).json({
+        error: 'Failed to revoke Stellar wallet multisig and close account',
+        details: stellarErr.message,
+      });
     }
 
     const { rows: updated } = await db.query(
@@ -438,6 +570,7 @@ router.delete('/campaigns/:id', async (req, res) => {
       reason: reason || null
     });
 
+    adminStatsCache.invalidate(STATS_KEY);
     logger.info('Campaign deleted', { campaignId: id, adminId: req.user.userId, reason });
     cache.invalidate(`campaigns:id:${id}`);
     cache.invalidatePrefix('campaigns:list:');
@@ -530,6 +663,7 @@ router.patch('/campaigns/:id/unfeature', async (req, res) => {
 router.get('/users', async (req, res) => {
   try {
     const { include_banned, kyc_status } = req.query;
+    const { limit, offset } = parsePagination(req.query, { limit: 50, max: 200 });
     const params = [];
     let where = 'WHERE 1=1';
 
@@ -542,17 +676,33 @@ router.get('/users', async (req, res) => {
       where += ` AND u.kyc_status = $${params.length}::kyc_status`;
     }
 
+    const countSql = `SELECT COUNT(*)::int AS total FROM users u ${where}`;
+    const countResult = await db.query(countSql, params);
+    const total = countResult.rows[0].total;
+
     const { rows } = await db.query(
       `SELECT u.id, u.name, u.email, u.role, u.is_admin, u.is_banned, u.created_at,
               u.kyc_status, u.kyc_completed_at,
-              (SELECT COUNT(*) FROM campaigns WHERE creator_id = u.id AND deleted_at IS NULL) as campaign_count,
-              (SELECT COUNT(*) FROM contributions WHERE sender_public_key = u.wallet_public_key) as contribution_count
+              COALESCE(camp.campaign_count, 0)::int as campaign_count,
+              COALESCE(con.contribution_count, 0)::int as contribution_count
        FROM users u
+       LEFT JOIN (
+         SELECT creator_id, COUNT(*)::int as campaign_count
+         FROM campaigns
+         WHERE deleted_at IS NULL
+         GROUP BY creator_id
+       ) camp ON camp.creator_id = u.id
+       LEFT JOIN (
+         SELECT sender_public_key, COUNT(*)::int as contribution_count
+         FROM contributions
+         GROUP BY sender_public_key
+       ) con ON con.sender_public_key = u.wallet_public_key
        ${where}
-       ORDER BY u.created_at DESC`,
-      params
+       ORDER BY u.created_at DESC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
     );
-    res.json(rows);
+    res.json({ data: rows, total, limit, offset });
   } catch (err) {
     logger.error('Error fetching users for admin', { error: err.message });
     res.status(500).json({ error: 'Failed to fetch users' });
@@ -596,6 +746,7 @@ router.patch('/users/:id/ban', async (req, res) => {
       reason: reason
     });
 
+    adminStatsCache.invalidate(STATS_KEY);
     logger.info('User banned', { userId: id, adminId: req.user.userId, reason });
     res.json({ message: 'User banned', user: updated[0] });
   } catch (err) {
@@ -634,6 +785,7 @@ router.patch('/users/:id/unban', async (req, res) => {
 
     await logAdminAction(req.user.userId, 'unban', 'user', id, {});
 
+    adminStatsCache.invalidate(STATS_KEY);
     logger.info('User unbanned', { userId: id, adminId: req.user.userId });
     res.json({ message: 'User unbanned', user: updated[0] });
   } catch (err) {
@@ -649,7 +801,7 @@ router.patch('/users/:id/unban', async (req, res) => {
 router.get('/audit-log', async (req, res) => {
   try {
     const { limit = 100, offset = 0 } = req.query;
-    const limitNum = Math.min(parseInt(limit) || 100, 1000);
+    const limitNum = Math.min(parseInt(limit) || 100, ADMIN_AUDIT_LOG_MAX_LIMIT);
     const offsetNum = parseInt(offset) || 0;
 
     const { rows } = await db.query(
@@ -756,12 +908,14 @@ router.patch('/users/:id/demote', async (req, res) => {
 });
 
 // Migrate old /milestones endpoint if needed
-router.get('/milestones', async (req, res) => {
+router.get('/milestones', asyncHandler(async (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const allowedStatuses = ['pending', 'pending_review', 'rejected', 'approved', 'released'];
   if (status && !allowedStatuses.includes(status)) {
     return res.status(400).json({ error: `status must be one of: ${allowedStatuses.join(', ')}` });
   }
+
+  const { limit, offset } = parsePagination(req.query, { limit: 50, max: 200 });
 
   const params = [];
   let where = 'WHERE 1=1';
@@ -770,6 +924,10 @@ router.get('/milestones', async (req, res) => {
     where += ` AND m.status = $${params.length}`;
   }
 
+  const countSql = `SELECT COUNT(*)::int AS total FROM milestones m ${where}`;
+  const countResult = await db.query(countSql, params);
+  const total = countResult.rows[0].total;
+
   const { rows } = await db.query(
     `SELECT m.*, c.title AS campaign_title, c.status AS campaign_status, c.asset_type,
             c.raised_amount, u.email AS creator_email, u.name AS creator_name
@@ -777,11 +935,12 @@ router.get('/milestones', async (req, res) => {
      JOIN campaigns c ON c.id = m.campaign_id
      JOIN users u ON u.id = c.creator_id
      ${where}
-     ORDER BY m.created_at DESC`,
-    params
+     ORDER BY m.created_at DESC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset]
   );
-  res.json(rows);
-});
+  res.json({ data: rows, total, limit, offset });
+}));
 
 /**
  * POST /api/admin/campaigns/:id/reconcile
@@ -807,7 +966,15 @@ router.post('/campaigns/:id/reconcile', async (req, res) => {
 router.get('/withdrawals', async (req, res) => {
   try {
     const status = req.query.status ? String(req.query.status) : 'pending';
+    const { limit, offset } = parsePagination(req.query, { limit: 50, max: 200 });
     const params = [status];
+
+    const countResult = await db.query(
+      'SELECT COUNT(*)::int AS total FROM withdrawal_requests wr WHERE wr.status = $1',
+      params
+    );
+    const total = countResult.rows[0].total;
+
     const { rows } = await db.query(
       `SELECT wr.id, wr.campaign_id, wr.amount, wr.destination_key, wr.status,
               wr.creator_signed, wr.platform_signed, wr.created_at, wr.is_refund,
@@ -817,10 +984,11 @@ router.get('/withdrawals', async (req, res) => {
        JOIN campaigns c ON c.id = wr.campaign_id
        JOIN users u ON u.id = c.creator_id
        WHERE wr.status = $1
-       ORDER BY wr.created_at ASC`,
-      params
+       ORDER BY wr.created_at ASC
+       LIMIT $2 OFFSET $3`,
+      [status, limit, offset]
     );
-    res.json(rows);
+    res.json({ data: rows, total, limit, offset });
   } catch (err) {
     logger.error('Error fetching admin withdrawals', { error: err.message });
     res.status(500).json({ error: 'Failed to fetch withdrawals' });
@@ -834,6 +1002,7 @@ router.get('/withdrawals', async (req, res) => {
 router.get('/disputes', async (req, res) => {
   try {
     const { status } = req.query;
+    const { limit, offset } = parsePagination(req.query, { limit: 50, max: 200 });
     const params = [];
     let where = 'WHERE 1=1';
     if (status) {
@@ -842,6 +1011,10 @@ router.get('/disputes', async (req, res) => {
     } else {
       where += " AND d.status IN ('open', 'under_review')";
     }
+
+    const countSql = `SELECT COUNT(*)::int AS total FROM disputes d ${where}`;
+    const countResult = await db.query(countSql, params);
+    const total = countResult.rows[0].total;
 
     const { rows } = await db.query(
       `SELECT d.*,
@@ -857,10 +1030,11 @@ router.get('/disputes', async (req, res) => {
        JOIN users reporter ON reporter.id = d.raised_by
        JOIN users creator ON creator.id = c.creator_id
        ${where}
-       ORDER BY d.created_at DESC`,
-      params
+       ORDER BY d.created_at DESC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
     );
-    res.json(rows);
+    res.json({ data: rows, total, limit, offset });
   } catch (err) {
     logger.error('Error fetching admin disputes', { error: err.message });
     res.status(500).json({ error: 'Failed to fetch disputes' });
@@ -1109,6 +1283,57 @@ router.post('/webhook-deliveries/:id/retry', async (req, res) => {
 });
 
 /**
+ * GET /api/admin/webhooks/metrics
+ * Delivery observability: success rate, average latency, and failure counts
+ * per event type across both user-level and campaign-level webhooks.
+ */
+router.get('/webhooks/metrics', async (req, res) => {
+  try {
+    const [userMetrics, campaignMetrics] = await Promise.all([
+      db.query(`
+        SELECT event_type AS event,
+               COUNT(*)::int AS total,
+               COUNT(*) FILTER (WHERE status = 'delivered')::int AS delivered,
+               COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+               COUNT(*) FILTER (WHERE status IN ('pending', 'delivering', 'retrying'))::int AS in_flight,
+               ROUND(AVG(EXTRACT(EPOCH FROM (delivered_at - created_at)) * 1000)
+                 FILTER (WHERE status = 'delivered'))::int AS avg_latency_ms
+        FROM webhook_deliveries
+        GROUP BY event_type
+        ORDER BY event_type
+      `),
+      db.query(`
+        SELECT event,
+               COUNT(*)::int AS total,
+               COUNT(*) FILTER (WHERE status = 'delivered')::int AS delivered,
+               COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+               COUNT(*) FILTER (WHERE status IN ('pending', 'delivering', 'retrying'))::int AS in_flight,
+               ROUND(AVG(EXTRACT(EPOCH FROM (delivered_at - created_at)) * 1000)
+                 FILTER (WHERE status = 'delivered'))::int AS avg_latency_ms
+        FROM campaign_webhook_deliveries
+        GROUP BY event
+        ORDER BY event
+      `),
+    ]);
+
+    function withSuccessRate(rows) {
+      return rows.map((row) => ({
+        ...row,
+        success_rate: row.total > 0 ? Number((row.delivered / row.total).toFixed(4)) : 0,
+      }));
+    }
+
+    res.json({
+      user_webhooks: withSuccessRate(userMetrics.rows),
+      campaign_webhooks: withSuccessRate(campaignMetrics.rows),
+    });
+  } catch (err) {
+    logger.error('Error fetching webhook metrics', { error: err.message });
+    res.status(500).json({ error: 'Failed to fetch webhook metrics' });
+  }
+});
+
+/**
  * GET /api/admin/campaigns/:id/contributions
  * Contributor audit trail for withdrawal review
  */
@@ -1188,8 +1413,9 @@ router.post('/campaigns/:id/redeploy-contract', async (req, res) => {
 
     let escrowContractId;
     let milestonesContractId;
+    let deploymentTxHash;
     try {
-      ({ escrowContractId, milestonesContractId } = await deployCampaignContracts({
+      ({ escrowContractId, milestonesContractId, deploymentTxHash } = await deployCampaignContracts({
         creatorPublicKey: campaign.creator_public_key,
         platformPublicKey,
         campaignId: campaign.title + Date.now(),
@@ -1245,18 +1471,21 @@ router.post('/campaigns/:id/redeploy-contract', async (req, res) => {
     await logAdminAction(req.user.userId, 'redeploy_contract', 'campaign', id, {
       escrow_contract_id: escrowContractId,
       milestones_contract_id: milestonesContractId,
+      deployment_tx_hash: deploymentTxHash,
     });
 
     logger.info('Contract redeployed', {
       campaignId: id,
       adminId: req.user.userId,
       escrowContractId,
+      deploymentTxHash,
     });
 
     res.json({
       message: 'Contract deployed successfully',
       escrow_contract_id: escrowContractId,
       milestones_contract_id: milestonesContractId,
+      deployment_tx_hash: deploymentTxHash,
     });
   } catch (err) {
     logger.error('Error in redeploy-contract', { error: err.message, campaignId: req.params.id });

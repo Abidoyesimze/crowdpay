@@ -7,6 +7,21 @@ on:
     branches: [main]
 
 jobs:
+  secret-hygiene:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Fail if any .env file is tracked by git
+        run: node .husky/check-env.js --tracked
+
   backend-checks:
     runs-on: ubuntu-latest
     services:
@@ -38,6 +53,10 @@ jobs:
       - name: Install dependencies
         working-directory: ./backend
         run: npm ci
+
+      - name: Audit backend dependencies
+        working-directory: ./backend
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Run linter
         working-directory: ./backend
@@ -79,6 +98,10 @@ jobs:
         working-directory: ./frontend
         run: npm ci
 
+      - name: Audit frontend dependencies
+        working-directory: ./frontend
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Run linter
         working-directory: ./frontend
         run: npm run lint
@@ -89,4 +112,7 @@ jobs:
 
       - name: Run build
         working-directory: ./frontend
+        env:
+          SENTRY_RELEASE: ${{ github.sha }}
+          VITE_SENTRY_RELEASE: ${{ github.sha }}
         run: npm run build

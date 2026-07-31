@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => ({
             org: process.env.SENTRY_ORG,
             project: process.env.SENTRY_PROJECT,
             authToken: process.env.SENTRY_AUTH_TOKEN,
+            release: process.env.SENTRY_RELEASE || process.env.VITE_SENTRY_RELEASE || 'unknown',
             telemetry: false,
           }),
         ]
@@ -29,6 +30,15 @@ export default defineConfig(({ mode }) => ({
       input: {
         main: './index.html',
         embed: './embed.html',
+      },
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom'],
+          'router': ['react-router-dom'],
+          'sentry': ['@sentry/react'],
+          'recharts': ['recharts'],
+          'i18n': ['i18next', 'react-i18next', 'i18next-browser-languagedetector'],
+        },
       },
     },
   },

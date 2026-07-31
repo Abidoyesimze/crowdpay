@@ -21,6 +21,9 @@ const campaignUpdatePostedEmail = require("../emails/campaignUpdatePosted");
 const weeklyDigestEmail = require("../emails/weeklyDigest");
 const teamMemberInvitedEmail = require("../emails/teamMemberInvited");
 const thankYouEmail = require("../emails/thankYou");
+const walletFundingFailedEmail = require("../emails/walletFundingFailed");
+const campaignCommentEmail = require("../emails/campaignComment");
+const fundsReleasedEmail = require("../emails/fundsReleased");
 
 let transporter;
 
@@ -212,6 +215,12 @@ async function sendMilestoneReleasedContributorEmail({ to, milestoneId, ...param
   await sendIdempotent({ dedupeKey: `milestone_released_contributor:${milestoneId}:${to}`, to, subject, text, html });
 }
 
+async function sendContributorFundsReleasedEmail({ to, dedupeKey, ...params }) {
+  if (!to) return;
+  const { subject, text, html } = fundsReleasedEmail.buildContributorRelease(params);
+  await sendIdempotent({ dedupeKey, to, subject, text, html });
+}
+
 async function sendMilestoneEvidenceSubmittedAdminEmail({ to, milestoneId, ...params }) {
   if (!to) return;
   const { subject, text, html } = milestoneEvidenceSubmittedEmail.buildForAdmin(params);
@@ -310,6 +319,28 @@ async function sendCampaignFraudFlaggedEmail({ to, campaignId, ...params }) {
   await sendIdempotent({ dedupeKey: `campaign_fraud_flagged:${campaignId}:${to}`, to, subject, text, html });
 }
 
+async function sendWalletFundingFailedEmail({ to, ...params }) {
+  if (!to) return;
+  const { subject, text, html } = walletFundingFailedEmail.build(params);
+  await sendIdempotent({ dedupeKey: `wallet_funding_failed:${to}`, to, subject, text, html });
+}
+
+async function sendCampaignCommentEmail({ to, commentId, ...params }) {
+  if (!to) return;
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  const campaignUrl = `${frontendUrl}/campaigns/${params.campaignId}`;
+  const { subject, text, html } = campaignCommentEmail.buildForCreator({ ...params, campaignUrl });
+  await sendIdempotent({ dedupeKey: `campaign_comment:${commentId}:${to}`, to, subject, text, html });
+}
+
+async function sendCommentReplyEmail({ to, commentId, ...params }) {
+  if (!to) return;
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+  const campaignUrl = `${frontendUrl}/campaigns/${params.campaignId}`;
+  const { subject, text, html } = campaignCommentEmail.buildForCommenter({ ...params, campaignUrl });
+  await sendIdempotent({ dedupeKey: `comment_reply:${commentId}:${to}`, to, subject, text, html });
+}
+
 module.exports = {
   sendEmail,
   sendIdempotent,
@@ -318,6 +349,7 @@ module.exports = {
   getStellarExpertTxUrl,
   sendContributionReceipt,
   sendWelcomeEmail,
+  sendWalletFundingFailedEmail,
   sendCampaignFundedCreatorEmail,
   sendCampaignFundedContributorEmail,
   sendCampaignFailedCreatorEmail,
@@ -326,6 +358,7 @@ module.exports = {
   sendWithdrawalRejectedEmail,
   sendMilestoneReleasedCreatorEmail,
   sendMilestoneReleasedContributorEmail,
+  sendContributorFundsReleasedEmail,
   sendMilestoneEvidenceSubmittedAdminEmail,
   sendKycApprovedEmail,
   sendKycRejectedEmail,
@@ -339,4 +372,6 @@ module.exports = {
   isThankYouUnsubscribed,
   sendThankYouEmail,
   sendCampaignFraudFlaggedEmail,
+  sendCampaignCommentEmail,
+  sendCommentReplyEmail,
 };

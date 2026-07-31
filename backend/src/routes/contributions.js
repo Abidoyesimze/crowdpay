@@ -8,6 +8,7 @@ const { requireAuth } = require('../middleware/auth');
 const logger = require('../config/logger');
 const { sendAlert } = require('../services/alerting');
 const { contributionValidation, contributionQuoteValidation, validateRequest } = require('../middleware/validation');
+const { parsePagination } = require('../utils/pagination');
 const {
   buildUnsignedContributionPayment,
   buildUnsignedContributionPathPayment,
@@ -15,6 +16,7 @@ const {
   getPathPaymentQuote,
   getSupportedAssetCodes,
   isBadSequenceError,
+  accountExistsOnLedger,
 } = require("../services/stellarService");
 const {
   insertContributionSubmitted,
@@ -26,11 +28,19 @@ const {
   buildContributionMemo,
   submitCustodialContribution,
 } = require('../services/contributionService');
-const { listUserContributions, getContributorDashboard } = require('../services/userDashboardService');
+const {
+  listUserContributions,
+  getContributorDashboard,
+  getContributorDashboardCsv,
+} = require('../services/userDashboardService');
+const { buildTaxReceiptPdf } = require('../services/taxReceiptPdf');
 const { triggerRefund } = require('../services/sorobanService');
+const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { assertUserKycVerified } = require('../services/kycService');
 const asyncHandler = require('../utils/asyncHandler');
 const { getReferralCodeFromRequest } = require('../services/referralService');
+const { reserveTierSlot } = require('../services/rewardTierService');
+const { hashDeviceFingerprint } = require('../utils/deviceFingerprint');
 
 const SUPPORTED_ASSETS = getSupportedAssetCodes();
 const PREPARED_CONTRIBUTION_EXPIRES_IN = '10m';
@@ -137,6 +147,39 @@ function validateSubmittedContributionXdr({ signedXdr, unsignedXdr, senderPublic
   }
 }
 
+async function getTaxReceiptRows(userId, contributionId = null) {
+  const params = [userId];
+  let contributionFilter = '';
+  if (contributionId) {
+    params.push(contributionId);
+    contributionFilter = 'AND ctr.id = $2';
+  }
+
+  const { rows } = await db.query(
+    `SELECT
+       ctr.id, ctr.amount, ctr.asset, ctr.tx_hash, ctr.created_at,
+       ctr.sender_public_key,
+       c.id AS campaign_id, c.title AS campaign_title, c.status AS campaign_status,
+       creator.name AS campaign_creator_name,
+       u.name AS contributor_name, u.email AS contributor_email
+     FROM users u
+     JOIN contributions ctr ON ctr.sender_public_key = u.wallet_public_key
+     JOIN campaigns c ON c.id = ctr.campaign_id
+     LEFT JOIN users creator ON creator.id = c.creator_id
+     WHERE u.id = $1 ${contributionFilter}
+     ORDER BY ctr.created_at DESC`,
+    params
+  );
+  return rows;
+}
+
+function taxReceiptFilename(receipts, fallback = 'crowdpay-tax-receipts.pdf') {
+  if (receipts.length === 1) {
+    return `crowdpay-tax-receipt-${receipts[0].id}.pdf`;
+  }
+  return fallback;
+}
+
 router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
   const rows = await listUserContributions(req.user.userId);
   if (rows === null) return res.status(404).json({ error: 'User not found' });
@@ -149,9 +192,52 @@ router.get('/dashboard', requireAuth, asyncHandler(async (req, res) => {
   res.json(data);
 }));
 
-router.get('/campaign/:campaignId', async (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
-  const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+router.get('/dashboard/export.csv', requireAuth, asyncHandler(async (req, res) => {
+  const csv = await getContributorDashboardCsv(req.user.userId);
+  if (csv === null) return res.status(404).json({ error: 'User not found' });
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="contributions.csv"');
+  res.send(csv);
+}));
+
+router.get('/tax-receipts', requireAuth, asyncHandler(async (req, res) => {
+  const rows = await getTaxReceiptRows(req.user.userId);
+  res.json({
+    receipts: rows.map((row) => ({
+      id: row.id,
+      amount: row.amount,
+      asset: row.asset,
+      tx_hash: row.tx_hash,
+      created_at: row.created_at,
+      campaign_id: row.campaign_id,
+      campaign_title: row.campaign_title,
+      campaign_status: row.campaign_status,
+    })),
+  });
+}));
+
+router.get('/tax-receipts/download', requireAuth, asyncHandler(async (req, res) => {
+  const rows = await getTaxReceiptRows(req.user.userId);
+  if (!rows.length) return res.status(404).json({ error: 'No contribution receipts found' });
+
+  const pdf = buildTaxReceiptPdf(rows);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${taxReceiptFilename(rows)}"`);
+  res.send(pdf);
+}));
+
+router.get('/tax-receipts/:id/download', requireAuth, asyncHandler(async (req, res) => {
+  const rows = await getTaxReceiptRows(req.user.userId, req.params.id);
+  if (!rows.length) return res.status(404).json({ error: 'Tax receipt not found' });
+
+  const pdf = buildTaxReceiptPdf(rows);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${taxReceiptFilename(rows)}"`);
+  res.send(pdf);
+}));
+
+router.get('/campaign/:campaignId', asyncHandler(async (req, res) => {
+  const { limit, offset } = parsePagination(req.query, { limit: 20, max: 100 });
 
   const { rows } = await db.query(
     `SELECT c.id, c.sender_public_key, c.amount, c.asset, c.payment_type,
@@ -178,7 +264,7 @@ router.get('/campaign/:campaignId', async (req, res) => {
   const total = rows[0]?.total_count ?? 0;
   const cleanedRows = rows.map(({ total_count, ...rest }) => rest);
   res.json({ contributions: cleanedRows, total: Number(total), limit, offset });
-});
+}));
 
 router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const rows = await listUserContributions(req.user.userId);
@@ -352,7 +438,7 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
       campaign_id,
       sender_public_key,
       unsigned_xdr: unsignedXdr,
-      flow_metadata: { ...withReferralMetadata(intent.flowMetadata, campaign_id, req), ip_address: req.ip },
+      flow_metadata: { ...withReferralMetadata(intent.flowMetadata, campaign_id, req), ip_address: req.ip, device_fingerprint: hashDeviceFingerprint(req.body.device_fingerprint) },
       conversion_quote: intent.conversionQuote,
     });
 
@@ -442,8 +528,38 @@ router.post('/submit-signed', requireAuth, asyncHandler(async (req, res) => {
     stellar_transaction_id: stellarTransactionId,
     message: 'Transaction submitted',
     conversion_quote: prepared.conversion_quote || null,
+    nft_reward: Boolean(prepared.flow_metadata?.tier_id),
   });
 }));
+
+async function assertUserWalletFunded(userId) {
+  const { rows } = await db.query(
+    'SELECT wallet_type, wallet_public_key, wallet_funded_at, wallet_funding_failed_at FROM users WHERE id = $1',
+    [userId]
+  );
+  if (!rows.length) return;
+
+  const user = rows[0];
+  if (user.wallet_type === 'freighter') return;
+
+  if (user.wallet_funded_at) return;
+
+  if (user.wallet_public_key) {
+    const onLedger = await accountExistsOnLedger(user.wallet_public_key);
+    if (onLedger) {
+      await db.query(
+        'UPDATE users SET wallet_funded_at = NOW(), wallet_funding_failed_at = NULL WHERE id = $1',
+        [userId]
+      );
+      return;
+    }
+  }
+
+  const err = new Error('Your wallet has not been funded yet. Please retry wallet funding or add funds before contributing.');
+  err.statusCode = 400;
+  err.code = 'WALLET_NOT_FUNDED';
+  throw err;
+}
 
 router.post('/', contributionPostLimiter, requireAuth, contributionValidation, validateRequest, asyncHandler(async (req, res) => {
   try {
@@ -453,7 +569,16 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
     if (handled) return handled;
   }
 
-  const { campaign_id, amount, send_asset, display_name } = req.body;
+  try {
+    await assertUserWalletFunded(req.user.userId);
+  } catch (err) {
+    if (err.code === 'WALLET_NOT_FUNDED') {
+      return res.status(400).json({ error: err.message });
+    }
+    throw err;
+  }
+
+  const { campaign_id, amount, send_asset, display_name, tier_id } = req.body;
 
   const campaign = await loadActiveCampaign(campaign_id);
   if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
@@ -474,6 +599,17 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
     return res.status(400).json({
       error: `Maximum contribution is ${campaign.max_contribution} ${campaign.asset_type}`,
     });
+  }
+
+  // If a specific reward tier was chosen, validate it exists and belongs to this campaign
+  if (tier_id) {
+    const { rows: tierRows } = await db.query(
+      'SELECT id, title, tier_limit, claimed_count FROM reward_tiers WHERE id = $1 AND campaign_id = $2',
+      [tier_id, campaign_id]
+    );
+    if (!tierRows.length) {
+      return res.status(404).json({ error: 'Reward tier not found for this campaign' });
+    }
   }
 
   const client = await db.connect();
@@ -501,6 +637,20 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
       }
     }
 
+    // Atomically reserve a reward tier slot (if a tier was selected)
+    let reservedTier = null;
+    if (tier_id) {
+      reservedTier = await reserveTierSlot(client, { tierId: tier_id, campaignId: campaign_id });
+      if (!reservedTier) {
+        await client.query('ROLLBACK');
+        transactionStarted = false;
+        return res.status(409).json({
+          error: 'This reward tier is sold out',
+          tier_id,
+        });
+      }
+    }
+
     const result = await submitCustodialContribution({
       campaign,
       campaignId: campaign_id,
@@ -512,7 +662,9 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
       displayName: display_name,
       referralCode: getReferralCodeFromRequest(campaign_id, req),
       ipAddress: req.ip,
+      deviceFingerprint: hashDeviceFingerprint(req.body.device_fingerprint),
       client,
+      tierId: reservedTier ? reservedTier.id : null,
     });
     await client.query('COMMIT');
     transactionStarted = false;
@@ -521,6 +673,7 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
       stellar_transaction_id: result.stellarTransactionId,
       message: "Transaction submitted",
       conversion_quote: result.conversionQuote,
+      nft_reward: Boolean(tier_id),
       ...(result.platform_fee_amount !== null && result.platform_fee_amount !== undefined
         ? { platform_fee_amount: result.platform_fee_amount }
         : {}),
@@ -594,7 +747,7 @@ router.post('/:id/refund', requireAuth, asyncHandler(async (req, res) => {
   const signerSecret = req.body.signer_secret || process.env.PLATFORM_SECRET_KEY;
 
   const { rows: contributions } = await db.query(
-    `SELECT ct.*, c.escrow_contract_id, c.status AS campaign_status, c.deadline
+    `SELECT ct.*, c.escrow_contract_id, c.status AS campaign_status, c.deadline, c.creator_id
      FROM contributions ct
      JOIN campaigns c ON c.id = ct.campaign_id
      WHERE ct.id = $1`,
@@ -658,6 +811,23 @@ router.post('/:id/refund', requireAuth, asyncHandler(async (req, res) => {
       contributionId,
       escrowContractId: contribution.escrow_contract_id,
       result,
+    });
+
+    setImmediate(() => {
+      const refundPayload = {
+        campaign_id: contribution.campaign_id,
+        contribution_id: contribution.id,
+        amount: String(contribution.amount),
+        asset: contribution.asset,
+        tx_hash: result?.toString() || null,
+        timestamp: new Date().toISOString(),
+      };
+      emitWebhookEventForUser(contribution.creator_id, WEBHOOK_EVENTS.CONTRIBUTION_REFUNDED, refundPayload).catch(
+        (err) => logger.error('Contribution refunded webhook emit failed', { error: err.message })
+      );
+      emitWebhookEventForCampaign(contribution.campaign_id, WEBHOOK_EVENTS.CONTRIBUTION_REFUNDED, refundPayload).catch(
+        (err) => logger.error('Contribution refunded webhook emit failed', { error: err.message })
+      );
     });
 
     res.json({

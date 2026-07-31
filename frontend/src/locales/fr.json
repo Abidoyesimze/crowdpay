@@ -429,7 +429,8 @@
   "campaignStatus": {
     "goalReached": "Objectif atteint",
     "campaignEnded": "Campagne terminée",
-    "campaignClosed": "Campagne fermée"
+    "campaignClosed": "Campagne fermée",
+    "draft": "Brouillon"
   },
   "dashboard": {
     "title": "Tableau de bord",
@@ -492,6 +493,7 @@
     "tabs": {
       "campaigns": "Mes campagnes",
       "contributions": "Mes contributions",
+      "following": "Suivis",
       "analytics": "Analytique",
       "apiKeys": "Clés API",
       "referrals": "Parrainages"

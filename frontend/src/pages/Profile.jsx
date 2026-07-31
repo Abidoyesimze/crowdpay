@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { stellarExpertAccountUrl } from '../config/stellar';
 import VerificationBadge from '../components/VerificationBadge';
 import KycPrompt from '../components/KycPrompt';
+import ContributorBadges from '../components/ContributorBadges';
 import { api } from '../services/api';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
@@ -24,11 +25,19 @@ export default function Profile() {
   const [backupCodes, setBackupCodes] = useState([]);
   const [twoFaError, setTwoFaError] = useState('');
   const [twoFaLoading, setTwoFaLoading] = useState(false);
+  const [nftRewards, setNftRewards] = useState([]);
 
   useEffect(() => {
     if (user) {
       setName(user.name || '');
     }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    api.getMyNftRewards()
+      .then((data) => setNftRewards(Array.isArray(data?.rewards) ? data.rewards : []))
+      .catch(() => setNftRewards([]));
   }, [user]);
 
   if (!ready) {
@@ -187,6 +196,36 @@ export default function Profile() {
             {saving ? 'Saving…' : 'Save changes'}
           </button>
         </form>
+      </div>
+
+      <ContributorBadges />
+
+      <div className="campaign-card" style={{ marginBottom: '2rem' }}>
+        <h2 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '0.75rem' }}>
+          NFT proof of support
+        </h2>
+        {nftRewards.length === 0 ? (
+          <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.9rem', margin: 0 }}>
+            NFT rewards appear here once a qualifying contribution is linked to a tier that includes one.
+          </p>
+        ) : (
+          <div style={{ display: 'grid', gap: '0.75rem' }}>
+            {nftRewards.map((reward) => (
+              <div key={reward.id} style={{ background: 'var(--color-surface)', borderRadius: '8px', padding: '0.85rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <strong>{reward.reward_tier_title || 'NFT reward'}</strong>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>{reward.status || 'configured'}</span>
+                </div>
+                {reward.serial_number && (
+                  <p style={{ marginTop: '0.35rem', marginBottom: 0, fontSize: '0.9rem' }}>Serial: {reward.serial_number}</p>
+                )}
+                {reward.campaign_title && (
+                  <p style={{ marginTop: '0.35rem', marginBottom: 0, fontSize: '0.9rem' }}>Campaign: {reward.campaign_title}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="campaign-card" style={{ marginBottom: '2rem' }}>

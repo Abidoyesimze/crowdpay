@@ -1,7 +1,18 @@
 import { useEffect, useState } from 'react';
+import MilestoneProgressBar, { normalizeWidgetSize } from '../components/MilestoneProgressBar';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const BASE_URL = import.meta.env.VITE_API_URL || `${API_BASE_URL}/api`;
+
+function getParentOrigin() {
+  const explicit = new URLSearchParams(window.location.search).get('origin');
+  if (explicit) return explicit;
+  try {
+    return new URL(document.referrer).origin;
+  } catch {
+    return '';
+  }
+}
 
 export default function CampaignEmbed() {
   const [campaign, setCampaign] = useState(null);
@@ -9,9 +20,10 @@ export default function CampaignEmbed() {
   const [error, setError] = useState('');
   const [isLive, setIsLive] = useState(false);
 
-  // Extract campaign ID from URL path: /embed/campaigns/:id
   const pathParts = window.location.pathname.split('/');
   const campaignId = pathParts[pathParts.length - 1];
+  const size = normalizeWidgetSize(new URLSearchParams(window.location.search).get('size'));
+  const parentOrigin = getParentOrigin();
 
   useEffect(() => {
     if (!campaignId) {
@@ -20,7 +32,6 @@ export default function CampaignEmbed() {
       return;
     }
 
-    // Fetch initial campaign data
     fetch(`${BASE_URL}/campaigns/${campaignId}/embed`)
       .then((res) => {
         if (!res.ok) throw new Error('Campaign not found');
@@ -36,7 +47,6 @@ export default function CampaignEmbed() {
       });
   }, [campaignId]);
 
-  // Connect to SSE for live updates
   useEffect(() => {
     if (!campaignId || !campaign) return;
     if (!window.EventSource) return;
@@ -69,20 +79,28 @@ export default function CampaignEmbed() {
     };
   }, [campaignId, campaign]);
 
-  // Auto-resize iframe via postMessage
   useEffect(() => {
+    const targetOrigin = parentOrigin || '*';
+    let lastHeight = 0;
+
     const notifyHeight = () => {
       const height = document.documentElement.scrollHeight;
-      window.parent.postMessage({ type: 'resize', height }, '*');
+      if (height !== lastHeight) {
+        lastHeight = height;
+        window.parent.postMessage({ type: 'resize', height }, targetOrigin);
+      }
     };
 
     notifyHeight();
-    const interval = setInterval(notifyHeight, 500);
 
-    return () => clearInterval(interval);
-  }, [campaign, loading, error]);
+    const observer = new ResizeObserver(notifyHeight);
+    observer.observe(document.documentElement);
 
-  // Listen for open message from parent
+    return () => {
+      observer.disconnect();
+    };
+  }, [campaign, loading, error, parentOrigin]);
+
   useEffect(() => {
     const handler = (event) => {
       if (event.data && event.data.type === 'open') {
@@ -91,6 +109,22 @@ export default function CampaignEmbed() {
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
+  }, []);
+
+  // Add pulse animation style
+  useEffect(() => {
+    const styleSheet = document.createElement('style');
+    styleSheet.textContent = `
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+    `;
+    document.head.appendChild(styleSheet);
+
+    return () => {
+      document.head.removeChild(styleSheet);
+    };
   }, []);
 
   if (loading) {
@@ -119,7 +153,9 @@ export default function CampaignEmbed() {
 
       <h1 style={styles.title}>{campaign.title}</h1>
 
-      {campaign.description && <p style={styles.description}>{campaign.description}</p>}
+      {size !== 'small' && campaign.description && (
+        <p style={styles.description}>{campaign.description}</p>
+      )}
 
       <div style={styles.progressSection}>
         <div style={styles.amounts}>
@@ -133,7 +169,7 @@ export default function CampaignEmbed() {
           <div style={styles.target}>{progressPct.toFixed(1)}%</div>
         </div>
 
-        <div style={styles.progressBar}>
+        <div style={styles.progressBar} role="progressbar" aria-valuenow={Math.round(progressPct)} aria-valuemin={0} aria-valuemax={100}>
           <div
             style={{
               ...styles.progressFill,
@@ -158,14 +194,19 @@ export default function CampaignEmbed() {
         </div>
       </div>
 
+      <MilestoneProgressBar
+        milestones={campaign.milestones}
+        summary={campaign.milestone_summary}
+        size={size}
+      />
+
       <a
         href={campaign.contribution_url}
         target="_blank"
         rel="noopener noreferrer"
         style={styles.ctaButton}
         onClick={() => {
-          // Notify parent that user clicked (for analytics tracking)
-          window.parent.postMessage({ type: 'cta_click', campaignId: campaign.id }, '*');
+          window.parent.postMessage({ type: 'cta_click', campaignId: campaign.id }, parentOrigin || '*');
         }}
       >
         Back this campaign
@@ -299,13 +340,3 @@ const styles = {
     padding: '1rem',
   },
 };
-
-// Add pulse animation
-const styleSheet = document.createElement('style');
-styleSheet.textContent = `
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-  }
-`;
-document.head.appendChild(styleSheet);

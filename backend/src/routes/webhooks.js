@@ -1,30 +1,41 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { requireAuth } = require('../middleware/auth');
-const { ALL_WEBHOOK_EVENTS, processDelivery } = require('../services/webhookDispatcher');
+const {
+  ALL_WEBHOOK_EVENTS,
+  processDelivery,
+  isValidBackoffStrategy,
+} = require('../services/webhookDispatcher');
 const {
   processIncomingWebhook,
   verifyWebhookSignature,
   WebhookError,
 } = require('../services/webhookService');
+const asyncHandler = require('../utils/asyncHandler');
+const { isSafeUrl } = require('../utils/ssrfGuard');
 
-function isValidWebhookUrl(urlString) {
-  try {
-    const u = new URL(urlString);
-    if (u.protocol === 'https:') return true;
-    if (
-      u.protocol === 'http:' &&
-      (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
-    ) {
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
+const isTest = process.env.NODE_ENV === 'test';
+
+// Per-IP: 30 req/min on the public webhook ingress endpoint. This route has
+// no auth (any caller with a valid webhook id + signature can post to it),
+// so it's a DoS vector without its own limiter — the global 100 req/15min
+// limit is far too permissive for a single public endpoint.
+const incomingWebhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: isTest ? 100000 : 30,
+  message: { error: 'Too many webhook deliveries from this IP. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isTest,
+});
+
+async function isValidWebhookUrl(urlString) {
+  const result = await isSafeUrl(urlString);
+  return result.safe;
 }
 
 function normalizeEvents(events) {
@@ -35,7 +46,7 @@ function normalizeEvents(events) {
 
 // KYC webhooks are handled at POST /api/webhooks/kyc (raw body + Persona signature verification).
 
-router.post('/incoming/:id', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/incoming/:id', incomingWebhookLimiter, express.raw({ type: 'application/json' }), async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT id, user_id, secret FROM webhooks WHERE id = $1 AND revoked_at IS NULL`,
@@ -88,7 +99,7 @@ router.post('/incoming/:id', express.raw({ type: 'application/json' }), async (r
   }
 });
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `SELECT id, url, events,
             CONCAT(LEFT(secret, 10), '…', RIGHT(secret, 4)) AS secret_hint,
@@ -97,27 +108,32 @@ router.get('/', requireAuth, async (req, res) => {
     [req.user.userId]
   );
   res.json(rows);
-});
+}));
 
-router.post('/', requireAuth, async (req, res) => {
-  const { url, events } = req.body || {};
+router.post('/', requireAuth, asyncHandler(async (req, res) => {
+  const { url, events, backoff_strategy } = req.body || {};
   if (!url || !events) {
     return res.status(400).json({ error: 'url and events array are required' });
   }
-  if (!isValidWebhookUrl(url)) {
+  if (!(await isValidWebhookUrl(url))) {
     return res.status(400).json({ error: 'url must be https, or http://localhost for development' });
   }
   const ev = normalizeEvents(events);
   if (!ev.length) {
     return res.status(400).json({ error: `events must include at least one of: ${ALL_WEBHOOK_EVENTS.join(', ')}` });
   }
+  if (backoff_strategy !== undefined && backoff_strategy !== null && !isValidBackoffStrategy(backoff_strategy)) {
+    return res.status(400).json({
+      error: 'backoff_strategy must be { base_ms, max_ms, multiplier } with positive numbers',
+    });
+  }
 
   const secret = `whsec_${crypto.randomBytes(32).toString('hex')}`;
   const { rows } = await db.query(
-    `INSERT INTO webhooks (user_id, url, events, secret)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, url, events, created_at`,
-    [req.user.userId, url, ev, secret]
+    `INSERT INTO webhooks (user_id, url, events, secret, backoff_strategy)
+     VALUES ($1, $2, $3, $4, $5::jsonb)
+     RETURNING id, url, events, backoff_strategy, created_at`,
+    [req.user.userId, url, ev, secret, backoff_strategy ? JSON.stringify(backoff_strategy) : null]
   );
 
   res.status(201).json({
@@ -125,9 +141,27 @@ router.post('/', requireAuth, async (req, res) => {
     secret,
     message: 'Store the signing secret; it is only shown once.',
   });
-});
+}));
 
-router.delete('/:id', requireAuth, async (req, res) => {
+router.patch('/:id/backoff-strategy', requireAuth, asyncHandler(async (req, res) => {
+  const { backoff_strategy } = req.body || {};
+  if (backoff_strategy !== null && !isValidBackoffStrategy(backoff_strategy)) {
+    return res.status(400).json({
+      error: 'backoff_strategy must be { base_ms, max_ms, multiplier } with positive numbers, or null to reset to defaults',
+    });
+  }
+
+  const { rows } = await db.query(
+    `UPDATE webhooks SET backoff_strategy = $1::jsonb
+     WHERE id = $2 AND user_id = $3 AND revoked_at IS NULL
+     RETURNING id, url, events, backoff_strategy`,
+    [backoff_strategy ? JSON.stringify(backoff_strategy) : null, req.params.id, req.user.userId]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'Webhook not found' });
+  res.json(rows[0]);
+}));
+
+router.delete('/:id', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `UPDATE webhooks SET revoked_at = NOW()
      WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
@@ -136,9 +170,9 @@ router.delete('/:id', requireAuth, async (req, res) => {
   );
   if (!rows.length) return res.status(404).json({ error: 'Webhook not found' });
   res.json({ revoked: true, id: rows[0].id });
-});
+}));
 
-router.get('/deliveries', requireAuth, async (req, res) => {
+router.get('/deliveries', requireAuth, asyncHandler(async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
   const webhookId = req.query.webhook_id || null;
 
@@ -162,9 +196,9 @@ router.get('/deliveries', requireAuth, async (req, res) => {
     params
   );
   res.json(rows);
-});
+}));
 
-router.post('/deliveries/:id/replay', requireAuth, async (req, res) => {
+router.post('/deliveries/:id/replay', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
     `UPDATE webhook_deliveries d
      SET status = 'pending', attempt_count = 0, last_error = NULL,
@@ -188,6 +222,6 @@ router.post('/deliveries/:id/replay', requireAuth, async (req, res) => {
   });
 
   res.json({ message: 'Replay queued', id: rows[0].id });
-});
+}));
 
 module.exports = router;

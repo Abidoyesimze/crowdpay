@@ -6,9 +6,18 @@ import App from './App';
 import './i18n';
 import './index.css';
 
+// Validate required environment variables at startup
+const REQUIRED_ENV_VARS = ['VITE_API_BASE_URL', 'VITE_STELLAR_NETWORK'];
+for (const key of REQUIRED_ENV_VARS) {
+  if (!import.meta.env[key]) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+}
+
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
   environment: import.meta.env.MODE,
+  release: import.meta.env.VITE_SENTRY_RELEASE || 'unknown',
   tracesSampleRate: 0.1,
   enabled: !!import.meta.env.VITE_SENTRY_DSN,
   integrations: [Sentry.browserTracingIntegration()],

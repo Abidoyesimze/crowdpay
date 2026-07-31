@@ -1056,3 +1056,57 @@ test('POST /api/contributions/:id/refund processes an eligible failed-campaign r
   assert.equal(response.body.tx_hash, 'refund-tx-hash');
   assert.equal(updates.length, 1);
 });
+
+// --- GET /api/contributions/campaign/:campaignId pagination bounds (#490) ---
+//
+// limit/offset previously used plain parseInt() with no radix and no upper
+// bound on limit; both are now delegated to the shared parsePagination()
+// utility (the same one campaigns.js/admin.js/withdrawals.js/disputes.js use).
+
+test('GET /api/contributions/campaign/:campaignId uses default limit/offset when none given', async () => {
+  let receivedParams;
+  const app = buildApp({
+    queryImpl: async (_sql, params) => {
+      receivedParams = params;
+      return { rows: [] };
+    },
+  });
+
+  const res = await request(app).get('/api/contributions/campaign/cam-1');
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { contributions: [], total: 0, limit: 20, offset: 0 });
+  assert.deepEqual(receivedParams, ['cam-1', 20, 0]);
+});
+
+test('GET /api/contributions/campaign/:campaignId clamps ?limit= to the 100 upper bound', async () => {
+  let receivedParams;
+  const app = buildApp({
+    queryImpl: async (_sql, params) => {
+      receivedParams = params;
+      return { rows: [] };
+    },
+  });
+
+  const res = await request(app).get('/api/contributions/campaign/cam-1?limit=999999');
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.limit, 100);
+  assert.deepEqual(receivedParams, ['cam-1', 100, 0]);
+});
+
+test('GET /api/contributions/campaign/:campaignId parses ?offset= with radix 10 and floors at 0', async () => {
+  let receivedParams;
+  const app = buildApp({
+    queryImpl: async (_sql, params) => {
+      receivedParams = params;
+      return { rows: [] };
+    },
+  });
+
+  const res = await request(app).get('/api/contributions/campaign/cam-1?offset=-5');
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.offset, 0);
+  assert.deepEqual(receivedParams, ['cam-1', 20, 0]);
+});

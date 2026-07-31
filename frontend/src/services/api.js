@@ -3,6 +3,12 @@ const BASE = `${API_BASE_URL}/api`;
 let refreshPromise = null;
 const retryQueue = [];
 
+// --- CSRF double-submit cookie helpers ---
+function getCsrfToken() {
+  const match = document.cookie.match(/(?:^|;\s*)cp_csrf=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 const IDEMPOTENT_METHODS = new Set(['GET']);
 
 function isNetworkError(err) {
@@ -34,14 +40,24 @@ const TIMEOUTS = {
 };
 
 function jsonHeaders() {
-  return {
+  const headers = {
     'Content-Type': 'application/json',
   };
+  const csrf = getCsrfToken();
+  if (csrf) headers['X-CSRF-Token'] = csrf;
+  return headers;
 }
 
 async function request(method, path, body, options = {}) {
   const { query, _retry = false } = options || {};
   let url = `${BASE}${path}`;
+
+  // Ensure CSRF cookie exists before state-changing requests
+  if (method !== 'GET' && method !== 'HEAD' && !getCsrfToken()) {
+    try {
+      await fetch(`${BASE}/auth/csrf-token`, { credentials: 'include' });
+    } catch { /* best-effort */ }
+  }
 
   if (query && Object.keys(query).length) {
     const params = new URLSearchParams();
@@ -134,12 +150,24 @@ async function request(method, path, body, options = {}) {
 async function uploadFormData(path, formData) {
   const url = `${BASE}${path}`;
 
+  // Ensure CSRF cookie exists before state-changing requests
+  if (!getCsrfToken()) {
+    try {
+      await fetch(`${BASE}/auth/csrf-token`, { credentials: 'include' });
+    } catch { /* best-effort */ }
+  }
+
+  const csrfHeaders = {};
+  const csrf = getCsrfToken();
+  if (csrf) csrfHeaders['X-CSRF-Token'] = csrf;
+
   let res;
   try {
     res = await fetch(url, {
       method: 'POST',
       body: formData,
       credentials: 'include',
+      headers: csrfHeaders,
     });
   } catch (err) {
     if (isNetworkError(err)) {
@@ -185,9 +213,14 @@ async function refresh() {
   }
 
   refreshPromise = (async () => {
+    const refreshHeaders = {};
+    const csrf = getCsrfToken();
+    if (csrf) refreshHeaders['X-CSRF-Token'] = csrf;
+
     const res = await fetch(`${BASE}/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
+      headers: refreshHeaders,
     });
 
     if (!res.ok) {
@@ -283,9 +316,14 @@ async function downloadFile(path, fallbackFilename, options = {}) {
 }
 
 async function logout() {
+  const logoutHeaders = {};
+  const csrf = getCsrfToken();
+  if (csrf) logoutHeaders['X-CSRF-Token'] = csrf;
+
   const res = await fetch(`${BASE}/auth/logout`, {
     method: 'POST',
     credentials: 'include',
+    headers: logoutHeaders,
   });
 
   if (!res.ok) {
@@ -305,6 +343,7 @@ async function logout() {
 
 export const api = {
   getPlatformConfig: () => request('GET', '/config'),
+  getActiveAnnouncements: () => request('GET', '/announcements/active'),
 
   register: (body) => request('POST', '/auth/register', body),
   login: (body) => request('POST', '/auth/login', body),
@@ -323,14 +362,25 @@ export const api = {
   startKyc: () => request('POST', '/auth/kyc/start'),
   getKycStatus: () => request('GET', '/auth/kyc/status'),
 
+  saveCampaignDraft: (body) => request('POST', '/campaigns/drafts', body),
+  getMyCampaignDraft: () => request('GET', '/campaigns/drafts/my'),
+  deleteCampaignDraft: (id) => request('DELETE', `/campaigns/drafts/${id}`),
+
   getMyCampaigns: (options = {}) => request('GET', '/campaigns/mine', null, { query: options }),
   getFeaturedCampaigns: () => request('GET', '/campaigns/featured'),
+  getRecommendedCampaigns: (options = {}) =>
+    request('GET', '/campaigns/recommended', null, { query: options }),
   getCampaignCategories: () => request('GET', '/campaigns/categories'),
+  getCampaignFacets: () => request('GET', '/campaigns/facets'),
   getCampaigns: (options = {}) => request('GET', '/campaigns', null, { query: options }),
   getCampaign: (id, options = {}) => request('GET', `/campaigns/${id}`, null, { query: options }),
   getCampaignAnalytics: (id) => request('GET', `/campaigns/${id}/analytics`),
   getCampaignAnalyticsContributors: (id) =>
     request('GET', `/campaigns/${id}/analytics/contributors`),
+  getCampaignTiers: (id) => request('GET', `/campaigns/${id}/tiers`),
+  getMyNftRewards: () => request('GET', '/nft-rewards/me'),
+  getCampaignNftRewards: (campaignId) => request('GET', `/nft-rewards/campaign/${encodeURIComponent(campaignId)}`),
+  getContributionNftRewards: (contributionId) => request('GET', `/nft-rewards/contributions/${encodeURIComponent(contributionId)}`),
   getCampaignAnalyticsBackers: (id) => request('GET', `/campaigns/${id}/analytics/backers`),
   exportCampaignContributions: (id) =>
     downloadFile(
@@ -342,6 +392,9 @@ export const api = {
   getCampaignBackers: (id) => request('GET', `/campaigns/${id}/backers`),
   getCampaignBalance: (id) => request('GET', `/campaigns/${id}/balance`),
   getCloneData: (id) => request('GET', `/campaigns/${id}/clone-data`),
+  cloneCampaign: (id) => request('POST', `/campaigns/${id}/clone`, {}),
+  publishCampaign: (id) => request('POST', `/campaigns/${id}/publish`, {}),
+  scheduleCampaignPublish: (id, body) => request('POST', `/campaigns/${id}/schedule-publish`, body),
   checkDuplicateCampaign: (body) => request('POST', '/campaigns/check-duplicate', body),
   createCampaign: (body) => request('POST', '/campaigns', body),
   updateCampaign: (id, body) => request('PATCH', `/campaigns/${id}`, body),
@@ -383,6 +436,24 @@ export const api = {
   deleteCampaignUpdate: (campaignId, updateId) =>
     request('DELETE', `/campaigns/${campaignId}/updates/${updateId}`),
 
+  getCampaignComments: (campaignId) => request('GET', `/campaigns/${campaignId}/comments`),
+  postCampaignComment: (campaignId, body) =>
+    request('POST', `/campaigns/${campaignId}/comments`, body),
+  upvoteCampaignComment: (campaignId, commentId) =>
+    request('POST', `/campaigns/${campaignId}/comments/${commentId}/upvote`),
+  updateCampaignComment: (campaignId, commentId, body) =>
+    request('PATCH', `/campaigns/${campaignId}/comments/${commentId}`, body),
+  deleteCampaignComment: (campaignId, commentId) =>
+    request('DELETE', `/campaigns/${campaignId}/comments/${commentId}`),
+  flagCampaignComment: (campaignId, commentId, body) =>
+    request('POST', `/campaigns/${campaignId}/comments/${commentId}/flag`, body),
+  getFlaggedCampaignComments: (campaignId) =>
+    request('GET', `/campaigns/${campaignId}/comments/moderation`),
+  hideCampaignComment: (campaignId, commentId, body) =>
+    request('POST', `/campaigns/${campaignId}/comments/${commentId}/hide`, body),
+  unhideCampaignComment: (campaignId, commentId) =>
+    request('POST', `/campaigns/${campaignId}/comments/${commentId}/unhide`),
+
   getContributions: (campaignId, options = {}) =>
     request('GET', `/contributions/campaign/${campaignId}`, null, {
       query: options,
@@ -400,6 +471,8 @@ export const api = {
     return uploadFormData(`/milestones/${encodeURIComponent(id)}/upload-evidence`, formData);
   },
   getMilestoneEvents: (id) => request('GET', `/milestones/${id}/events`),
+  getMilestoneVotes: (id) => request('GET', `/milestones/${id}/votes`),
+  voteMilestone: (id, body) => request('POST', `/milestones/${id}/votes`, body || {}),
   approveMilestone: (id, body) => request('POST', `/milestones/${id}/release`, body || {}),
   rejectMilestone: (id, body) => request('POST', `/milestones/${id}/reject`, body || {}),
   contribute: (body) => request('POST', '/contributions', body),
@@ -422,8 +495,37 @@ export const api = {
   requestContributionRefund: (contributionId) =>
     request('POST', `/contributions/${contributionId}/refund`, {}),
 
+  getContributorDashboard: () => request('GET', '/contributions/dashboard'),
+  exportContributionsCsv: () =>
+    downloadFile('/contributions/dashboard/export.csv', 'contributions.csv'),
+  getTaxReceipts: () => request('GET', '/contributions/tax-receipts'),
+  downloadTaxReceiptsPdf: () =>
+    downloadFile('/contributions/tax-receipts/download', 'crowdpay-tax-receipts.pdf'),
+  downloadTaxReceiptPdf: (id) =>
+    downloadFile(
+      `/contributions/tax-receipts/${encodeURIComponent(id)}/download`,
+      `crowdpay-tax-receipt-${id}.pdf`
+    ),
+
+  getFavorites: () => request('GET', '/users/me/favorites'),
+  addFavorite: (campaignId) => request('POST', `/campaigns/${campaignId}/favorite`, {}),
+  removeFavorite: (campaignId) => request('DELETE', `/campaigns/${campaignId}/favorite`),
+
+  getCampaignFollow: (campaignId) => request('GET', `/campaigns/${campaignId}/follow`),
+  followCampaign: (campaignId, preferences) =>
+    request('POST', `/campaigns/${campaignId}/follow`, preferences || {}),
+  updateCampaignFollow: (campaignId, preferences) =>
+    request('PATCH', `/campaigns/${campaignId}/follow`, preferences),
+  unfollowCampaign: (campaignId) => request('DELETE', `/campaigns/${campaignId}/follow`),
+  getFollowedCampaigns: () => request('GET', '/users/me/following'),
+
+  getMyBadges: () => request('GET', '/users/me/badges'),
+  getLeaderboard: (limit) => request('GET', '/users/leaderboard', null, { query: { limit } }),
+
   getWithdrawalCapabilities: () => request('GET', '/withdrawals/capabilities'),
   listWithdrawals: (campaignId) => request('GET', `/withdrawals/campaign/${campaignId}`),
+  getContributorWithdrawalHistory: (campaignId, options = {}) =>
+    request('GET', `/withdrawals/campaign/${campaignId}/contributor-history`, null, { query: options }),
   requestWithdrawal: (body) => request('POST', '/withdrawals/request', body),
   approveWithdrawalCreator: (id, body) =>
     request('POST', `/withdrawals/${id}/approve/creator`, body || {}),
@@ -501,6 +603,9 @@ export const api = {
   updateNotificationPreference: (body) => request('PUT', '/notifications/preferences', body),
   getChannelSettings: () => request('GET', '/notifications/channel-settings'),
   updateChannelSettings: (body) => request('PUT', '/notifications/channel-settings', body),
+  getPushSubscriptionStatus: () => request('GET', '/notifications/push-subscriptions'),
+  registerPushSubscription: (token) => request('POST', '/notifications/push-subscriptions', { token }),
+  removePushSubscription: (token) => request('DELETE', '/notifications/push-subscriptions', { token }),
 
   getReferralCode: (campaignId) => request('GET', `/campaigns/${campaignId}/referral`),
   getReferralLeaderboard: (campaignId) => request('GET', `/campaigns/${campaignId}/referrals`),
@@ -509,4 +614,51 @@ export const api = {
     request('POST', `/campaigns/${campaignId}/thank-you`, { message }),
   sendContributionThankYou: (contributionId, message) =>
     request('POST', `/contributions/${contributionId}/thank-you`, { message }),
+  trackShare: (campaignId, platform) => request('POST', `/campaigns/${campaignId}/share`, { platform }),
+
+  // ── Contribution Pools (#600) ──────────────────────────────────────
+  listCampaignPools: (campaignId) =>
+    request('GET', `/contribution-pools/campaign/${campaignId}`),
+  listMyPools: () =>
+    request('GET', '/contribution-pools/mine'),
+  getPool: (poolId) =>
+    request('GET', `/contribution-pools/${poolId}`),
+  createPool: (body) =>
+    request('POST', '/contribution-pools', body),
+  joinPool: (poolId, share_amount, display_name) =>
+    request('POST', `/contribution-pools/${poolId}/join`, { share_amount, display_name }),
+  leavePool: (poolId) =>
+    request('POST', `/contribution-pools/${poolId}/leave`),
+  updatePool: (poolId, body) =>
+    request('PATCH', `/contribution-pools/${poolId}`, body),
+  submitPool: (poolId) =>
+    request('POST', `/contribution-pools/${poolId}/submit`),
+  // ── Campaign Translations (#602) ──────────────────────────────────
+  getCampaignTranslations: (campaignId) =>
+    request('GET', `/campaigns/${campaignId}/translations`),
+  upsertTranslation: (campaignId, language, title, description) =>
+    request('POST', `/campaigns/${campaignId}/translations`, { language, title, description }),
+  deleteTranslation: (campaignId, language) =>
+    request('DELETE', `/campaigns/${campaignId}/translations/${language}`),
+  // ── Stretch Goals (#585) ──────────────────────────────────────────
+  getStretchGoals: (campaignId) =>
+    request('GET', `/campaigns/${campaignId}/stretch-goals`),
+  createStretchGoal: (campaignId, body) =>
+    request('POST', `/campaigns/${campaignId}/stretch-goals`, body),
+  updateStretchGoal: (campaignId, goalId, body) =>
+    request('PATCH', `/campaigns/${campaignId}/stretch-goals/${goalId}`, body),
+  deleteStretchGoal: (campaignId, goalId) =>
+    request('DELETE', `/campaigns/${campaignId}/stretch-goals/${goalId}`),
+  // ── Creator Public Profile (#588) ────────────────────────────────
+  getCreatorProfile: (userId) =>
+    request('GET', `/users/${userId}/public`),
+  // ── Recurring Contributions (#584) ───────────────────────────────
+  getMyRecurringContributions: () =>
+    request('GET', '/users/me/recurring-contributions'),
+  createRecurringContribution: (body) =>
+    request('POST', '/users/me/recurring-contributions', body),
+  updateRecurringContribution: (id, body) =>
+    request('PATCH', `/users/me/recurring-contributions/${id}`, body),
+  deleteRecurringContribution: (id) =>
+    request('DELETE', `/users/me/recurring-contributions/${id}`),
 };

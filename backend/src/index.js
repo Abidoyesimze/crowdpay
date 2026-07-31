@@ -5,6 +5,7 @@ const Sentry = require("@sentry/node");
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.NODE_ENV || "development",
+  release: process.env.SENTRY_RELEASE || "unknown",
   tracesSampleRate: process.env.NODE_ENV === "production" ? 0.2 : 1.0,
   enabled: !!process.env.SENTRY_DSN,
   integrations: [Sentry.expressIntegration()],
@@ -22,6 +23,7 @@ const {
   normalizeErrorResponse,
   errorHandler,
 } = require("./middleware/errorHandler");
+const compressionMiddleware = require("./middleware/compression");
 const {
   startLedgerMonitor,
   getLedgerStreamHealth,
@@ -35,16 +37,22 @@ const {
 const {
   sendWeeklyContributorDigests,
 } = require("./services/weeklyDigestService");
+const { upsertRecommendationsForUser } = require("./services/campaignRecommendationService");
 const { flushQuietHours } = require("./services/notifications");
 const { sendAlert } = require("./services/alerting");
 const ff = require("./services/featureFlags");
 const {
   assertNoLegacyPlaintextUserWalletSecrets,
 } = require("./services/walletSecrets");
+const {
+  startRecurringContributionsCron,
+} = require("./services/recurringContributionsService");
 const db = require("./config/database");
 const swaggerUi = require("swagger-ui-express");
 const swaggerJsdoc = require("swagger-jsdoc");
 const rateLimit = require("express-rate-limit");
+
+const { csrfProtection } = require('./middleware/csrf');
 
 const app = express();
 
@@ -67,7 +75,7 @@ app.use(
       },
     },
     hsts: {
-      maxAge: 31_536_000, // 1 year
+      maxAge: 31_536_000,
       includeSubDomains: true,
       preload: true,
     },
@@ -81,6 +89,9 @@ app.use(
     credentials: true,
   }),
 );
+// Compress all responses >= COMPRESSION_THRESHOLD bytes (default 1 KB).
+// SSE streams are excluded automatically. See middleware/compression.js.
+app.use(compressionMiddleware);
 app.post(
   "/api/webhooks/kyc",
   express.raw({ type: "application/json" }),
@@ -88,6 +99,10 @@ app.post(
 );
 app.use(express.json({ limit: "50kb" }));
 app.use(cookieParser());
+
+// CSRF protection: validates X-CSRF-Token header on state-changing requests
+// and ensures a CSRF cookie exists on all requests.
+app.use(csrfProtection);
 app.use(
   Sentry.sentryRequestMiddleware
     ? Sentry.sentryRequestMiddleware()
@@ -166,7 +181,12 @@ const openApiSpec = swaggerJsdoc({
   },
   apis: ["./src/routes/*.js"],
 });
-app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
+app.get("/api/docs/openapi.json", (_req, res) => res.json(openApiSpec));
+app.use(
+  "/api/docs",
+  swaggerUi.serveFiles(openApiSpec),
+  swaggerUi.setup(openApiSpec),
+);
 
 const v1OpenApiSpec = swaggerJsdoc({
   definition: {
@@ -224,10 +244,19 @@ app.use("/api/v1/dev", require("./routes/dev"));
 app.use("/v1/dev", require("./routes/dev"));
 app.get("/api/v1/docs/openapi.json", (_req, res) => res.json(v1OpenApiSpec));
 app.get("/v1/docs/openapi.json", (_req, res) => res.json(v1OpenApiSpec));
-app.use("/api/v1/docs", swaggerUi.serve, swaggerUi.setup(v1OpenApiSpec));
-app.use("/v1/docs", swaggerUi.serve, swaggerUi.setup(v1OpenApiSpec));
+app.use(
+  "/api/v1/docs",
+  swaggerUi.serveFiles(v1OpenApiSpec),
+  swaggerUi.setup(v1OpenApiSpec),
+);
+app.use(
+  "/v1/docs",
+  swaggerUi.serveFiles(v1OpenApiSpec),
+  swaggerUi.setup(v1OpenApiSpec),
+);
 
 app.use("/api/auth", require("./routes/auth"));
+app.use("/api/nft-rewards", require("./routes/nftRewards"));
 // Backwards/alternate compatibility for docs + clients expecting /api/users/register|login.
 app.use("/api/users", require("./routes/auth"));
 // Session management routes
@@ -235,11 +264,18 @@ app.use("/api/auth", require("./routes/sessions"));
 // Referral routes
 app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api/users", require("./routes/users"));
+app.use("/api", require("./routes/sponsorMatching"));
 app.use("/api/invites", require("./routes/invites"));
 app.use("/api/campaigns", require("./routes/campaignUpdates"));
+app.use("/api/campaigns", require("./routes/campaignComments"));
+app.use("/api/campaigns", require("./routes/campaignFollowers"));
 app.use("/api/campaigns", require("./routes/campaigns"));
+app.use("/api/campaigns", require("./routes/impactReports"));
+app.use("/api/campaigns", require("./routes/sponsorMatching"));
+app.use("/api/campaigns", require("./routes/translations"));
 app.use("/api/anchor", require("./routes/anchor"));
 app.use("/api/contributions", require("./routes/contributions"));
+app.use("/api/contribution-pools", require("./routes/contributionPools"));
 app.use("/api/withdrawals", require("./routes/withdrawals"));
 app.use("/api/stellar/transactions", require("./routes/stellarTransactions"));
 app.use("/api/admin", require("./routes/admin"));
@@ -253,6 +289,7 @@ app.use("/api/notifications", require("./routes/notifications"));
 app.use("/api/emails", require("./routes/emails"));
 app.use("/api/campaigns", require("./routes/thankYou"));
 app.use("/api/contributions", require("./routes/thankYou"));
+app.use("/api", require("./routes/announcement"));
 
 app.get("/health", async (_, res) => {
   try {
@@ -336,9 +373,38 @@ app.get("/health/ledger", async (_req, res) => {
 if (ff.isEnabled("serve-frontend")) {
   const dist = path.join(__dirname, "../../frontend/dist");
   app.use(express.static(dist));
-  app.get("*", (req, res, next) => {
+  app.get("*", async (req, res, next) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/health"))
       return next();
+
+    const campaignMatch = req.path.match(/^\/campaigns\/([a-f0-9-]+)$/);
+    if (campaignMatch) {
+      try {
+        const campaignId = campaignMatch[1];
+        const { rows } = await db.query('SELECT title, description FROM campaigns WHERE id = $1', [campaignId]);
+        if (rows.length > 0) {
+          const campaign = rows[0];
+          const fs = require("fs");
+          let html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
+          const title = (campaign.title || '').replace(/"/g, '&quot;');
+          const desc = (campaign.description || '').replace(/"/g, '&quot;');
+          const url = `${process.env.FRONTEND_URL || 'http://localhost:5173'}${req.path}`;
+          const ogTags = `
+            <meta property="og:title" content="${title}" />
+            <meta property="og:description" content="${desc}" />
+            <meta property="og:url" content="${url}" />
+            <meta name="twitter:card" content="summary_large_image" />
+            <meta name="twitter:title" content="${title}" />
+            <meta name="twitter:description" content="${desc}" />
+          `;
+          html = html.replace('</head>', `${ogTags}</head>`);
+          return res.send(html);
+        }
+      } catch (err) {
+        // Fallback to sending standard index.html
+      }
+    }
+
     res.sendFile(path.join(dist, "index.html"));
   });
 }
@@ -385,6 +451,31 @@ function startWeeklyDigestCron() {
   logger.info("Weekly digest cron scheduled", { schedule });
 }
 
+function startScheduledPublishCron() {
+  if (!ff.isEnabled("scheduled-publish-cron")) return;
+  const cron = require("node-cron");
+  const db = require("./config/database");
+  const { publishDraftCampaign } = require("./services/campaignPublishing");
+  cron.schedule("*/5 * * * *", async () => {
+    try {
+      const { rows } = await db.query(
+        `SELECT id FROM campaigns
+         WHERE status = 'draft' AND scheduled_publish_at IS NOT NULL AND scheduled_publish_at <= NOW()`
+      );
+      for (const row of rows) {
+        try {
+          await publishDraftCampaign(row.id);
+        } catch (err) {
+          logger.error("Scheduled publish failed for campaign", { campaign_id: row.id, error: err.message });
+        }
+      }
+    } catch (err) {
+      logger.error("Scheduled publish cron failed", { error: err.message });
+    }
+  });
+  logger.info("Scheduled publish cron scheduled (every 5 minutes)");
+}
+
 function startNotificationDigestCron() {
   if (!ff.isEnabled("notification-quiet-hours-cron")) return;
   const cron = require("node-cron");
@@ -395,6 +486,22 @@ function startNotificationDigestCron() {
     });
   });
   logger.info("Notification digest cron scheduled", { schedule });
+}
+
+function startRecommendationRefreshCron() {
+  const cron = require("node-cron");
+  const schedule = process.env.RECOMMENDATION_REFRESH_CRON || "0 2 * * *";
+  cron.schedule(schedule, async () => {
+    try {
+      const { rows } = await db.query(`SELECT id FROM users`);
+      for (const row of rows) {
+        await upsertRecommendationsForUser(row.id);
+      }
+    } catch (err) {
+      logger.error("Recommendation refresh cron failed", { error: err.message });
+    }
+  });
+  logger.info("Recommendation refresh cron scheduled", { schedule });
 }
 
 function startContractDeploymentRetryCron() {
@@ -422,9 +529,12 @@ async function bootstrap() {
     startWebhookRetryPoller();
     startCampaignStatusCron();
     startReconciliationCron();
+    startScheduledPublishCron();
     startWeeklyDigestCron();
     startNotificationDigestCron();
+    startRecommendationRefreshCron();
     startContractDeploymentRetryCron();
+    startRecurringContributionsCron();
   });
 }
 

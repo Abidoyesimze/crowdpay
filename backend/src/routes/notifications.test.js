@@ -81,6 +81,32 @@ test('PUT /channel-settings rejects out-of-range quiet hours', async () => {
   assert.match(res.body.error, /quiet_hours/);
 });
 
+test('POST /push-subscriptions stores an FCM token for the authenticated user', async () => {
+  const calls = [];
+  const app = buildApp(async (text, params) => {
+    calls.push({ text, params });
+    return { rows: [] };
+  });
+
+  const res = await request(app)
+    .post('/api/notifications/push-subscriptions')
+    .send({ token: 'fcm-token' });
+
+  assert.equal(res.status, 201);
+  assert.deepEqual(res.body, { ok: true });
+  const insert = calls.find((call) => call.text.includes('INSERT INTO push_subscriptions'));
+  assert.ok(insert);
+  assert.deepEqual(insert.params, ['user-1', 'fcm-token']);
+  assert.ok(calls.some((call) => call.text.includes('INSERT INTO notification_channel_settings')));
+});
+
+test('POST /push-subscriptions rejects an invalid token', async () => {
+  const app = buildApp(async () => ({ rows: [] }));
+  const res = await request(app).post('/api/notifications/push-subscriptions').send({ token: '' });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /token/);
+});
+
 test('PUT /preferences stores a per-event channel override', async () => {
   const calls = [];
   const app = buildApp(async (text, params) => {

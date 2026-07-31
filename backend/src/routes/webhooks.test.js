@@ -31,6 +31,14 @@ function buildApp({ deliveryRow = null } = {}) {
         queued.push(deliveryId);
       },
     },
+    '../utils/ssrfGuard': {
+      isSafeUrl: async () => ({ safe: true, reason: '' }),
+    },
+    '../services/webhookService': {
+      processIncomingWebhook: async () => ({}),
+      verifyWebhookSignature: () => true,
+      WebhookError: class extends Error { constructor(m, s = 400) { super(m); this.status = s; } },
+    },
   });
 
   const app = express();
@@ -75,6 +83,9 @@ function buildIncomingApp({
     },
     '../middleware/auth': { requireAuth: (req, _res, next) => next() },
     '../services/webhookDispatcher': { ALL_WEBHOOK_EVENTS: [], processDelivery: async () => {} },
+    '../utils/ssrfGuard': {
+      isSafeUrl: async () => ({ safe: true, reason: '' }),
+    },
     '../services/webhookService': proxyquire('../services/webhookService', {
       '../config/database': { query: async (sql, params) => serviceQuery(sql, params) },
       '../config/logger': { info: () => {}, warn: () => {}, error: () => {} },
@@ -153,4 +164,205 @@ test('POST /incoming/:id links a matching contribution and returns success', asy
   assert.equal(res.body.status, 200);
   assert.equal(res.body.body.linked, true);
   assert.equal(res.body.body.contribution_id, 'c-1');
+});
+
+// --- POST /api/webhooks/incoming/:id rate limiting (#489) -------------------
+//
+// The route's `incomingWebhookLimiter` is built with `skip: () => isTest`, so
+// under the suite's normal `NODE_ENV=test` it never actually limits (matching
+// the existing auth.js limiters' convention of being inert in tests). To
+// exercise the real 30 req/min ceiling, this test loads a fresh, uncached copy
+// of the module with NODE_ENV temporarily forced to a non-test value so the
+// limiter's `max` is the real production value (30) instead of the
+// effectively-infinite test value.
+test('POST /incoming/:id returns 429 after 30 requests per minute from the same IP', async () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  const modulePath = require.resolve('./webhooks');
+  delete require.cache[modulePath];
+
+  try {
+    const router = proxyquire('./webhooks', {
+      '../config/database': {
+        query: async () => ({ rows: [{ id: WEBHOOK_ID, user_id: OWNER, secret: SECRET }] }),
+      },
+      '../middleware/auth': { requireAuth: (req, _res, next) => next() },
+      '../services/webhookDispatcher': { ALL_WEBHOOK_EVENTS: [], processDelivery: async () => {} },
+      '../utils/ssrfGuard': {
+        isSafeUrl: async () => ({ safe: true, reason: '' }),
+      },
+      '../services/webhookService': proxyquire('../services/webhookService', {
+        '../config/database': { query: async () => ({ rows: [] }) },
+        '../config/logger': { info: () => {}, warn: () => {}, error: () => {} },
+        './notifications': { createNotification: async () => {} },
+      }),
+    });
+
+    const app = express();
+    app.use('/api/webhooks', router);
+
+    const body = JSON.stringify({ type: 'contribution.confirmed', tx_hash: 'tx-limit' });
+    const sig = sign(SECRET, Buffer.from(body));
+
+    for (let i = 0; i < 30; i += 1) {
+      await request(app)
+        .post(`/api/webhooks/incoming/${WEBHOOK_ID}`)
+        .set('Content-Type', 'application/json')
+        .set('x-signature-256', sig)
+        .send(body);
+    }
+
+    const res = await request(app)
+      .post(`/api/webhooks/incoming/${WEBHOOK_ID}`)
+      .set('Content-Type', 'application/json')
+      .set('x-signature-256', sig)
+      .send(body);
+
+    assert.equal(res.status, 429);
+    assert.match(res.body.error, /Too many webhook deliveries/);
+  } finally {
+    process.env.NODE_ENV = originalNodeEnv;
+    delete require.cache[modulePath];
+  }
+});
+
+// --- POST /api/webhooks (create) SSRF URL validation ------------------------
+
+function buildCreateApp({ safeUrlResult = { safe: true, reason: '' } } = {}) {
+  const router = proxyquire('./webhooks', {
+    '../config/database': {
+      query: async () => ({
+        rows: [{ id: 'wh-new', url: 'https://example.com/hook', events: ['campaign.funded'], backoff_strategy: null, created_at: new Date().toISOString() }],
+      }),
+    },
+    '../middleware/auth': {
+      requireAuth: (req, _res, next) => {
+        req.user = { userId: 'user-1' };
+        next();
+      },
+    },
+    '../services/webhookDispatcher': {
+      ALL_WEBHOOK_EVENTS: ['campaign.funded'],
+      isValidBackoffStrategy: () => true,
+    },
+    '../utils/ssrfGuard': {
+      isSafeUrl: async () => safeUrlResult,
+    },
+    '../services/webhookService': {
+      processIncomingWebhook: async () => ({}),
+      verifyWebhookSignature: () => true,
+      WebhookError: class extends Error { constructor(m, s = 400) { super(m); this.status = s; } },
+    },
+  });
+
+  const app = express();
+  app.use(express.json());
+  app.use('/api/webhooks', router);
+  return { app };
+}
+
+test('POST / creates a webhook with a safe HTTPS URL', async () => {
+  const { app } = buildCreateApp();
+  const res = await request(app)
+    .post('/api/webhooks')
+    .send({ url: 'https://example.com/hook', events: ['campaign.funded'] })
+    .expect(201);
+
+  assert.ok(res.body.secret.startsWith('whsec_'));
+});
+
+test('POST / rejects webhook URL pointing to a private IP (10.x.x.x)', async () => {
+  const { app } = buildCreateApp({
+    safeUrlResult: { safe: false, reason: 'Hostname resolves to a private/internal address: 10.0.0.1' },
+  });
+  const res = await request(app)
+    .post('/api/webhooks')
+    .send({ url: 'http://10.0.0.1/admin', events: ['campaign.funded'] })
+    .expect(400);
+
+  assert.match(res.body.error, /https.*localhost/);
+});
+
+test('POST / rejects webhook URL pointing to AWS cloud metadata (169.254.169.254)', async () => {
+  const { app } = buildCreateApp({
+    safeUrlResult: { safe: false, reason: 'Hostname resolves to a private/internal address: 169.254.169.254' },
+  });
+  const res = await request(app)
+    .post('/api/webhooks')
+    .send({ url: 'http://169.254.169.254/latest/meta-data/', events: ['campaign.funded'] })
+    .expect(400);
+
+  assert.match(res.body.error, /https.*localhost/);
+});
+
+test('POST / rejects webhook URL pointing to localhost over non-HTTP protocol', async () => {
+  const { app } = buildCreateApp({
+    safeUrlResult: { safe: false, reason: 'Only http: and https: protocols are allowed' },
+  });
+  const res = await request(app)
+    .post('/api/webhooks')
+    .send({ url: 'ftp://localhost:21/data', events: ['campaign.funded'] })
+    .expect(400);
+
+  assert.match(res.body.error, /https.*localhost/);
+});
+
+test('POST / rejects webhook URL pointing to Docker internal hostname', async () => {
+  const { app } = buildCreateApp({
+    safeUrlResult: { safe: false, reason: 'Hostname resolves to a private/internal network: backend' },
+  });
+  const res = await request(app)
+    .post('/api/webhooks')
+    .send({ url: 'http://backend:3001/internal', events: ['campaign.funded'] })
+    .expect(400);
+
+  assert.match(res.body.error, /https.*localhost/);
+});
+
+test('POST / rejects webhook URL pointing to GCP metadata endpoint', async () => {
+  const { app } = buildCreateApp({
+    safeUrlResult: { safe: false, reason: 'Hostname resolves to a private/internal address: metadata.google.internal' },
+  });
+  const res = await request(app)
+    .post('/api/webhooks')
+    .send({ url: 'http://metadata.google.internal/', events: ['campaign.funded'] })
+    .expect(400);
+
+  assert.match(res.body.error, /https.*localhost/);
+});
+
+test('POST / rejects webhook URL with DNS rebinding to private IP', async () => {
+  const { app } = buildCreateApp({
+    safeUrlResult: { safe: false, reason: 'Hostname resolves to a private/internal network: evil.example.com' },
+  });
+  const res = await request(app)
+    .post('/api/webhooks')
+    .send({ url: 'https://evil.example.com/hook', events: ['campaign.funded'] })
+    .expect(400);
+
+  assert.match(res.body.error, /https.*localhost/);
+});
+
+test('POST / rejects webhook URL pointing to 127.0.0.1 (non-localhost loopback)', async () => {
+  const { app } = buildCreateApp({
+    safeUrlResult: { safe: false, reason: 'Hostname resolves to a private/internal address: 127.0.0.1' },
+  });
+  const res = await request(app)
+    .post('/api/webhooks')
+    .send({ url: 'http://127.0.0.1:8080/hook', events: ['campaign.funded'] })
+    .expect(400);
+
+  assert.match(res.body.error, /https.*localhost/);
+});
+
+test('POST / rejects webhook URL with 192.168.x.x private range', async () => {
+  const { app } = buildCreateApp({
+    safeUrlResult: { safe: false, reason: 'Hostname resolves to a private/internal address: 192.168.1.1' },
+  });
+  const res = await request(app)
+    .post('/api/webhooks')
+    .send({ url: 'http://192.168.1.1:3000/hook', events: ['campaign.funded'] })
+    .expect(400);
+
+  assert.match(res.body.error, /https.*localhost/);
 });

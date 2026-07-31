@@ -1,10 +1,12 @@
 /* eslint-disable */
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import * as Sentry from '@sentry/react';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import RelativeTime from '../components/RelativeTime';
 import DisputeResolveModal from '../components/DisputeResolveModal';
+import { useToast } from '../context/ToastContext';
 
 const DISPUTE_STATUSES = [
   'open',
@@ -40,10 +42,36 @@ const badgeStyle = {
 };
 
 function Drawer({ title, onClose, children }) {
+  const panelRef = useRef(null);
+
+  useEffect(() => {
+    if (!onClose) return;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const focusable = panel.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    first?.focus();
+    function trapTab(e) {
+      if (e.key !== 'Tab') return;
+      if (e.shiftKey) { if (document.activeElement === first) { e.preventDefault(); last?.focus(); } }
+      else { if (document.activeElement === last) { e.preventDefault(); first?.focus(); } }
+    }
+    panel.addEventListener('keydown', trapTab);
+    return () => panel.removeEventListener('keydown', trapTab);
+  }, [children]);
+
   return (
     <div
       role="dialog"
       aria-modal="true"
+      aria-label={title}
       style={{
         position: 'fixed',
         inset: 0,
@@ -55,6 +83,7 @@ function Drawer({ title, onClose, children }) {
       onClick={onClose}
     >
       <div
+        ref={panelRef}
         style={{
           width: 'min(520px, 100%)',
           height: '100%',
@@ -917,11 +946,10 @@ function MilestonesQueue() {
                 gap: '0.45rem',
               }}
             >
+              <label htmlFor={`milestone-reject-${m.id}`} className="sr-only">Rejection reason</label>
               <textarea
+                id={`milestone-reject-${m.id}`}
                 value={rejectReason}
-                onChange={(e) => setRejectReason(e.target.value)}
-                placeholder="Rejection reason (visible to creator)"
-                rows={2}
                 style={{
                   fontSize: '0.85rem',
                   resize: 'vertical',
@@ -978,9 +1006,9 @@ function MilestonesQueue() {
                   fontSize: '0.75rem',
                   padding: '0.35rem 0.8rem',
                   borderRadius: '6px',
-                  border: '1px solid #86efac',
-                  background: '#dcfce7',
-                  color: '#166534',
+                  border: '1px solid var(--color-success-border)',
+                  background: 'var(--color-success-bg)',
+                  color: 'var(--color-success-text)',
                   cursor: 'pointer',
                 }}
               >
@@ -1118,7 +1146,7 @@ function CampaignsQueue() {
                     padding: '0.25rem 0.7rem',
                     borderRadius: '6px',
                     cursor: 'pointer',
-                    background: '#10b981',
+                    background: 'var(--color-teal)',
                     color: '#fff',
                     border: 'none',
                   }}
@@ -1166,6 +1194,7 @@ function FraudQueue() {
   const [campaigns, setCampaigns] = useState([]);
   const [stats, setStats] = useState({ false_positives: 0, true_positives: 0, false_positive_rate: 0 });
   const [loading, setLoading] = useState(true);
+  const toast = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1177,11 +1206,12 @@ function FraudQueue() {
       setCampaigns(cList);
       setStats(cStats);
     } catch (err) {
-      console.error('Failed to load fraud data', err);
+      toast?.('Failed to load fraud data. Please try again.', 'error');
+      Sentry.captureException(err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     load();
@@ -1290,7 +1320,7 @@ function FraudQueue() {
                       padding: '0.35rem 0.8rem',
                       borderRadius: '6px',
                       cursor: 'pointer',
-                      background: '#10b981',
+                      background: 'var(--color-teal)',
                       color: '#fff',
                       border: 'none',
                     }}
@@ -1342,17 +1372,19 @@ export default function AdminDashboard() {
         Withdrawal approvals, dispute management, KYC oversight, and platform health.
       </p>
 
-      <nav style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
+      <nav role="tablist" style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
         {TABS.map((t) => (
           <button
             key={t.id}
             type="button"
+            role="tab"
+            aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
             style={{
               ...badgeStyle,
               cursor: 'pointer',
               background: tab === t.id ? 'var(--color-accent)' : 'var(--color-accent-soft)',
-              color: tab === t.id ? '#fff' : 'var(--color-accent)',
+              color: tab === t.id ? 'var(--color-bg)' : 'var(--color-accent)',
             }}
           >
             {t.label}

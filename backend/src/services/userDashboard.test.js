@@ -8,6 +8,7 @@ test('listCreatorCampaigns queries by creator_id', async () => {
   const { listCreatorCampaigns } = proxyquire('./userDashboardService', {
     '../config/database': {
       query: async (text, p) => {
+        if (text.includes('COUNT(*)')) return { rows: [{ total: 1 }] };
         sql = text;
         params = p;
         return { rows: [{ id: 'camp-1', title: 'Mine', status: 'active' }] };
@@ -15,10 +16,61 @@ test('listCreatorCampaigns queries by creator_id', async () => {
     },
   });
 
-  const rows = await listCreatorCampaigns('user-1');
+  const res = await listCreatorCampaigns('user-1');
   assert.match(sql, /creator_id = \$1/);
-  assert.deepEqual(params, ['user-1']);
-  assert.equal(rows[0].title, 'Mine');
+  assert.match(sql, /contributor_count/);
+  assert.match(sql, /LEFT JOIN LATERAL/);
+  assert.deepEqual(params, ['user-1', 20, 0]);
+  assert.equal(res.data[0].title, 'Mine');
+});
+
+test('listCreatorCampaigns fields param selects only requested columns and skips heavy joins', async () => {
+  let sql = '';
+  const { listCreatorCampaigns } = proxyquire('./userDashboardService', {
+    '../config/database': {
+      query: async (text, p) => {
+        if (text.includes('COUNT(*)')) return { rows: [{ total: 1 }] };
+        sql = text;
+        return {
+          rows: [{ id: 'camp-1', title: 'Mine', status: 'active', raised_amount: '10' }],
+        };
+      },
+    },
+  });
+
+  const res = await listCreatorCampaigns('user-1', {
+    fields: 'id,title,status,raised_amount',
+    limit: 50,
+  });
+
+  assert.match(sql, /c\.id/);
+  assert.match(sql, /c\.title/);
+  assert.match(sql, /c\.status/);
+  assert.match(sql, /c\.raised_amount/);
+  assert.doesNotMatch(sql, /contributor_count/);
+  assert.doesNotMatch(sql, /LEFT JOIN LATERAL/);
+  assert.doesNotMatch(sql, /has_milestones/);
+  assert.equal(res.data[0].id, 'camp-1');
+  assert.equal(res.pagination.limit, 50);
+});
+
+test('listCreatorCampaigns ignores unknown fields and always includes id', async () => {
+  let sql = '';
+  const { listCreatorCampaigns } = proxyquire('./userDashboardService', {
+    '../config/database': {
+      query: async (text) => {
+        if (text.includes('COUNT(*)')) return { rows: [{ total: 0 }] };
+        sql = text;
+        return { rows: [] };
+      },
+    },
+  });
+
+  await listCreatorCampaigns('user-1', { fields: 'title,hack;DROP TABLE' });
+  assert.match(sql, /c\.id/);
+  assert.match(sql, /c\.title/);
+  assert.doesNotMatch(sql, /DROP TABLE/);
+  assert.doesNotMatch(sql, /LEFT JOIN LATERAL/);
 });
 
 test('listUserContributions includes conversion_rate', async () => {
@@ -60,6 +112,12 @@ test('listUserContributions returns null when user missing', async () => {
   const rows = await listUserContributions('missing');
   assert.equal(rows, null);
 });
+
+// Badge criteria live in badgeService and are covered by badgeService.test.js;
+// the dashboard only has to surface whatever that service returns.
+function badgeServiceStub(badges = [{ id: 'first_contribution', label: 'First contribution', earned: true }]) {
+  return { evaluateBadges: async () => badges };
+}
 
 // Builds a mocked database whose query() routes by SQL text and records every
 // milestone query it receives. `campaignCount` controls how many distinct
@@ -118,6 +176,7 @@ test('getContributorDashboard batches milestones into a single query (no N+1)', 
   const { db, milestoneQueries } = buildDashboardDb(100);
   const { getContributorDashboard } = proxyquire('./userDashboardService', {
     '../config/database': db,
+    './badgeService': badgeServiceStub(),
   });
 
   const dashboard = await getContributorDashboard('user-1');
@@ -136,9 +195,11 @@ test('getContributorDashboard milestone query count is fixed regardless of campa
 
   const { getContributorDashboard: dashSmall } = proxyquire('./userDashboardService', {
     '../config/database': small.db,
+    './badgeService': badgeServiceStub(),
   });
   const { getContributorDashboard: dashLarge } = proxyquire('./userDashboardService', {
     '../config/database': large.db,
+    './badgeService': badgeServiceStub(),
   });
 
   await dashSmall('user-1');
@@ -152,6 +213,7 @@ test('getContributorDashboard maps batched milestones onto the right campaigns',
   const { db } = buildDashboardDb(3);
   const { getContributorDashboard } = proxyquire('./userDashboardService', {
     '../config/database': db,
+    './badgeService': badgeServiceStub(),
   });
 
   const dashboard = await getContributorDashboard('user-1');
@@ -172,9 +234,64 @@ test('getContributorDashboard returns empty shape when there are no contribution
         return { rows: [] };
       },
     },
+    './badgeService': badgeServiceStub([
+      { id: 'first_contribution', label: 'First contribution', earned: false },
+    ]),
   });
 
   const dashboard = await getContributorDashboard('user-1');
   assert.deepEqual(dashboard.campaigns, []);
   assert.equal(dashboard.stats.active_campaigns_backed, 0);
+  assert.equal(dashboard.stats.campaigns_backed, 0);
+  assert.equal(dashboard.stats.avg_contribution, 0);
+  assert.ok(Array.isArray(dashboard.stats.badges));
+  assert.equal(
+    dashboard.stats.badges.find((b) => b.id === 'first_contribution').earned,
+    false
+  );
+});
+
+test('getContributorDashboard computes campaigns_backed, avg_contribution, and badges', async () => {
+  const { db } = buildDashboardDb(5);
+  const { getContributorDashboard } = proxyquire('./userDashboardService', {
+    '../config/database': db,
+    './badgeService': badgeServiceStub([
+      { id: 'first_contribution', label: 'First contribution', earned: true },
+      { id: 'backed_5_campaigns', label: 'Backed 5 campaigns', earned: true },
+      { id: 'backed_10_campaigns', label: 'Backed 10 campaigns', earned: false },
+    ]),
+  });
+
+  const dashboard = await getContributorDashboard('user-1');
+
+  assert.equal(dashboard.stats.campaigns_backed, 5);
+  assert.equal(dashboard.stats.total_contributed, 50);
+  assert.equal(dashboard.stats.avg_contribution, 10);
+  assert.equal(dashboard.stats.badges.find((b) => b.id === 'first_contribution').earned, true);
+  assert.equal(dashboard.stats.badges.find((b) => b.id === 'backed_5_campaigns').earned, true);
+  assert.equal(dashboard.stats.badges.find((b) => b.id === 'backed_10_campaigns').earned, false);
+});
+
+test('getContributorDashboardCsv builds a CSV with one row per contribution', async () => {
+  const { db } = buildDashboardDb(2);
+  const { getContributorDashboardCsv } = proxyquire('./userDashboardService', {
+    '../config/database': db,
+    './badgeService': badgeServiceStub(),
+  });
+
+  const csv = await getContributorDashboardCsv('user-1');
+  const lines = csv.trim().split('\n');
+  assert.equal(lines[0], 'date,campaign,amount,asset,tx_hash,refund_status');
+  assert.equal(lines.length, 3); // header + 2 contributions
+  assert.match(lines[1], /Campaign 1/);
+  assert.match(lines[1], /hash-0/);
+});
+
+test('getContributorDashboardCsv returns null for an unknown user', async () => {
+  const { getContributorDashboardCsv } = proxyquire('./userDashboardService', {
+    '../config/database': { query: async () => ({ rows: [] }) },
+  });
+
+  const csv = await getContributorDashboardCsv('missing');
+  assert.equal(csv, null);
 });

@@ -19,6 +19,7 @@ const {
   emitWebhookEventForCampaign,
   WEBHOOK_EVENTS,
 } = require("./webhookDispatcher");
+const { processContributionMatch } = require("./sponsorMatchingService");
 const cache = require("../utils/cache");
 const Sentry = require("@sentry/node");
 
@@ -46,6 +47,26 @@ function removeSSEClient(campaignId, res) {
   }
 }
 
+/**
+ * Cleanup stream registry and reconnect attempts for a wallet.
+ * Called when streams are closed, campaigns are deleted, or reconnects are abandoned.
+ */
+function cleanupStreamForWallet(walletPublicKey) {
+  const entry = streamRegistry.get(walletPublicKey);
+  if (entry && typeof entry.close === "function") {
+    try {
+      entry.close();
+    } catch (err) {
+      logger.warn("Failed to close stream during cleanup", {
+        wallet_public_key: walletPublicKey,
+        error: err.message,
+      });
+    }
+  }
+  streamRegistry.delete(walletPublicKey);
+  reconnectAttempts.delete(walletPublicKey);
+}
+
 function broadcastCampaignUpdate(campaignId, data) {
   const clients = sseClients.get(campaignId);
   if (!clients || clients.size === 0) return;
@@ -60,6 +81,7 @@ function broadcastCampaignUpdate(campaignId, data) {
 }
 
 const MAX_RECONNECT_DELAY_MS = 60_000;
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 function extractPagingToken(record) {
   if (!record || typeof record !== "object") return null;
@@ -238,13 +260,16 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     const displayName = submittedRows[0]?.metadata?.display_name || null;
     const referralCode = submittedRows[0]?.metadata?.referral_code || null;
     const ipAddress = submittedRows[0]?.metadata?.ip_address || null;
+    const deviceFingerprint = submittedRows[0]?.metadata?.device_fingerprint || null;
+    const reservedTierId = submittedRows[0]?.metadata?.tier_id || null;
+    const nftRewardRequested = submittedRows[0]?.metadata?.nft_reward === true;
 
     const { rows: inserted } = await client.query(
       `INSERT INTO contributions
          (campaign_id, sender_public_key, amount, asset, anchor_id, anchor_transaction_id,
           anchor_asset, anchor_amount, payment_type, source_amount, source_asset,
-          conversion_rate, path, tx_hash, platform_fee_amount, display_name, ip_address)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17)
+          conversion_rate, path, tx_hash, platform_fee_amount, display_name, ip_address, device_fingerprint)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18)
        RETURNING id`,
       [
         campaignId,
@@ -264,6 +289,7 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
         platformFeeAmount,
         displayName,
         ipAddress,
+        deviceFingerprint,
       ],
     );
 
@@ -282,16 +308,51 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
 
     // Match this contribution to the highest reward tier it qualifies for that
     // still has capacity (idempotent + atomic with the insert above).
+    // If the contribution was made with an explicit tier_id that was reserved
+    // atomically in the route, use that tier directly without bumping claimed_count.
     const assignedTier = await assignTierToContribution(client, {
       campaignId,
       amount: destinationAmount,
       contributionId: inserted[0].id,
+      tierId: reservedTierId || undefined,
     });
+
+    if (assignedTier?.nft_enabled && nftRewardRequested) {
+      await client.query(
+        `INSERT INTO nft_rewards (campaign_id, reward_tier_id, contribution_id, status)
+         SELECT $1, $2, $3, 'minting'
+         WHERE EXISTS (
+           SELECT 1
+           FROM reward_tiers rt
+           WHERE rt.id = $2
+           AND rt.campaign_id = $1
+         )
+         ON CONFLICT (reward_tier_id, contribution_id) DO NOTHING`,
+        [campaignId, assignedTier.id, inserted[0].id],
+      );
+    }
 
     await markContributionIndexed(client, txHash, inserted[0].id);
 
     if (referralCode) {
       await attributeContributionToReferrer(campaignId, referralCode, client);
+    }
+
+    // Process sponsor matching
+    let matchAmount = 0;
+    try {
+      matchAmount = await processContributionMatch({
+        campaignId,
+        contributionId: inserted[0].id,
+        contributionAmount: destinationAmount,
+        client,
+      });
+    } catch (matchErr) {
+      logger.warn('Sponsor matching processing failed (non-blocking)', {
+        campaign_id: campaignId,
+        contribution_id: inserted[0].id,
+        error: matchErr.message,
+      });
     }
 
     if (anchorMetadata?.anchor_deposit_id) {
@@ -327,6 +388,7 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
         payment_type: paymentType,
         anchor_transaction_id: anchorMetadata?.anchor_transaction_id || null,
         reward_tier: assignedTier || null,
+        nft_reward: assignedTier?.nft_enabled && nftRewardRequested ? true : false,
       },
       receiptPayload: {
         campaignId,
@@ -395,6 +457,24 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
         }),
       );
 
+      // Award any badge this contribution has just unlocked
+      const { syncBadgesForWallet } = require('./badgeService');
+      syncBadgesForWallet(postCommitHooks.receiptPayload.senderPublicKey).catch((e) =>
+        logger.error("[badges] Sync failed", {
+          campaign_id: postCommitHooks.campaignId,
+          error: e.message,
+        }),
+      );
+
+      // Tell followers when the campaign crosses a funding threshold
+      const { announceFundingProgress } = require('./campaignFollowService');
+      announceFundingProgress(postCommitHooks.campaignId).catch((e) =>
+        logger.error("[follow] Funding progress announcement failed", {
+          campaign_id: postCommitHooks.campaignId,
+          error: e.message,
+        }),
+      );
+
       // Bust public caches — contribution changes raised_amount and contributor_count
       cache.invalidate(`campaigns:id:${postCommitHooks.campaignId}`);
       cache.invalidatePrefix('campaigns:list:');
@@ -450,6 +530,17 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
 }
 
   function scheduleStreamReconnect(campaignId, walletPublicKey, attempt) {
+    if (attempt > MAX_RECONNECT_ATTEMPTS) {
+      logger.error("Ledger stream reconnect abandoned after max attempts", {
+        wallet_public_key: walletPublicKey,
+        campaign_id: campaignId,
+        attempt,
+        max_attempts: MAX_RECONNECT_ATTEMPTS,
+      });
+      cleanupStreamForWallet(walletPublicKey);
+      return;
+    }
+
     const delay = Math.min(
       MAX_RECONNECT_DELAY_MS,
       1000 * 2 ** Math.max(0, attempt - 1),
@@ -515,15 +606,9 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
             campaign_id: campaignId,
             error: err.message,
           });
-          const snap = streamRegistry.get(walletPublicKey);
           const attempt = (reconnectAttempts.get(walletPublicKey) || 0) + 1;
           reconnectAttempts.set(walletPublicKey, attempt);
-          try {
-            if (snap && typeof snap.close === "function") snap.close();
-          } catch {
-            // ignore
-          }
-          streamRegistry.delete(walletPublicKey);
+          cleanupStreamForWallet(walletPublicKey);
           scheduleStreamReconnect(campaignId, walletPublicKey, attempt);
         },
       });
@@ -608,7 +693,11 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
               });
             }
           })
-          .catch(() => {});
+          .catch((err) =>
+            logger.warn("Ledger stream health check failed", {
+              error: err.message,
+            }),
+          );
       },
       5 * 60 * 1000,
     );
@@ -669,4 +758,5 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     getLedgerStreamHealth,
     addSSEClient,
     removeSSEClient,
+    cleanupStreamForWallet,
   };

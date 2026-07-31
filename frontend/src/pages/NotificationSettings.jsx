@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { api } from '../services/api';
+import { subscribeToPush, unsubscribeFromPush } from '../services/pushNotifications';
 
 const CHANNELS = [
   { id: 'email', label: 'Email', icon: '✉' },
@@ -13,6 +14,7 @@ const CHANNELS = [
 const EVENT_TYPES = [
   { id: 'campaign_update', label: 'Campaign updates', description: 'New updates posted on campaigns you support' },
   { id: 'milestone_completion', label: 'Milestone completions', description: 'Milestones reached or approved' },
+  { id: 'funds_released', label: 'Fund release transparency', description: 'When backed campaign funds are released with usage details' },
   { id: 'withdrawal', label: 'Withdrawal notifications', description: 'Withdrawal requests, approvals, and rejections' },
   { id: 'dispute', label: 'Dispute notifications', description: 'Disputes opened, updated, or resolved' },
   { id: 'referral_reward', label: 'Referral rewards', description: 'When a referral contribution is confirmed' },
@@ -91,10 +93,14 @@ export default function NotificationSettings() {
 
   const loadPreferences = useCallback(async () => {
     try {
-      const [prefRows, channelSettings, myCampaigns] = await Promise.all([
+      const [prefRows, channelSettings, pushSubscription, myCampaigns] = await Promise.all([
         api.getNotificationPreferences().catch(() => []),
         api.getChannelSettings().catch(() => ({})),
-        api.getMyCampaigns({ limit: 50 }).catch(() => ({ campaigns: [] })),
+        api.getPushSubscriptionStatus().catch(() => ({ subscribed: false })),
+        // Only request the fields used by the per-campaign overrides section.
+        api
+          .getMyCampaigns({ limit: 50, fields: 'id,title,status,raised_amount' })
+          .catch(() => ({ data: [] })),
       ]);
 
       // Build preference map from rows
@@ -118,6 +124,7 @@ export default function NotificationSettings() {
           chEnabled[ch.id] = true;
         }
       }
+      chEnabled.push = pushSubscription.subscribed;
       setChannelEnabled(chEnabled);
 
       // Quiet hours from channel settings
@@ -129,8 +136,8 @@ export default function NotificationSettings() {
         setQuietEnd(String(qe));
       }
 
-      // Campaigns for per-campaign overrides
-      const campList = (myCampaigns?.campaigns || []).filter(
+      // Campaigns for per-campaign overrides (API returns { data, pagination })
+      const campList = (myCampaigns?.data || []).filter(
         (c) => c.status === 'active' || c.status === 'funded'
       );
       setCampaigns(campList);
@@ -173,6 +180,15 @@ export default function NotificationSettings() {
       });
 
       try {
+        if (channelId === 'push') {
+          if (enabled) {
+            const token = await subscribeToPush();
+            await api.registerPushSubscription(token);
+          } else {
+            const token = await unsubscribeFromPush();
+            if (token) await api.removePushSubscription(token);
+          }
+        }
         // Save each event type preference for this channel
         const promises = EVENT_TYPES.map((evt) =>
           api.updateNotificationPreference({

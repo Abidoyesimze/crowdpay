@@ -8,6 +8,7 @@ import {
 } from '@stellar/freighter-api';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
+import { getDeviceFingerprint } from '../lib/deviceFingerprint';
 import { stellarExpertTxUrl } from '../config/stellar';
 import KycPrompt from './KycPrompt';
 
@@ -34,6 +35,32 @@ function friendlyContributeError(err) {
     return err.message || 'Check your amount and asset selection.';
   }
   return err.message || 'Payment could not be submitted. Try again.';
+}
+
+const FREIGHTER_TIMEOUT_MS = 60000;
+const SIGNING_CANCELLED = 'SIGNING_CANCELLED';
+
+// Freighter never rejects when its popup is dismissed or hangs, so every call
+// that opens the extension is raced against a timeout and a manual cancel.
+function withFreighterTimeout(promise, { signal, timeoutMessage }) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => finish(reject, new Error(SIGNING_CANCELLED));
+    const timer = setTimeout(() => finish(reject, new Error(timeoutMessage)), FREIGHTER_TIMEOUT_MS);
+
+    signal.addEventListener('abort', onAbort);
+    promise.then(
+      (value) => finish(resolve, value),
+      (err) => finish(reject, err)
+    );
+  });
 }
 
 function friendlyFreighterError(err, fallback) {
@@ -107,6 +134,8 @@ export default function ContributeModal({
   const anchorPopupRef = useRef(null);
   const submitLockRef = useRef(false);
   const activeSubmissionKeyRef = useRef(null);
+  const signingAbortRef = useRef(null);
+  const [signingInFlight, setSigningInFlight] = useState(false);
 
   const modalRef = useRef(null);
 
@@ -139,7 +168,12 @@ export default function ContributeModal({
     String(import.meta.env.VITE_KYC_REQUIRED_FOR_CAMPAIGNS ?? 'true').toLowerCase() !== 'false';
   const needsKyc = kycRequired && user?.kyc_status !== 'verified';
 
+  const handleCancelSigning = () => {
+    signingAbortRef.current?.abort();
+  };
+
   const handleClose = () => {
+    signingAbortRef.current?.abort();
     if (anchorPopupRef.current && !anchorPopupRef.current.closed) {
       anchorPopupRef.current.close();
     }
@@ -218,6 +252,8 @@ export default function ContributeModal({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  useEffect(() => () => signingAbortRef.current?.abort(), []);
 
   useEffect(() => {
     let active = true;
@@ -343,12 +379,14 @@ export default function ContributeModal({
 
   async function submitWithCustodial() {
     setLoadingLabel('Submitting with CrowdPay wallet…');
+    const device_fingerprint = await getDeviceFingerprint();
     return api.contribute(
       {
         campaign_id: campaign.id,
         amount: destAmount,
         send_asset: sendAsset,
         display_name: displayName.trim() || undefined,
+        device_fingerprint: device_fingerprint || undefined,
         idempotency_key: activeSubmissionKeyRef.current,
       },
       token
@@ -356,8 +394,24 @@ export default function ContributeModal({
   }
 
   async function submitWithFreighter() {
+    const abortController = new AbortController();
+    signingAbortRef.current = abortController;
+    setSigningInFlight(true);
+    try {
+      return await runFreighterFlow(abortController.signal);
+    } finally {
+      setSigningInFlight(false);
+      signingAbortRef.current = null;
+    }
+  }
+
+  async function runFreighterFlow(signal) {
     setLoadingLabel('Connecting to Freighter…');
-    const access = await requestAccess();
+    const access = await withFreighterTimeout(requestAccess(), {
+      signal,
+      timeoutMessage:
+        'Freighter did not respond within 60 seconds. Open the extension and try again.',
+    });
     if (access?.error) {
       throw new Error(friendlyFreighterError(access.error, 'Could not connect to Freighter.'));
     }
@@ -367,6 +421,7 @@ export default function ContributeModal({
     }
 
     setLoadingLabel('Preparing transaction…');
+    const device_fingerprint = await getDeviceFingerprint();
     const prepared = await api.prepareContribution(
       {
         campaign_id: campaign.id,
@@ -374,13 +429,17 @@ export default function ContributeModal({
         send_asset: sendAsset,
         sender_public_key: signerAddress,
         display_name: displayName.trim() || undefined,
+        device_fingerprint: device_fingerprint || undefined,
         idempotency_key: activeSubmissionKeyRef.current,
       },
       token
     );
 
     setLoadingLabel('Checking Freighter network…');
-    const network = await getNetwork();
+    const network = await withFreighterTimeout(getNetwork(), {
+      signal,
+      timeoutMessage: 'Freighter did not report its network within 60 seconds. Try again.',
+    });
     if (network?.error) {
       throw new Error(friendlyFreighterError(network.error, 'Could not read Freighter network.'));
     }
@@ -392,10 +451,17 @@ export default function ContributeModal({
     }
 
     setLoadingLabel('Waiting for signature…');
-    const signed = await signTransaction(prepared.unsigned_xdr, {
-      networkPassphrase: prepared.network_passphrase,
-      address: signerAddress,
-    });
+    const signed = await withFreighterTimeout(
+      signTransaction(prepared.unsigned_xdr, {
+        networkPassphrase: prepared.network_passphrase,
+        address: signerAddress,
+      }),
+      {
+        signal,
+        timeoutMessage:
+          'Freighter did not return a signature within 60 seconds. Approve the request in the extension, or cancel and try again.',
+      }
+    );
     if (signed?.error) {
       throw new Error(
         friendlyFreighterError(signed.error, 'Freighter could not sign this transaction.')
@@ -539,11 +605,15 @@ export default function ContributeModal({
       if (paymentMethod === 'anchor' && anchorPopupRef.current && !anchorPopupRef.current.closed) {
         anchorPopupRef.current.close();
       }
-      setError(
-        paymentMethod === 'freighter'
-          ? friendlyFreighterError(err, 'Freighter payment could not be submitted. Try again.')
-          : friendlyContributeError(err)
-      );
+      if (err?.message === SIGNING_CANCELLED) {
+        setError('Signing cancelled. Nothing was sent — you can start the payment again.');
+      } else {
+        setError(
+          paymentMethod === 'freighter'
+            ? friendlyFreighterError(err, 'Freighter payment could not be submitted. Try again.')
+            : friendlyContributeError(err)
+        );
+      }
     } finally {
       submitLockRef.current = false;
       activeSubmissionKeyRef.current = null;
@@ -923,9 +993,15 @@ export default function ContributeModal({
               )}
 
               <div style={styles.actions}>
-                <button type="button" className="btn-secondary" onClick={handleClose}>
-                  Cancel
-                </button>
+                {signingInFlight ? (
+                  <button type="button" className="btn-secondary" onClick={handleCancelSigning}>
+                    Cancel signing
+                  </button>
+                ) : (
+                  <button type="button" className="btn-secondary" onClick={handleClose}>
+                    Cancel
+                  </button>
+                )}
                 <button
                   type="submit"
                   className="btn-primary"
@@ -1079,6 +1155,11 @@ export default function ContributeModal({
             {unlockedTier && (
               <p className="alert alert--success" style={{ marginBottom: '1rem', fontSize: '0.9rem' }} role="status">
                 🎉 {"You've"} unlocked: <strong>{unlockedTier.title}</strong>
+              </p>
+            )}
+            {result?.nft_reward && (
+              <p className="alert alert--info" style={{ marginBottom: '1rem', fontSize: '0.9rem' }} role="status">
+                NFT reward record is being prepared for this contribution. Its status will appear in your profile once available.
               </p>
             )}
             {(result?.tx_hash || result?.conversion_quote || result?.anchor_transaction_id) && (

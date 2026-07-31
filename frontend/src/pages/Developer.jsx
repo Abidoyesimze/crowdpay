@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import * as Sentry from '@sentry/react';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { api } from '../services/api';
 
 const EVENT_OPTIONS = [
@@ -16,6 +18,7 @@ const V1_API_BASE = `${(import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/,
 
 export default function Developer() {
   const { user } = useAuth();
+  const toast = useToast();
   const [keys, setKeys] = useState([]);
   const [hooks, setHooks] = useState([]);
   const [deliveries, setDeliveries] = useState([]);
@@ -104,7 +107,8 @@ export default function Developer() {
         setExplorerEndpoint(endpoints[0].id);
       }
     } catch (err) {
-      console.error('Failed to load OpenAPI spec', err);
+      toast?.('Failed to load API spec. Please try again.', 'error');
+      Sentry.captureException(err);
     }
   }
 
@@ -137,16 +141,21 @@ export default function Developer() {
     setExplorerError('');
   }, [explorerEndpoint, v1Endpoints]);
 
+  // Debounce localStorage writes so typing in the body/params does not
+  // stringify + setItem on every keystroke (see #575).
   useEffect(() => {
     if (!explorerEndpoint) return;
-    localStorage.setItem(
-      `cp_explorer_params_${explorerEndpoint}`,
-      JSON.stringify({
-        pathParams: explorerPathParams,
-        query: explorerQuery,
-        body: explorerBody,
-      })
-    );
+    const timer = setTimeout(() => {
+      localStorage.setItem(
+        `cp_explorer_params_${explorerEndpoint}`,
+        JSON.stringify({
+          pathParams: explorerPathParams,
+          query: explorerQuery,
+          body: explorerBody,
+        })
+      );
+    }, 400);
+    return () => clearTimeout(timer);
   }, [explorerPathParams, explorerQuery, explorerBody, explorerEndpoint]);
 
   if (!user) {
@@ -216,7 +225,19 @@ export default function Developer() {
     setNewKeyScopes((cur) => (cur.includes(sc) ? cur.filter((x) => x !== sc) : [...cur, sc]));
   }
 
-  const selectedEndpoint = v1Endpoints.find((e) => e.id === explorerEndpoint) || v1Endpoints[0];
+  const selectedEndpoint =
+    v1Endpoints.find((e) => e.id === explorerEndpoint) ||
+    v1Endpoints[0] ||
+    {
+      id: '',
+      auth: false,
+      method: 'GET',
+      path: '',
+      pathFields: [],
+      queryFields: [],
+      bodyTemplate: null,
+      label: '',
+    };
 
   function buildExplorerUrl() {
     if (!selectedEndpoint) return '';
@@ -449,7 +470,9 @@ export default function Developer() {
             marginBottom: '1rem',
           }}
         >
+          <label htmlFor="new-key-label" className="sr-only">API key label</label>
           <input
+            id="new-key-label"
             value={newKeyLabel}
             onChange={(e) => setNewKeyLabel(e.target.value)}
             placeholder="Label"
@@ -540,7 +563,9 @@ export default function Developer() {
             marginBottom: '1rem',
           }}
         >
+          <label htmlFor="webhook-url" className="sr-only">Webhook URL</label>
           <input
+            id="webhook-url"
             value={hookUrl}
             onChange={(e) => setHookUrl(e.target.value)}
             placeholder="https://example.com/crowdpay-webhook"
