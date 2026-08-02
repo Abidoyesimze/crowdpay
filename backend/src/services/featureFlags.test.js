@@ -96,6 +96,8 @@ test('setOverride(null) clears a previous override', () => {
 });
 
 test('clearOverrides removes all overrides', () => {
+  delete process.env.ENABLE_CAMPAIGN_STATUS_CRON;
+  delete process.env.SERVE_FRONTEND;
   const ff = freshFlags();
   ff.setOverride('serve-frontend', true);
   ff.setOverride('campaign-status-cron', false);
