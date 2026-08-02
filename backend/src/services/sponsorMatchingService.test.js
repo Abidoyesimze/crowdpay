@@ -1,320 +1,266 @@
-const {
-  createMatchingPledge,
-  processContributionMatch,
-  getCampaignMatchProgress,
-  completeMatchingPledge,
-  getSponsorMatchingPledges,
-} = require('./sponsorMatchingService');
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const proxyquire = require('proxyquire').noCallThru();
 
-// Mock database
-const db = require('../config/database');
-jest.mock('../config/database');
-jest.mock('../config/logger', () => ({
-  info: jest.fn(),
-  error: jest.fn(),
-  warn: jest.fn(),
-}));
+function buildService(queryImpl) {
+  return proxyquire('./sponsorMatchingService', {
+    '../config/database': {
+      query: queryImpl,
+    },
+    '../config/logger': {
+      info: () => {},
+      error: () => {},
+      warn: () => {},
+    },
+  });
+}
 
-describe('SponsorMatchingService', () => {
-  const mockCampaignId = 'campaign-uuid-1';
-  const mockSponsorUserId = 'sponsor-uuid-1';
-  const mockContributionId = 'contrib-uuid-1';
+test('createMatchingPledge validates matchRatio positive', async () => {
+  const { createMatchingPledge } = buildService(async () => ({ rows: [] }));
+  await assert.rejects(
+    createMatchingPledge({
+      campaignId: 'campaign-uuid-1',
+      sponsorUserId: 'sponsor-uuid-1',
+      matchRatio: -1,
+      pledgeAmount: '1000',
+    }),
+    /matchRatio must be positive/
+  );
+});
 
-  beforeEach(() => {
-    jest.clearAllMocks();
+test('createMatchingPledge validates pledgeAmount positive', async () => {
+  const { createMatchingPledge } = buildService(async () => ({ rows: [] }));
+  await assert.rejects(
+    createMatchingPledge({
+      campaignId: 'campaign-uuid-1',
+      sponsorUserId: 'sponsor-uuid-1',
+      matchRatio: 1.0,
+      pledgeAmount: '0',
+    }),
+    /pledgeAmount must be positive/
+  );
+});
+
+test('createMatchingPledge creates a pledge', async () => {
+  const calls = [];
+  const mockResult = {
+    id: 'match-uuid-1',
+    campaign_id: 'campaign-uuid-1',
+    sponsor_user_id: 'sponsor-uuid-1',
+    match_ratio: 1.0,
+    pledge_amount: '1000',
+    matched_amount: '0',
+    status: 'active',
+    created_at: new Date(),
+  };
+
+  const { createMatchingPledge } = buildService(async (text) => {
+    calls.push(text);
+    if (text.includes('SELECT id FROM campaign_matches')) {
+      return { rows: [] };
+    }
+    return { rows: [mockResult] };
   });
 
-  describe('createMatchingPledge', () => {
-    it('createMatchingPledge_validates_ratio_positive', async () => {
-      const invalidParams = {
-        campaignId: mockCampaignId,
-        sponsorUserId: mockSponsorUserId,
-        matchRatio: -1,
-        pledgeAmount: '1000',
+  const result = await createMatchingPledge({
+    campaignId: 'campaign-uuid-1',
+    sponsorUserId: 'sponsor-uuid-1',
+    matchRatio: 1.0,
+    pledgeAmount: '1000',
+  });
+
+  assert.deepEqual(result, mockResult);
+  assert.equal(calls.length, 2);
+});
+
+test('processContributionMatch calculates correct match amount', async () => {
+  const { processContributionMatch } = buildService(async (text) => {
+    if (text.includes('FROM campaign_matches')) {
+      return {
+        rows: [{ id: 'match-uuid-1', match_ratio: 1.0, pledge_amount: 1000, matched_amount: 0 }],
       };
+    }
+    return { rows: [] };
+  });
 
-      await expect(createMatchingPledge(invalidParams)).rejects.toThrow(
-        'matchRatio must be positive'
-      );
-    });
+  const matchedAmount = await processContributionMatch({
+    campaignId: 'campaign-uuid-1',
+    contributionId: 'contrib-uuid-1',
+    contributionAmount: '100',
+  });
 
-    it('createMatchingPledge_validates_pledge_positive', async () => {
-      const invalidParams = {
-        campaignId: mockCampaignId,
-        sponsorUserId: mockSponsorUserId,
-        matchRatio: 1.0,
-        pledgeAmount: '0',
+  assert.equal(matchedAmount, 100);
+});
+
+test('processContributionMatch applies 2:1 ratio', async () => {
+  const { processContributionMatch } = buildService(async (text) => {
+    if (text.includes('FROM campaign_matches')) {
+      return {
+        rows: [{ id: 'match-uuid-1', match_ratio: 2.0, pledge_amount: 2000, matched_amount: 0 }],
       };
+    }
+    return { rows: [] };
+  });
 
-      await expect(createMatchingPledge(invalidParams)).rejects.toThrow(
-        'pledgeAmount must be positive'
-      );
-    });
+  const matchedAmount = await processContributionMatch({
+    campaignId: 'campaign-uuid-1',
+    contributionId: 'contrib-uuid-1',
+    contributionAmount: '100',
+  });
 
-    it('createMatchingPledge_creates_pledge', async () => {
-      const mockResult = {
+  assert.equal(matchedAmount, 200);
+});
+
+test('processContributionMatch caps at pledge amount and marks exhausted', async () => {
+  const updateCalls = [];
+  const { processContributionMatch } = buildService(async (text, params) => {
+    if (text.includes('FROM campaign_matches')) {
+      return {
+        rows: [{ id: 'match-uuid-1', match_ratio: 1.0, pledge_amount: 500, matched_amount: 0 }],
+      };
+    }
+    if (text.includes('UPDATE campaign_matches')) {
+      updateCalls.push(params);
+    }
+    return { rows: [] };
+  });
+
+  const matchedAmount = await processContributionMatch({
+    campaignId: 'campaign-uuid-1',
+    contributionId: 'contrib-uuid-1',
+    contributionAmount: '600',
+  });
+
+  assert.equal(matchedAmount, 500);
+  assert.ok(updateCalls.some((p) => p.includes('exhausted')));
+});
+
+test('processContributionMatch returns zero when pool exhausted', async () => {
+  const { processContributionMatch } = buildService(async (text) => {
+    if (text.includes('FROM campaign_matches')) {
+      return {
+        rows: [{ id: 'match-uuid-1', match_ratio: 1.0, pledge_amount: 100, matched_amount: 100 }],
+      };
+    }
+    return { rows: [] };
+  });
+
+  const matchedAmount = await processContributionMatch({
+    campaignId: 'campaign-uuid-1',
+    contributionId: 'contrib-uuid-1',
+    contributionAmount: '50',
+  });
+
+  assert.equal(matchedAmount, 0);
+});
+
+test('processContributionMatch returns zero when no pool', async () => {
+  const { processContributionMatch } = buildService(async () => ({ rows: [] }));
+
+  const matchedAmount = await processContributionMatch({
+    campaignId: 'campaign-uuid-1',
+    contributionId: 'contrib-uuid-1',
+    contributionAmount: '100',
+  });
+
+  assert.equal(matchedAmount, 0);
+});
+
+test('getCampaignMatchProgress aggregates multiple sponsors', async () => {
+  const { getCampaignMatchProgress } = buildService(async () => ({
+    rows: [
+      {
         id: 'match-uuid-1',
-        campaign_id: mockCampaignId,
-        sponsor_user_id: mockSponsorUserId,
+        sponsor_user_id: 'sponsor-1',
+        sponsor_name: 'Sponsor One',
         match_ratio: 1.0,
-        pledge_amount: '1000',
-        matched_amount: '0',
+        pledge_amount: 1000,
+        matched_amount: 300,
         status: 'active',
         created_at: new Date(),
-      };
+        contribution_count: 3,
+        total_contributed: 300,
+      },
+      {
+        id: 'match-uuid-2',
+        sponsor_user_id: 'sponsor-2',
+        sponsor_name: 'Sponsor Two',
+        match_ratio: 1.0,
+        pledge_amount: 500,
+        matched_amount: 100,
+        status: 'active',
+        created_at: new Date(),
+        contribution_count: 1,
+        total_contributed: 100,
+      },
+    ],
+  }));
 
-      db.query.mockResolvedValueOnce({ rows: [] }); // Check existing
-      db.query.mockResolvedValueOnce({ rows: [mockResult] }); // Insert
+  const progress = await getCampaignMatchProgress('campaign-uuid-1');
 
-      const result = await createMatchingPledge({
-        campaignId: mockCampaignId,
-        sponsorUserId: mockSponsorUserId,
-        matchRatio: 1.0,
-        pledgeAmount: '1000',
-      });
+  assert.equal(progress.totalPledged, 1500);
+  assert.equal(progress.totalMatched, 400);
+  assert.equal(progress.remainingPoolAmount, 1100);
+  assert.equal(progress.activePoolCount, 2);
+  assert.equal(progress.percentageUsed, 26.67);
+});
 
-      expect(result).toEqual(mockResult);
-      expect(db.query).toHaveBeenCalledTimes(2);
-    });
-  });
+test('getCampaignMatchProgress calculates zero percentage when no pledges', async () => {
+  const { getCampaignMatchProgress } = buildService(async () => ({ rows: [] }));
 
-  describe('processContributionMatch', () => {
-    it('processContributionMatch_calculates_correct_match_amount', async () => {
-      // Pledge 1000, ratio 1.0, contribution 100
-      // Assert matched = 100
+  const progress = await getCampaignMatchProgress('campaign-uuid-1');
 
-      db.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'match-uuid-1',
-            match_ratio: 1.0,
-            pledge_amount: 1000,
-            matched_amount: 0,
-          },
-        ],
-      });
+  assert.equal(progress.totalPledged, 0);
+  assert.equal(progress.percentageUsed, 0);
+});
 
-      db.query.mockResolvedValueOnce({ rows: [] }); // Update match
-      db.query.mockResolvedValueOnce({ rows: [] }); // Update contribution
+test('completeMatchingPledge marks completed', async () => {
+  const mockMatch = {
+    id: 'match-uuid-1',
+    campaign_id: 'campaign-uuid-1',
+    sponsor_user_id: 'sponsor-uuid-1',
+    pledge_amount: 1000,
+    matched_amount: 600,
+    status: 'completed',
+  };
 
-      const matchedAmount = await processContributionMatch({
-        campaignId: mockCampaignId,
-        contributionId: mockContributionId,
-        contributionAmount: '100',
-      });
+  const { completeMatchingPledge } = buildService(async () => ({ rows: [mockMatch] }));
 
-      expect(matchedAmount).toBe(100);
-    });
+  const result = await completeMatchingPledge('match-uuid-1');
 
-    it('processContributionMatch_applies_2to1_ratio', async () => {
-      // Pledge 2000, ratio 2.0, contribution 100
-      // Assert matched = 200
+  assert.deepEqual(result, mockMatch);
+  assert.equal(result.status, 'completed');
+});
 
-      db.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'match-uuid-1',
-            match_ratio: 2.0,
-            pledge_amount: 2000,
-            matched_amount: 0,
-          },
-        ],
-      });
+test('completeMatchingPledge throws when not found', async () => {
+  const { completeMatchingPledge } = buildService(async () => ({ rows: [] }));
 
-      db.query.mockResolvedValueOnce({ rows: [] }); // Update match
-      db.query.mockResolvedValueOnce({ rows: [] }); // Update contribution
+  await assert.rejects(completeMatchingPledge('invalid-uuid'), /Match not found or already completed/);
+});
 
-      const matchedAmount = await processContributionMatch({
-        campaignId: mockCampaignId,
-        contributionId: mockContributionId,
-        contributionAmount: '100',
-      });
-
-      expect(matchedAmount).toBe(200);
-    });
-
-    it('processContributionMatch_caps_at_pledge_amount', async () => {
-      // Pledge 500, ratio 1.0, contribution 600
-      // Assert matched = 500 (not 600), status = 'exhausted'
-
-      db.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'match-uuid-1',
-            match_ratio: 1.0,
-            pledge_amount: 500,
-            matched_amount: 0,
-          },
-        ],
-      });
-
-      db.query.mockResolvedValueOnce({ rows: [] }); // Update match
-      db.query.mockResolvedValueOnce({ rows: [] }); // Update contribution
-
-      const matchedAmount = await processContributionMatch({
-        campaignId: mockCampaignId,
-        contributionId: mockContributionId,
-        contributionAmount: '600',
-      });
-
-      expect(matchedAmount).toBe(500);
-      // Check that status was updated to 'exhausted'
-      expect(db.query).toHaveBeenCalledWith(
-        expect.stringContaining("status = $2"),
-        expect.arrayContaining(['exhausted'])
-      );
-    });
-
-    it('processContributionMatch_returns_zero_when_exhausted', async () => {
-      // Exhaust pool, then make another contribution
-      // Assert returns 0, no further updates
-
-      db.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'match-uuid-1',
-            match_ratio: 1.0,
-            pledge_amount: 100,
-            matched_amount: 100,
-          },
-        ],
-      });
-
-      db.query.mockResolvedValueOnce({ rows: [] }); // Update match
-      db.query.mockResolvedValueOnce({ rows: [] }); // Update contribution
-
-      const matchedAmount = await processContributionMatch({
-        campaignId: mockCampaignId,
-        contributionId: mockContributionId,
-        contributionAmount: '50',
-      });
-
-      expect(matchedAmount).toBe(0);
-    });
-
-    it('processContributionMatch_returns_zero_when_no_pool', async () => {
-      // No active matching pools
-      // Assert returns 0
-
-      db.query.mockResolvedValueOnce({ rows: [] }); // No matches
-
-      const matchedAmount = await processContributionMatch({
-        campaignId: mockCampaignId,
-        contributionId: mockContributionId,
-        contributionAmount: '100',
-      });
-
-      expect(matchedAmount).toBe(0);
-    });
-  });
-
-  describe('getCampaignMatchProgress', () => {
-    it('getCampaignMatchProgress_aggregates_multiple_sponsors', async () => {
-      // Two sponsors: 1000 + 500 pledged, 300 + 100 matched
-      // Assert totalPledged = 1500, totalMatched = 400
-
-      db.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'match-uuid-1',
-            sponsor_user_id: 'sponsor-1',
-            sponsor_name: 'Sponsor One',
-            match_ratio: 1.0,
-            pledge_amount: 1000,
-            matched_amount: 300,
-            status: 'active',
-            created_at: new Date(),
-            contribution_count: 3,
-            total_contributed: 300,
-          },
-          {
-            id: 'match-uuid-2',
-            sponsor_user_id: 'sponsor-2',
-            sponsor_name: 'Sponsor Two',
-            match_ratio: 1.0,
-            pledge_amount: 500,
-            matched_amount: 100,
-            status: 'active',
-            created_at: new Date(),
-            contribution_count: 1,
-            total_contributed: 100,
-          },
-        ],
-      });
-
-      const progress = await getCampaignMatchProgress(mockCampaignId);
-
-      expect(progress.totalPledged).toBe(1500);
-      expect(progress.totalMatched).toBe(400);
-      expect(progress.remainingPoolAmount).toBe(1100);
-      expect(progress.activePoolCount).toBe(2);
-      expect(progress.percentageUsed).toBeCloseTo(26.67, 1);
-    });
-
-    it('getCampaignMatchProgress_calculates_zero_percentage_when_no_pledge', async () => {
-      db.query.mockResolvedValueOnce({ rows: [] });
-
-      const progress = await getCampaignMatchProgress(mockCampaignId);
-
-      expect(progress.totalPledged).toBe(0);
-      expect(progress.percentageUsed).toBe(0);
-    });
-  });
-
-  describe('completeMatchingPledge', () => {
-    it('completeMatchingPledge_marks_completed', async () => {
-      const mockMatch = {
+test('getSponsorMatchingPledges returns sponsor pledges', async () => {
+  const { getSponsorMatchingPledges } = buildService(async () => ({
+    rows: [
+      {
         id: 'match-uuid-1',
-        campaign_id: mockCampaignId,
-        sponsor_user_id: mockSponsorUserId,
+        campaign_id: 'campaign-1',
+        campaign_title: 'Campaign A',
+        campaign_status: 'active',
+        sponsor_user_id: 'sponsor-uuid-1',
+        sponsor_name: 'Sponsor',
+        match_ratio: 1.0,
         pledge_amount: 1000,
-        matched_amount: 600,
-        status: 'completed',
-      };
+        matched_amount: 300,
+        status: 'active',
+        contract_id: null,
+        created_at: new Date(),
+      },
+    ],
+  }));
 
-      db.query.mockResolvedValueOnce({ rows: [mockMatch] });
+  const pledges = await getSponsorMatchingPledges('sponsor-uuid-1');
 
-      const result = await completeMatchingPledge('match-uuid-1');
-
-      expect(result).toEqual(mockMatch);
-      expect(result.status).toBe('completed');
-    });
-
-    it('completeMatchingPledge_throws_when_not_found', async () => {
-      db.query.mockResolvedValueOnce({ rows: [] });
-
-      await expect(completeMatchingPledge('invalid-uuid')).rejects.toThrow(
-        'Match not found or already completed'
-      );
-    });
-  });
-
-  describe('getSponsorMatchingPledges', () => {
-    it('getSponsorMatchingPledges_returns_sponsor_pledges', async () => {
-      const mockPledges = [
-        {
-          id: 'match-uuid-1',
-          campaign_id: 'campaign-1',
-          campaign_title: 'Campaign A',
-          campaign_status: 'active',
-          sponsor_user_id: mockSponsorUserId,
-          sponsor_name: 'Sponsor',
-          match_ratio: 1.0,
-          pledge_amount: 1000,
-          matched_amount: 300,
-          status: 'active',
-          contract_id: null,
-          created_at: new Date(),
-        },
-      ];
-
-      db.query.mockResolvedValueOnce({ rows: mockPledges });
-
-      const pledges = await getSponsorMatchingPledges(mockSponsorUserId);
-
-      expect(pledges).toHaveLength(1);
-      expect(pledges[0].pledgeAmount).toBe(1000);
-      expect(pledges[0].remainingAmount).toBe(700);
-    });
-  });
+  assert.equal(pledges.length, 1);
+  assert.equal(pledges[0].pledgeAmount, 1000);
+  assert.equal(pledges[0].remainingAmount, 700);
 });

@@ -8,7 +8,7 @@ test('stripHtml removes HTML tags', () => {
 });
 
 test('stripHtml strips script tags and their angle brackets', () => {
-  assert.equal(stripHtml('<script>alert(1)</script>safe'), 'alert(1)safe');
+  assert.equal(stripHtml('<script>alert(1)</script>safe'), 'safe');
   assert.equal(stripHtml('<img src=x onerror=alert(1)>'), '');
 });
 

@@ -20,8 +20,8 @@ test('attributeContributionToReferrer increments contribution_count', async () =
   const calls = [];
   const queryImpl = async (text, params) => {
     calls.push({ text, params });
-    if (text.includes('SELECT id FROM campaign_referrals')) {
-      return { rows: [{ id: 'ref-1' }] };
+    if (text.includes('FROM campaign_referrals')) {
+      return { rows: [{ id: 'ref-1', referrer_user_id: 'user-2' }] };
     }
     return { rows: [] };
   };
@@ -30,7 +30,7 @@ test('attributeContributionToReferrer increments contribution_count', async () =
   await attributeContributionToReferrer('camp-1', 'abc12345');
 
   assert.equal(calls.length, 2);
-  assert.match(calls[0].text, /SELECT id FROM campaign_referrals/);
+  assert.match(calls[0].text, /FROM campaign_referrals/);
   assert.deepEqual(calls[0].params, ['abc12345', 'camp-1']);
   assert.match(calls[1].text, /contribution_count = contribution_count \+ 1/);
   assert.deepEqual(calls[1].params, ['ref-1']);
@@ -57,5 +57,5 @@ test('attributeContributionToReferrer no-ops when referral row is not found', as
 
   await attributeContributionToReferrer('camp-1', 'missing-code');
   assert.equal(calls.length, 1);
-  assert.match(calls[0], /SELECT id FROM campaign_referrals/);
+  assert.match(calls[0], /FROM campaign_referrals/);
 });

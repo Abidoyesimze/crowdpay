@@ -78,6 +78,9 @@ function buildActions(overrides = {}) {
       createNotification: async (userId, payload) => {
         calls.notifications.push({ userId, ...payload });
       },
+      createNotificationsBulk: async (userIds, payload) => {
+        calls.notifications.push({ userIds, ...payload });
+      },
     },
     './webhookDispatcher': {
       WEBHOOK_EVENTS: {
@@ -234,9 +237,13 @@ test('queueFailedCampaignRefunds automatically executes contract refunds, retrie
           ]
         };
       }
-      if (text.includes('SELECT email, name FROM users WHERE wallet_public_key = $1')) {
+      if (text.includes('FROM users WHERE wallet_public_key = ANY')) {
         return {
-          rows: [{ email: `email-${params[0]}@test.com`, name: `User ${params[0]}` }]
+          rows: params[0].map((walletPublicKey) => ({
+            wallet_public_key: walletPublicKey,
+            email: `email-${walletPublicKey}@test.com`,
+            name: `User ${walletPublicKey}`,
+          })),
         };
       }
       if (text.includes('FROM contributions c') && text.includes('withdrawal_requests')) {

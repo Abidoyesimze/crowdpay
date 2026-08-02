@@ -532,15 +532,6 @@ export default function CreateCampaign() {
         reward_tiers: form.reward_tiers.length
           ? form.reward_tiers.map((tier) => ({
               title: tier.title.trim(),
-              description: tier.description.trim() || undefined,
-              min_amount: Number(tier.min_amount),
-              limit: tier.limit ? Number(tier.limit) : undefined,
-              estimated_delivery: tier.estimated_delivery || undefined,
-            }))
-          : undefined,
-        reward_tiers: form.reward_tiers.length
-          ? form.reward_tiers.map((tier) => ({
-              title: tier.title.trim(),
               description: tier.description.trim() || null,
               min_amount: Number(tier.min_amount),
               limit: tier.limit ? parseInt(tier.limit, 10) : null,

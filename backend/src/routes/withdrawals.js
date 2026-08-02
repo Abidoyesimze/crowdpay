@@ -369,10 +369,6 @@ router.post('/:id/approve/creator', requireAuth, async (req, res) => {
 });
 
 const platformApproveHandler = async (req, res) => {
-  /**
-   * @openapi
-   * ... JSDoc comments ...
-   */
   const client = await (db.pool ? db.pool.connect() : db.connect());
   let fullySignedXdr;
 
@@ -417,7 +413,7 @@ const platformApproveHandler = async (req, res) => {
         [req.params.id]
       );
       await client.query('COMMIT');
-      return res.status(400).json({ error: 'Withdrawal XDR has expired' });
+      return res.status(410).json({ error: 'Withdrawal XDR has expired' });
     }
 
     fullySignedXdr = signTransactionXdr({

@@ -311,13 +311,11 @@ function assertApiKeyScopes(req, res) {
 
 function requireAuth(req, res, next) {
   authenticate(req)
-    .then(() => {
-      if (req.user?.is_banned) {
-        return res.status(403).json({ error: 'Account suspended' });
-      }
-      return Promise.resolve();
-    })
     .then(async () => {
+      if (req.user?.is_banned) {
+        res.status(403).json({ error: 'Account suspended' });
+        return;
+      }
       if (!assertApiKeyScopes(req, res)) return;
       if (req.user?.userId) Sentry.setUser({ id: req.user.userId });
       await logImpersonatedRequest(req);

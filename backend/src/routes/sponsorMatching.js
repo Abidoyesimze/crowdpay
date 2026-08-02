@@ -61,7 +61,7 @@ router.post(
   requireAuth,
   param('id').isUUID(),
   body('match_ratio').isFloat({ gt: 0 }).toFloat(),
-  body('pledge_amount').isBigInt({ min: '1' }).isString(),
+  body('pledge_amount').isString().isInt({ min: 1 }),
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

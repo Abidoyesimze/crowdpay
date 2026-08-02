@@ -179,6 +179,7 @@ describe('SponsorBadgesRow', () => {
 
     render(<SponsorBadgesRow matches={matches} />);
 
-    expect(screen.getByText(/\(2.5:1\)/)).toBeInTheDocument();
+    expect(screen.getByText('Alice')).toBeInTheDocument();
+    expect(screen.getByTitle('Alice is matching at 2.5:1')).toBeInTheDocument();
   });
 });

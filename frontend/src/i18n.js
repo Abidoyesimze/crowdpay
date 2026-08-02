@@ -32,6 +32,7 @@ i18n
     resources: {
       en: { translation: en },
     },
+    partialBundledLanguages: true,
     fallbackLng: 'en',
     supportedLngs: ['en', 'fr'],
     nonExplicitSupportedLngs: true,

@@ -20,6 +20,7 @@ function setupEnv(overrides = {}) {
     STELLAR_NETWORK: 'testnet',
     STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
     WALLET_SECRET_LOCAL_KEK: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    WALLET_ENCRYPTION_KEY: 'a'.repeat(64),
   };
   const merged = { ...base, ...overrides };
   const removed = Object.keys(merged).filter((k) => merged[k] === undefined);

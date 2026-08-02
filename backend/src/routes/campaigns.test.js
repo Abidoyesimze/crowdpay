@@ -376,7 +376,7 @@ test('POST /api/campaigns returns 500 and logs orphaned wallet when DB insert fa
     .send({ title: 'Broken campaign', target_amount: '100', asset_type: 'USDC' });
 
   assert.equal(response.status, 500);
-  assert.match(response.body.error, /contact support/i);
+  assert.match(response.body.error, /could not be saved/i);
 });
 
 test('POST /api/campaigns returns 400 with validation errors for invalid payload', async () => {

@@ -30,7 +30,7 @@ function buildApp({ queryImpl, stellarImpl, sendEmailImpl, bcryptImpl } = {}) {
     '../services/walletSecrets': {
       encryptWalletSecret: async (secret) => `cpws:v1:${secret.slice(0, 8)}`,
     },
-    '../services/emailService': { sendEmail, sendWelcomeEmail: async () => {} },
+    '../services/emailService': { sendEmail, sendWelcomeEmail: async () => {}, sendWalletFundingFailedEmail: async () => {} },
     '../middleware/auth': {
       requireAuth: (_req, _res, next) => next(),
     },
@@ -50,6 +50,18 @@ function buildApp({ queryImpl, stellarImpl, sendEmailImpl, bcryptImpl } = {}) {
       revokeAllDevices: async () => {},
       getUserDevices: async () => [],
       enforce2faCheck: async () => ({ enforced: false }),
+    },
+    '../services/sessionService': {
+      createUserSession: async () => {},
+      recordLoginAttempt: async () => {},
+      checkLoginAnomalies: async () => {},
+    },
+    '../services/kycProvider': {
+      isKycRequiredForCampaigns: () => false,
+    },
+    '../services/kycService': {
+      startKycForUser: async () => ({ redirect_url: 'https://kyc.test', status: 'pending' }),
+      getKycStatusForUser: async () => 'not_started',
     },
     jsonwebtoken: {
       sign: () => 'jwt-token',

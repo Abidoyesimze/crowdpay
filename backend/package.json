@@ -8,7 +8,7 @@
     "start": "node src/index.js",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
-    "test": "NODE_ENV=test JWT_SECRET=testsecret API_KEY_PEPPER=testpeppersecret USDC_ISSUER=GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5 STELLAR_NETWORK=testnet PLATFORM_SECRET_KEY=SC[...",
+    "test": "NODE_ENV=test JWT_SECRET=testsecret API_KEY_PEPPER=testpeppersecret USDC_ISSUER=GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5 STELLAR_NETWORK=testnet PLATFORM_SECRET_KEY=SCVMQUS5EMTHWBLJTE5XCSCMHB2ZOVKRR4ATVTRPUNRCOGKRENIL3LHR STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org WALLET_SECRET_LOCAL_KEK=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= WALLET_ENCRYPTION_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa node --test src/**/*.test.js",
     "migrate": "node db/migrate.js",
     "migrate:fresh": "psql $DATABASE_URL -f db/schema.sql && node db/migrate.js",
     "rotate-wallet-secrets": "node src/scripts/rotateWalletSecrets.js"
@@ -21,7 +21,6 @@
     "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
-    "crowdpay": "file:..",
     "dayjs": "^1.11.21",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

@@ -1,250 +1,261 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const proxyquire = require('proxyquire').noCallThru();
 const request = require('supertest');
 const express = require('express');
-const router = require('./sponsorMatching');
-const db = require('../config/database');
-const { requireAuth } = require('../middleware/auth');
 
-jest.mock('../config/database');
-jest.mock('../middleware/auth', () => ({
-  requireAuth: jest.fn((req, res, next) => {
+const CAMPAIGN_UUID = '11111111-1111-4111-8111-111111111111';
+const OTHER_UUID = '22222222-2222-4222-8222-222222222222';
+const MATCH_UUID = '33333333-3333-4333-8333-333333333333';
+
+function buildApp({ queryImpl, serviceImpl }) {
+  const dbStub = { query: queryImpl };
+
+  const serviceStub = {
+    createMatchingPledge: async () => {
+      throw new Error('unmocked');
+    },
+    getCampaignMatchProgress: async () => ({}),
+    completeMatchingPledge: async () => ({}),
+    getSponsorMatchingPledges: async () => [],
+    ...serviceImpl,
+  };
+
+  const router = proxyquire('./sponsorMatching', {
+    '../config/database': dbStub,
+    '../middleware/auth': {
+      requireAuth: (req, _res, next) => {
+        req.user = { userId: 'user-uuid-1' };
+        next();
+      },
+    },
+    '../config/logger': {
+      info: () => {},
+      error: () => {},
+      warn: () => {},
+    },
+    '../services/sponsorMatchingService': serviceStub,
+    '../services/webhookDispatcher': {
+      emitWebhookEventForCampaign: async () => {},
+      WEBHOOK_EVENTS: {
+        SPONSOR_MATCH_CREATED: 'sponsor_match.created',
+        SPONSOR_MATCH_COMPLETED: 'sponsor_match.completed',
+      },
+    },
+  });
+
+  const app = express();
+  app.use(express.json());
+  app.use((req, res, next) => {
     req.user = { userId: 'user-uuid-1' };
     next();
-  }),
-}));
-jest.mock('../config/logger', () => ({
-  info: jest.fn(),
-  error: jest.fn(),
-}));
-jest.mock('../services/webhookDispatcher', () => ({
-  emitWebhookEventForCampaign: jest.fn(() => Promise.resolve()),
-  WEBHOOK_EVENTS: {
-    SPONSOR_MATCH_CREATED: 'sponsor_match.created',
-    SPONSOR_MATCH_COMPLETED: 'sponsor_match.completed',
-  },
-}));
+  });
+  app.use('/', router);
+  return app;
+}
 
-describe('Sponsor Matching Routes', () => {
-  let app;
+test('POST /campaigns/:id/matches creates a matching pledge', async () => {
+  const mockPledge = {
+    id: MATCH_UUID,
+    campaign_id: CAMPAIGN_UUID,
+    sponsor_user_id: 'user-uuid-1',
+    match_ratio: 1.0,
+    pledge_amount: '1000',
+    matched_amount: '0',
+    status: 'active',
+    created_at: '2026-08-01T00:00:00.000Z',
+  };
 
-  beforeEach(() => {
-    app = express();
-    app.use(express.json());
-    app.use((req, res, next) => {
-      req.user = { userId: 'user-uuid-1' };
-      next();
-    });
-    app.use('/', router);
-    jest.clearAllMocks();
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return { rows: [{ id: CAMPAIGN_UUID }] };
+      }
+      return { rows: [] };
+    },
+    serviceImpl: {
+      createMatchingPledge: async () => mockPledge,
+    },
   });
 
-  describe('POST /campaigns/:id/matches', () => {
-    it('creates_matching_pledge', async () => {
-      const campaignId = 'campaign-uuid-1';
-      const mockPledge = {
-        id: 'match-uuid-1',
-        campaign_id: campaignId,
+  const res = await request(app)
+    .post(`/${CAMPAIGN_UUID}/matches`)
+    .send({ match_ratio: 1.0, pledge_amount: '1000' });
+
+  assert.equal(res.status, 201);
+  assert.deepEqual(res.body, mockPledge);
+});
+
+test('POST /campaigns/:id/matches returns 404 when campaign not found', async () => {
+  const app = buildApp({
+    queryImpl: async () => ({ rows: [] }),
+  });
+
+  const res = await request(app)
+    .post(`/${CAMPAIGN_UUID}/matches`)
+    .send({ match_ratio: 1.0, pledge_amount: '1000' });
+
+  assert.equal(res.status, 404);
+  assert.deepEqual(res.body, { error: 'Campaign not found' });
+});
+
+test('POST /campaigns/:id/matches validates positive match ratio', async () => {
+  const app = buildApp({ queryImpl: async () => ({ rows: [] }) });
+
+  const res = await request(app)
+    .post(`/${CAMPAIGN_UUID}/matches`)
+    .send({ match_ratio: -1, pledge_amount: '1000' });
+
+  assert.equal(res.status, 400);
+  assert.ok(res.body.errors);
+});
+
+test('POST /campaigns/:id/matches validates positive pledge amount', async () => {
+  const app = buildApp({ queryImpl: async () => ({ rows: [] }) });
+
+  const res = await request(app)
+    .post(`/${CAMPAIGN_UUID}/matches`)
+    .send({ match_ratio: 1.0, pledge_amount: '0' });
+
+  assert.equal(res.status, 400);
+});
+
+test('GET /campaigns/:id/matches returns campaign matching progress', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return { rows: [{ id: CAMPAIGN_UUID }] };
+      }
+      return { rows: [] };
+    },
+    serviceImpl: {
+      getCampaignMatchProgress: async () => ({
+        campaignId: CAMPAIGN_UUID,
+        matches: [],
+        totalPledged: 1000,
+        totalMatched: 300,
+        remainingPoolAmount: 700,
+        activePoolCount: 1,
+        exhaustedPoolCount: 0,
+        percentageUsed: 30,
+      }),
+    },
+  });
+
+  const res = await request(app).get(`/${CAMPAIGN_UUID}/matches`);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.totalPledged, 1000);
+  assert.equal(res.body.totalMatched, 300);
+  assert.ok(res.body.matches);
+});
+
+test('GET /campaigns/:id/matches returns 404 when campaign not found', async () => {
+  const app = buildApp({ queryImpl: async () => ({ rows: [] }) });
+
+  const res = await request(app).get(`/${CAMPAIGN_UUID}/matches`);
+
+  assert.equal(res.status, 404);
+});
+
+test('GET /user/sponsor-matches returns sponsor pledges', async () => {
+  const app = buildApp({
+    queryImpl: async () => ({ rows: [] }),
+    serviceImpl: {
+      getSponsorMatchingPledges: async () => [
+        {
+          id: MATCH_UUID,
+          campaignId: 'campaign-1',
+          campaignTitle: 'Campaign A',
+          campaignStatus: 'active',
+          sponsorUserId: 'user-uuid-1',
+          sponsorName: 'Sponsor',
+          matchRatio: 1.0,
+          pledgeAmount: 1000,
+          matchedAmount: 300,
+          remainingAmount: 700,
+          status: 'active',
+          contractId: null,
+          createdAt: new Date(),
+        },
+      ],
+    },
+  });
+
+  const res = await request(app).get('/user/sponsor-matches');
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.pledges.length, 1);
+  assert.equal(res.body.pledges[0].pledgeAmount, 1000);
+});
+
+test('PATCH /campaigns/:id/matches/:matchId/complete completes a matching pledge', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaign_matches cm')) {
+        return {
+          rows: [
+            {
+              id: MATCH_UUID,
+              campaign_id: CAMPAIGN_UUID,
+              sponsor_user_id: 'user-uuid-1',
+              creator_id: 'creator-uuid',
+              pledge_amount: 1000,
+              matched_amount: 600,
+              status: 'completed',
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    },
+    serviceImpl: {
+      completeMatchingPledge: async () => ({
+        id: MATCH_UUID,
+        campaign_id: CAMPAIGN_UUID,
         sponsor_user_id: 'user-uuid-1',
-        match_ratio: 1.0,
-        pledge_amount: '1000',
-        matched_amount: '0',
-        status: 'active',
-        created_at: new Date(),
-      };
-
-      db.query.mockResolvedValueOnce({ rows: [{ id: campaignId }] }); // Campaign exists
-      db.query.mockResolvedValueOnce({ rows: [] }); // No existing pledge
-      db.query.mockResolvedValueOnce({ rows: [mockPledge] }); // Insert pledge
-
-      const res = await request(app)
-        .post(`/${campaignId}/matches`)
-        .send({
-          match_ratio: 1.0,
-          pledge_amount: '1000',
-        });
-
-      expect(res.statusCode).toBe(201);
-      expect(res.body).toEqual(mockPledge);
-    });
-
-    it('returns_404_when_campaign_not_found', async () => {
-      const campaignId = 'invalid-uuid';
-      
-      db.query.mockResolvedValueOnce({ rows: [] }); // Campaign not found
-
-      const res = await request(app)
-        .post(`/${campaignId}/matches`)
-        .send({
-          match_ratio: 1.0,
-          pledge_amount: '1000',
-        });
-
-      expect(res.statusCode).toBe(404);
-      expect(res.body).toEqual({ error: 'Campaign not found' });
-    });
-
-    it('validates_positive_match_ratio', async () => {
-      const campaignId = 'campaign-uuid-1';
-
-      const res = await request(app)
-        .post(`/${campaignId}/matches`)
-        .send({
-          match_ratio: -1,
-          pledge_amount: '1000',
-        });
-
-      expect(res.statusCode).toBe(400);
-      expect(res.body).toHaveProperty('errors');
-    });
-
-    it('validates_positive_pledge_amount', async () => {
-      const campaignId = 'campaign-uuid-1';
-
-      const res = await request(app)
-        .post(`/${campaignId}/matches`)
-        .send({
-          match_ratio: 1.0,
-          pledge_amount: '0',
-        });
-
-      expect(res.statusCode).toBe(400);
-    });
-  });
-
-  describe('GET /campaigns/:id/matches', () => {
-    it('returns_campaign_matching_progress', async () => {
-      const campaignId = 'campaign-uuid-1';
-
-      db.query.mockResolvedValueOnce({ rows: [{ id: campaignId }] }); // Campaign exists
-      db.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'match-uuid-1',
-            sponsor_user_id: 'sponsor-1',
-            sponsor_name: 'Alice',
-            match_ratio: 1.0,
-            pledge_amount: 1000,
-            matched_amount: 300,
-            status: 'active',
-            created_at: new Date(),
-            contribution_count: 3,
-            total_contributed: 300,
-          },
-        ],
-      });
-
-      const res = await request(app).get(`/${campaignId}/matches`);
-
-      expect(res.statusCode).toBe(200);
-      expect(res.body).toHaveProperty('totalPledged', 1000);
-      expect(res.body).toHaveProperty('totalMatched', 300);
-      expect(res.body).toHaveProperty('matches');
-    });
-
-    it('returns_404_when_campaign_not_found', async () => {
-      const campaignId = 'invalid-uuid';
-      
-      db.query.mockResolvedValueOnce({ rows: [] }); // Campaign not found
-
-      const res = await request(app).get(`/${campaignId}/matches`);
-
-      expect(res.statusCode).toBe(404);
-    });
-  });
-
-  describe('GET /user/sponsor-matches', () => {
-    it('returns_sponsor_pledges', async () => {
-      db.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: 'match-uuid-1',
-            campaign_id: 'campaign-1',
-            campaign_title: 'Campaign A',
-            campaign_status: 'active',
-            sponsor_user_id: 'user-uuid-1',
-            sponsor_name: 'Sponsor',
-            match_ratio: 1.0,
-            pledge_amount: 1000,
-            matched_amount: 300,
-            status: 'active',
-            contract_id: null,
-            created_at: new Date(),
-          },
-        ],
-      });
-
-      const res = await request(app).get('/user/sponsor-matches');
-
-      expect(res.statusCode).toBe(200);
-      expect(res.body).toHaveProperty('pledges');
-      expect(res.body.pledges).toHaveLength(1);
-      expect(res.body.pledges[0]).toHaveProperty('pledgeAmount', 1000);
-    });
-  });
-
-  describe('PATCH /campaigns/:id/matches/:matchId/complete', () => {
-    it('completes_matching_pledge', async () => {
-      const campaignId = 'campaign-uuid-1';
-      const matchId = 'match-uuid-1';
-
-      const mockMatch = {
-        id: matchId,
-        campaign_id: campaignId,
-        sponsor_user_id: 'user-uuid-1',
-        creator_id: 'creator-uuid',
         pledge_amount: 1000,
         matched_amount: 600,
         status: 'completed',
-      };
-
-      db.query.mockResolvedValueOnce({
-        rows: [
-          {
-            ...mockMatch,
-            creator_id: 'creator-uuid',
-          },
-        ],
-      }); // Get match
-      db.query.mockResolvedValueOnce({ rows: [mockMatch] }); // Complete match
-
-      const res = await request(app)
-        .patch(`/${campaignId}/matches/${matchId}/complete`);
-
-      expect(res.statusCode).toBe(200);
-      expect(res.body).toHaveProperty('status', 'completed');
-    });
-
-    it('returns_403_when_user_not_authorized', async () => {
-      const campaignId = 'campaign-uuid-1';
-      const matchId = 'match-uuid-1';
-
-      db.query.mockResolvedValueOnce({
-        rows: [
-          {
-            id: matchId,
-            campaign_id: campaignId,
-            sponsor_user_id: 'different-sponsor-uuid',
-            creator_id: 'different-creator-uuid',
-          },
-        ],
-      }); // Get match
-
-      const res = await request(app)
-        .patch(`/${campaignId}/matches/${matchId}/complete`);
-
-      expect(res.statusCode).toBe(403);
-      expect(res.body).toHaveProperty('error');
-    });
-
-    it('returns_404_when_match_not_found', async () => {
-      const campaignId = 'campaign-uuid-1';
-      const matchId = 'invalid-uuid';
-
-      db.query.mockResolvedValueOnce({ rows: [] }); // Match not found
-
-      const res = await request(app)
-        .patch(`/${campaignId}/matches/${matchId}/complete`);
-
-      expect(res.statusCode).toBe(404);
-    });
+      }),
+    },
   });
+
+  const res = await request(app).patch(`/${CAMPAIGN_UUID}/matches/${MATCH_UUID}/complete`);
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.status, 'completed');
+});
+
+test('PATCH /campaigns/:id/matches/:matchId/complete returns 403 when user not authorized', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaign_matches cm')) {
+        return {
+          rows: [
+            {
+              id: MATCH_UUID,
+              campaign_id: CAMPAIGN_UUID,
+              sponsor_user_id: 'different-sponsor-uuid',
+              creator_id: 'different-creator-uuid',
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const res = await request(app).patch(`/${CAMPAIGN_UUID}/matches/${MATCH_UUID}/complete`);
+
+  assert.equal(res.status, 403);
+  assert.ok(res.body.error);
+});
+
+test('PATCH /campaigns/:id/matches/:matchId/complete returns 404 when match not found', async () => {
+  const app = buildApp({ queryImpl: async () => ({ rows: [] }) });
+
+  const res = await request(app).patch(`/${CAMPAIGN_UUID}/matches/${MATCH_UUID}/complete`);
+
+  assert.equal(res.status, 404);
 });

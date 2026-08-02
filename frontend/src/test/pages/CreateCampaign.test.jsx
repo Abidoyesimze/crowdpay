@@ -22,6 +22,9 @@ const apiMocks = vi.hoisted(() => ({
   checkDuplicateCampaign: vi.fn().mockResolvedValue({ isDuplicate: false }),
   createCampaign: vi.fn().mockResolvedValue({ id: 'new-campaign' }),
   uploadCampaignCoverImage: vi.fn().mockResolvedValue({}),
+  getMyCampaignDraft: vi.fn().mockResolvedValue(null),
+  saveCampaignDraft: vi.fn().mockResolvedValue({ id: 'draft-1', saved_at: new Date().toISOString() }),
+  deleteCampaignDraft: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../../services/api', () => ({ api: apiMocks }));

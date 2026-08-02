@@ -61,6 +61,7 @@ function buildApp({ queryImpl, stellarImpl, stellarTxImpl, connectImpl }) {
     getSupportedAssetCodes: () => ['XLM', 'USDC'],
     ensureCustodialAccountFundedAndTrusted: async () => null,
     isBadSequenceError: () => false,
+    accountExistsOnLedger: async () => true,
     ...stellarImpl,
   };
 

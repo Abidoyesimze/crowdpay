@@ -58,6 +58,7 @@ module.exports = [
         CustomEvent: 'readonly',
         ResizeObserver: 'readonly',
         confirm: 'readonly',
+        global: 'writable',
       },
     },
     settings: {

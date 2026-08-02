@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import CreateCampaign from '../../pages/CreateCampaign';
 import { renderWithProviders } from '../renderWithProviders';
 
@@ -22,6 +22,9 @@ const apiMocks = vi.hoisted(() => ({
   checkDuplicateCampaign: vi.fn().mockResolvedValue({ isDuplicate: false }),
   createCampaign: vi.fn().mockResolvedValue({ id: 'new-campaign' }),
   uploadCampaignCoverImage: vi.fn().mockResolvedValue({}),
+  getMyCampaignDraft: vi.fn().mockResolvedValue(null),
+  saveCampaignDraft: vi.fn().mockResolvedValue({ id: 'draft-1', saved_at: new Date().toISOString() }),
+  deleteCampaignDraft: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../../services/api', () => ({ api: apiMocks }));
@@ -39,20 +42,39 @@ describe('CreateCampaign draft auto-save', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     window.history.replaceState({}, '');
   });
 
   it('auto-saves edits and shows a saved indicator', async () => {
+    let resolveServerSave;
+    apiMocks.saveCampaignDraft.mockReturnValue(
+      new Promise((resolve) => {
+        resolveServerSave = resolve;
+      })
+    );
+
     renderWithProviders(<CreateCampaign />);
 
-    fireEvent.change(await screen.findByLabelText(/Campaign title/i), {
-      target: { value: 'Solar grid' },
+    const title = await screen.findByLabelText(/Campaign title/i);
+
+    vi.useFakeTimers();
+
+    fireEvent.change(title, { target: { value: 'Solar grid' } });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
     });
 
-    expect(await screen.findByText(/Saving draft/i)).toBeInTheDocument();
-    await waitFor(() => expect(storedDraft()?.form.title).toBe('Solar grid'), { timeout: 3000 });
-    expect(await screen.findByText(/Draft saved/i)).toBeInTheDocument();
+    expect(screen.getByText(/Saving draft/i)).toBeInTheDocument();
+    expect(storedDraft()?.form.title).toBe('Solar grid');
+
+    await act(async () => {
+      resolveServerSave({ id: 'draft-1', saved_at: new Date().toISOString() });
+    });
+
+    expect(screen.getByText(/Draft saved/i)).toBeInTheDocument();
   });
 
   it('does not save an untouched form', async () => {

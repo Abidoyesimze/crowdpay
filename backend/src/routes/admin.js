@@ -35,7 +35,6 @@ const STATS_KEY = 'admin:stats';
 const HEALTH_KEY = 'admin:health';
 
 router.use(requireAuth);
-router.use(requireAdmin);
 
 /**
  * Log admin action to audit table
@@ -72,8 +71,9 @@ function clearImpersonationCookie(res) {
 /**
  * POST /api/admin/impersonate/exit
  * Clear impersonation mode and return to the admin session.
+ * Accessible to impersonated users (who may not be admins) to exit impersonation.
  */
-router.post('/impersonate/exit', requireAuth, async (req, res) => {
+router.post('/impersonate/exit', async (req, res) => {
   try {
     const adminUserId = req.impersonation?.adminUserId || req.user?.impersonated_by;
     const targetUserId = req.impersonation?.targetUserId || req.user?.userId;
@@ -91,7 +91,6 @@ router.post('/impersonate/exit', requireAuth, async (req, res) => {
   }
 });
 
-router.use(requireAuth);
 router.use(requireAdmin);
 
 /**
@@ -190,57 +189,6 @@ router.get('/stats', async (req, res) => {
   } catch (err) {
     logger.error('Error fetching admin stats', { error: err.message });
     res.status(500).json({ error: 'Failed to fetch statistics' });
-  }
-});
-
-/**
- * GET /api/admin/health
- * Deep health check for all platform subsystems (cached 60 s)
- */
-router.get('/health', async (req, res) => {
-  try {
-    const health = await adminHealthCache.wrap(HEALTH_KEY, async () => {
-      const start = Date.now();
-
-      const [
-        dbCheck,
-        userCount,
-        activeCampaigns,
-        pendingWithdrawals,
-        openDisputes,
-        pendingMilestones,
-        recentContributions,
-      ] = await Promise.all([
-        db.query('SELECT 1 AS ok'),
-        db.query('SELECT COUNT(*) FROM users'),
-        db.query("SELECT COUNT(*) FROM campaigns WHERE status = 'active' AND deleted_at IS NULL"),
-        db.query("SELECT COUNT(*) FROM withdrawals WHERE status = 'pending'"),
-        db.query("SELECT COUNT(*) FROM disputes WHERE status IN ('open','under_review')"),
-        db.query("SELECT COUNT(*) FROM milestones WHERE status = 'pending'"),
-        db.query('SELECT COUNT(*) FROM contributions WHERE created_at > NOW() - INTERVAL \'1 hour\''),
-      ]);
-
-      return {
-        status: 'ok',
-        latency_ms: Date.now() - start,
-        database: dbCheck.rows[0].ok === 1 ? 'ok' : 'error',
-        platform: {
-          total_users: parseInt(userCount.rows[0].count),
-          active_campaigns: parseInt(activeCampaigns.rows[0].count),
-          pending_withdrawals: parseInt(pendingWithdrawals.rows[0].count),
-          open_disputes: parseInt(openDisputes.rows[0].count),
-          pending_milestones: parseInt(pendingMilestones.rows[0].count),
-          contributions_last_hour: parseInt(recentContributions.rows[0].count),
-        },
-        cached_at: new Date().toISOString(),
-      };
-    });
-
-    res.set('Cache-Control', 'private, max-age=60');
-    res.json(health);
-  } catch (err) {
-    logger.error('Error fetching admin health', { error: err.message });
-    res.status(500).json({ error: 'Health check failed', details: err.message });
   }
 });
 

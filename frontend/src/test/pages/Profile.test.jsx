@@ -3,16 +3,18 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import Profile from '../../pages/Profile';
 import { renderWithProviders } from '../renderWithProviders';
 
+const mockUser = {
+  id: 'user1',
+  name: 'Alice',
+  email: 'alice@example.com',
+  created_at: '2024-01-01T00:00:00.000Z',
+  wallet_public_key: 'GABCDEF',
+  kyc_status: 'verified',
+};
+
 vi.mock('../../context/AuthContext', () => ({
   useAuth: () => ({
-    user: {
-      id: 'user1',
-      name: 'Alice',
-      email: 'alice@example.com',
-      created_at: '2024-01-01T00:00:00.000Z',
-      wallet_public_key: 'GABCDEF',
-      kyc_status: 'verified',
-    },
+    user: mockUser,
     token: 'token',
     ready: true,
     updateUser: vi.fn(),

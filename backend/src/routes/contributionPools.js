@@ -1,7 +1,7 @@
 const express = require('express');
 const { body, param, query } = require('express-validator');
 const { requireAuth } = require('../middleware/auth');
-const { validate } = require('../middleware/validation');
+const { validateRequest: validate } = require('../middleware/validation');
 const asyncHandler = require('../utils/asyncHandler');
 const poolQueries = require('../services/poolQueries');
 
