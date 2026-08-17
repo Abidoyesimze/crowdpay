@@ -113,7 +113,7 @@ export default function CreatorCampaignAnalytics() {
             <StatCard label="Goal %" value={`${Number(data.campaign.target_amount) > 0 ? Math.min(100, (Number(data.campaign.raised_amount) / Number(data.campaign.target_amount)) * 100).toFixed(1) : 0}%`} />
             <StatCard label="Contributors" value={retention?.total || 0} />
             <StatCard label="Retention Rate" value={`${retention?.retention_rate || 0}%`} />
-            {data.median_time_to_first_contribution_hours != null && (
+            {data.median_time_to_first_contribution_hours !== null && data.median_time_to_first_contribution_hours !== undefined && (
               <StatCard label="Time to First Contribution" value={`${data.median_time_to_first_contribution_hours}h`} />
             )}
           </div>
