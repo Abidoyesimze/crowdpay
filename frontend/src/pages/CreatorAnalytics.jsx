@@ -6,9 +6,9 @@ import { api } from '../services/api';
 
 const MiniLineChart = React.lazy(() => import('../components/MiniLineChart'));
 
-const {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, BarChart, Bar, Legend,
-} = require('recharts');
+import {
+  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from 'recharts';
 
 function StatCard({ label, value }) {
   return (
@@ -108,15 +108,15 @@ export default function CreatorAnalytics() {
       benchmarkComparisons.filter((c) => c.platform).length
     : 0;
 
-  const avgCreatorTimeFirst = benchmarkComparisons.filter((c) => c.creator?.time_to_first_contribution_hours != null).length > 0
-    ? benchmarkComparisons.filter((c) => c.creator?.time_to_first_contribution_hours != null)
+  const avgCreatorTimeFirst = benchmarkComparisons.filter((c) => c.creator?.time_to_first_contribution_hours !== null && c.creator?.time_to_first_contribution_hours !== undefined).length > 0
+    ? benchmarkComparisons.filter((c) => c.creator?.time_to_first_contribution_hours !== null && c.creator?.time_to_first_contribution_hours !== undefined)
         .reduce((s, c) => s + c.creator.time_to_first_contribution_hours, 0) /
-      benchmarkComparisons.filter((c) => c.creator?.time_to_first_contribution_hours != null).length
+      benchmarkComparisons.filter((c) => c.creator?.time_to_first_contribution_hours !== null && c.creator?.time_to_first_contribution_hours !== undefined).length
     : null;
-  const avgPlatformTimeFirst = benchmarkComparisons.filter((c) => c.platform?.avg_time_to_first_contribution_hours != null).length > 0
-    ? benchmarkComparisons.filter((c) => c.platform?.avg_time_to_first_contribution_hours != null)
+  const avgPlatformTimeFirst = benchmarkComparisons.filter((c) => c.platform?.avg_time_to_first_contribution_hours !== null && c.platform?.avg_time_to_first_contribution_hours !== undefined).length > 0
+    ? benchmarkComparisons.filter((c) => c.platform?.avg_time_to_first_contribution_hours !== null && c.platform?.avg_time_to_first_contribution_hours !== undefined)
         .reduce((s, c) => s + c.platform.avg_time_to_first_contribution_hours, 0) /
-      benchmarkComparisons.filter((c) => c.platform?.avg_time_to_first_contribution_hours != null).length
+      benchmarkComparisons.filter((c) => c.platform?.avg_time_to_first_contribution_hours !== null && c.platform?.avg_time_to_first_contribution_hours !== undefined).length
     : null;
 
   return (
@@ -229,7 +229,7 @@ export default function CreatorAnalytics() {
             Your campaign averages compared to anonymised platform medians (minimum 10 campaigns per bracket).
           </p>
           <BenchmarkBar creator={avgCreatorGoalPct} platform={avgPlatformGoalPct} label="Avg Goal % Reached" />
-          {avgCreatorTimeFirst != null && avgPlatformTimeFirst != null && (
+          {avgCreatorTimeFirst !== null && avgPlatformTimeFirst !== null && (
             <BenchmarkBar creator={avgCreatorTimeFirst} platform={avgPlatformTimeFirst} label="Avg Time to First Contribution (hours)" />
           )}
           <div style={{ marginTop: '0.75rem', overflowX: 'auto' }}>

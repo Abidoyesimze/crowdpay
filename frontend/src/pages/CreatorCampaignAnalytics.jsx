@@ -4,10 +4,10 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 
-const {
+import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-  PieChart, Pie, Cell, BarChart, Bar, Legend,
-} = require('recharts');
+  PieChart, Pie, Cell, BarChart, Bar,
+} from 'recharts';
 
 const DONUT_COLORS = ['#7c3aed', '#22c55e', '#f59e0b', '#ef4444', '#3b82f6', '#ec4899', '#14b8a6'];
 
@@ -220,7 +220,7 @@ export default function CreatorCampaignAnalytics() {
               </button>
             </div>
             <p style={{ fontSize: '0.82rem', color: 'var(--color-text-hint)', marginTop: '0.3rem' }}>
-              Max 5 exports per day. Large exports (>10k rows) will be emailed.
+              Max 5 exports per day. Large exports ({'>'}10k rows) will be emailed.
             </p>
           </div>
         </>
