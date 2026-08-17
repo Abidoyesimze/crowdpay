@@ -44,14 +44,42 @@ async function handleKycWebhook(req, res) {
       `UPDATE users
        SET kyc_status = $1::kyc_status,
            kyc_provider_reference = COALESCE($2, kyc_provider_reference),
-           kyc_completed_at = CASE WHEN $1::kyc_status = 'verified' THEN NOW() ELSE NULL END
+           kyc_completed_at = CASE WHEN $1::kyc_status = 'verified' THEN NOW() ELSE NULL END,
+           verification_status = CASE
+             WHEN $1::kyc_status = 'verified' THEN 'approved'::verification_status
+             WHEN $1::kyc_status = 'rejected' THEN 'declined'::verification_status
+             ELSE verification_status
+           END,
+           verification_tier = CASE
+             WHEN $1::kyc_status = 'verified' THEN COALESCE($4::verification_tier, verification_tier)
+             WHEN $1::kyc_status = 'rejected' THEN 'none'::verification_tier
+             ELSE verification_tier
+           END,
+           persona_inquiry_id = COALESCE($2, persona_inquiry_id)
        WHERE ${lookup}
-       RETURNING id, email, name, kyc_status, kyc_completed_at`,
-      params
+       RETURNING id, email, name, kyc_status, kyc_completed_at, verification_status, verification_tier`,
+      [...params, result.tier || 'basic']
     );
 
     if (!rows.length) {
       return res.status(404).json({ error: 'KYC subject not found' });
+    }
+
+    // Record the KYC event for audit trail
+    try {
+      await db.query(
+        `INSERT INTO kyc_events (user_id, persona_inquiry_id, event_type, tier_granted, decline_reason, received_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())`,
+        [
+          rows[0].id,
+          result.providerReference,
+          result.kycStatus === 'verified' ? 'inquiry.approved' : result.kycStatus === 'rejected' ? 'inquiry.declined' : 'inquiry.pending',
+          result.tier || null,
+          result.reason || null,
+        ]
+      );
+    } catch (eventErr) {
+      logger.warn('Failed to record KYC event', { user_id: rows[0].id, error: eventErr.message });
     }
 
     if (rows[0].email) {
@@ -78,6 +106,8 @@ async function handleKycWebhook(req, res) {
       user_id: rows[0].id,
       kyc_status: rows[0].kyc_status,
       kyc_completed_at: rows[0].kyc_completed_at,
+      verification_status: rows[0].verification_status,
+      verification_tier: rows[0].verification_tier,
     });
   } catch (err) {
     logger.error('KYC webhook handler failed', { error: err.message });

@@ -112,7 +112,7 @@ function CampaignCard({ campaign, featured }) {
               )}
               <CampaignStatusBadge status={campaign.status} />
             </div>
-            <VerificationBadge status={campaign.creator_kyc_status} compact />
+            <VerificationBadge status={campaign.creator_kyc_status || campaign.creator_verification_status} tier={campaign.creator_verification_tier} compact showTier />
           </div>
 
           <h3 style={styles.title}>{campaign.title}</h3>

@@ -28,7 +28,7 @@ const {
 } = require('../services/sorobanService');
 const { sendEmail, sendTeamMemberInvitedEmail } = require('../services/emailService');
 const { uploadCampaignCoverImage } = require('../services/storage');
-const { isKycRequiredForCampaigns } = require('../services/kycProvider');
+const { isKycRequiredForCampaigns, getTierLimit, VERIFICATION_TIER_LIMITS } = require('../services/kycProvider');
 const { listCreatorCampaigns } = require('../services/userDashboardService');
 const { getRecommendedCampaigns } = require('../services/campaignRecommendationService');
 const { publishDraftCampaign, CampaignNotPublishableError } = require('../services/campaignPublishing');
@@ -212,6 +212,8 @@ router.get('/featured', async (req, res) => {
            c.id, c.title, c.description, c.target_amount, c.raised_amount,
            c.asset_type, c.deadline, c.created_at, c.cover_image_url,
            u.name AS creator_name,
+           u.verification_status AS creator_verification_status,
+           u.verification_tier AS creator_verification_tier,
            (
              SELECT COUNT(DISTINCT sender_public_key)
              FROM contributions
@@ -413,6 +415,8 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
     SELECT c.*,
            u.name AS creator_name,
            u.kyc_status AS creator_kyc_status,
+           u.verification_status AS creator_verification_status,
+           u.verification_tier AS creator_verification_tier,
            COALESCE(cu.updates_count, 0)::int AS updates_count,
            COALESCE(con.contributor_count, 0)::int AS contributor_count
     FROM campaigns c
@@ -1036,10 +1040,14 @@ router.get('/:id', asyncHandler(async (req, res) => {
   }
 
   const query = `
-    SELECT *,
-           (SELECT COUNT(DISTINCT sender_public_key)::int FROM contributions WHERE campaign_id = $1) AS contributor_count
-    FROM campaigns
-    WHERE id = $1
+    SELECT c.*,
+           (SELECT COUNT(DISTINCT sender_public_key)::int FROM contributions WHERE campaign_id = $1) AS contributor_count,
+           u.kyc_status AS creator_kyc_status,
+           u.verification_status AS creator_verification_status,
+           u.verification_tier AS creator_verification_tier
+    FROM campaigns c
+    JOIN users u ON u.id = c.creator_id
+    WHERE c.id = $1
   `;
   await refreshCampaignStatus(req.params.id);
   const { rows } = await db.query(query, [req.params.id]);
@@ -1517,7 +1525,7 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
 
   // Get creator's info
   const { rows: userRows } = await db.query(
-    'SELECT email, wallet_public_key, kyc_status FROM users WHERE id = $1',
+    'SELECT email, wallet_public_key, kyc_status, verification_status, verification_tier FROM users WHERE id = $1',
     [req.user.userId]
   );
   if (!userRows.length) return res.status(404).json({ error: 'User not found' });
@@ -1528,6 +1536,36 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
       code: 'KYC_REQUIRED',
       kyc_status: userRows[0].kyc_status,
     });
+  }
+
+  // Tier-based campaign goal limit
+  if (isKycRequiredForCampaigns()) {
+    const userTier = userRows[0].verification_tier || 'none';
+    const tierLimit = getTierLimit(userTier);
+    const goalAmount = parseFloat(target_amount);
+
+    if (tierLimit === 0 && userTier === 'none') {
+      return res.status(403).json({
+        error: 'Verify your identity before creating a campaign.',
+        code: 'KYC_REQUIRED',
+        verification_tier: userTier,
+      });
+    }
+
+    if (goalAmount > tierLimit) {
+      const upgradePath = userTier === 'basic'
+        ? 'Upgrade to Standard verification (ID + address) to run campaigns up to $50,000.'
+        : userTier === 'standard'
+          ? 'Upgrade to Enhanced verification (ID + address + liveness) for unlimited campaign goals.'
+          : 'Complete identity verification to create campaigns.';
+      return res.status(403).json({
+        error: `Campaign goal of $${goalAmount.toLocaleString()} exceeds your ${userTier} tier limit of $${tierLimit.toLocaleString()}.`,
+        code: 'TIER_LIMIT_EXCEEDED',
+        tier_limit: tierLimit,
+        verification_tier: userTier,
+        upgrade_path: upgradePath,
+      });
+    }
   }
 
   const creatorPublicKey = userRows[0].wallet_public_key;

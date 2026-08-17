@@ -98,6 +98,11 @@ function buildApp({
     },
     '../services/kycProvider': {
       isKycRequiredForCampaigns: () => process.env.KYC_REQUIRED_FOR_CAMPAIGNS !== 'false',
+      getTierLimit: (tier) => {
+        const limits = { none: 0, basic: 5000, standard: 50000, enhanced: Infinity };
+        return limits[tier] ?? 0;
+      },
+      VERIFICATION_TIER_LIMITS: { none: 0, basic: 5000, standard: 50000, enhanced: Infinity },
     },
     '../services/userDashboardService': {
       listCreatorCampaigns: listCreatorCampaignsImpl || (async () => []),
@@ -194,8 +199,8 @@ test('POST /api/campaigns blocks unverified creators when KYC gate is enabled', 
   const app = buildApp({
     authUser: { userId: 'creator-1', role: 'creator' },
     queryImpl: async (text) => {
-      if (text.includes('SELECT email, wallet_public_key, kyc_status FROM users')) {
-        return { rows: [{ wallet_public_key: 'GCREATOR', kyc_status: 'pending' }] };
+      if (text.includes('wallet_public_key, kyc_status')) {
+        return { rows: [{ wallet_public_key: 'GCREATOR', kyc_status: 'pending', verification_status: 'pending', verification_tier: 'none' }] };
       }
       return { rows: [] };
     },
@@ -210,6 +215,45 @@ test('POST /api/campaigns blocks unverified creators when KYC gate is enabled', 
 
   assert.equal(response.status, 403);
   assert.equal(response.body.code, 'KYC_REQUIRED');
+});
+
+test('POST /api/campaigns returns 403 TIER_LIMIT_EXCEEDED when goal exceeds tier limit', async (t) => {
+  const previous = process.env.KYC_REQUIRED_FOR_CAMPAIGNS;
+  t.after(() => {
+    if (previous === undefined) delete process.env.KYC_REQUIRED_FOR_CAMPAIGNS;
+    else process.env.KYC_REQUIRED_FOR_CAMPAIGNS = previous;
+  });
+  process.env.KYC_REQUIRED_FOR_CAMPAIGNS = 'true';
+
+  const app = buildApp({
+    authUser: { userId: 'creator-1', role: 'creator' },
+    queryImpl: async (text) => {
+      if (text.includes('wallet_public_key, kyc_status')) {
+        return {
+          rows: [{
+            wallet_public_key: 'GCREATOR',
+            kyc_status: 'verified',
+            verification_status: 'approved',
+            verification_tier: 'standard',
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+    buildWithdrawalTransactionImpl: async () => '',
+    insertWithdrawalPendingSignaturesImpl: async () => 'tx-row',
+  });
+
+  const response = await request(app)
+    .post('/api/campaigns')
+    .set('Authorization', 'Bearer token')
+    .send({ title: 'Big campaign', target_amount: '60000', asset_type: 'USDC' });
+
+  assert.equal(response.status, 403);
+  assert.equal(response.body.code, 'TIER_LIMIT_EXCEEDED');
+  assert.equal(response.body.tier_limit, 50000);
+  assert.equal(response.body.verification_tier, 'standard');
+  assert.ok(response.body.upgrade_path);
 });
 
 test('GET /api/campaigns/:id/contributions/export streams owner CSV and hides anonymous wallets', async () => {
@@ -322,8 +366,8 @@ test('POST /api/campaigns allows creation when KYC gate is disabled', async (t) 
   const app = buildApp({
     authUser: { userId: 'creator-1', role: 'creator' },
     queryImpl: async (text) => {
-      if (text.includes('SELECT email, wallet_public_key, kyc_status FROM users')) {
-        return { rows: [{ wallet_public_key: 'GCREATOR', kyc_status: 'unverified' }] };
+      if (text.includes('wallet_public_key, kyc_status')) {
+        return { rows: [{ wallet_public_key: 'GCREATOR', kyc_status: 'unverified', verification_status: 'unverified', verification_tier: 'none' }] };
       }
       if (text.includes('INSERT INTO campaigns')) {
         return {
@@ -357,8 +401,8 @@ test('POST /api/campaigns returns 500 and logs orphaned wallet when DB insert fa
   const app = buildApp({
     authUser: { userId: 'creator-1', role: 'creator' },
     queryImpl: async (text) => {
-      if (text.includes('SELECT email, wallet_public_key, kyc_status FROM users')) {
-        return { rows: [{ email: 'creator@test.com', wallet_public_key: 'GCREATOR', kyc_status: 'verified' }] };
+      if (text.includes('wallet_public_key, kyc_status')) {
+        return { rows: [{ email: 'creator@test.com', wallet_public_key: 'GCREATOR', kyc_status: 'verified', verification_status: 'approved', verification_tier: 'basic' }] };
       }
       if (text === 'BEGIN' || text === 'ROLLBACK') return { rows: [] };
       if (text.includes('INSERT INTO campaigns')) {
@@ -384,8 +428,8 @@ test('POST /api/campaigns returns 400 with validation errors for invalid payload
   const app = buildApp({
     authUser: { userId: 'creator-1', role: 'creator' },
     queryImpl: async (text) => {
-      if (text.includes('SELECT email, wallet_public_key, kyc_status FROM users')) {
-        return { rows: [{ email: 'creator@test.com', wallet_public_key: 'GCREATOR', kyc_status: 'verified' }] };
+      if (text.includes('wallet_public_key, kyc_status')) {
+        return { rows: [{ email: 'creator@test.com', wallet_public_key: 'GCREATOR', kyc_status: 'verified', verification_status: 'approved', verification_tier: 'basic' }] };
       }
       if (text === 'BEGIN' || text === 'ROLLBACK') return { rows: [] };
       if (text.includes('INSERT INTO campaigns')) {
