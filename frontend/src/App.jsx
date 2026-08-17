@@ -35,6 +35,8 @@ const Resources = lazy(() => import('./pages/Resources'));
 const Leaderboard = lazy(() => import('./pages/Leaderboard'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 const CreatorProfile = lazy(() => import('./pages/CreatorProfile'));
+const CreatorAnalytics = lazy(() => import('./pages/CreatorAnalytics'));
+const CreatorCampaignAnalytics = lazy(() => import('./pages/CreatorCampaignAnalytics'));
 
 function PrivateRoute({ children }) {
   const { user, ready } = useAuth();
@@ -104,6 +106,22 @@ export default function App() {
                   element={
                     <PrivateRoute>
                       <Dashboard />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/dashboard/analytics"
+                  element={
+                    <PrivateRoute>
+                      <CreatorAnalytics />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/dashboard/analytics/:campaignId"
+                  element={
+                    <PrivateRoute>
+                      <CreatorCampaignAnalytics />
                     </PrivateRoute>
                   }
                 />

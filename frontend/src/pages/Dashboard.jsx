@@ -873,6 +873,14 @@ export default function Dashboard() {
 
       {activeTab === 'analytics' && isCreator && (
         <section role="tabpanel" aria-labelledby="tab-analytics">
+          <div style={{ marginBottom: '1rem' }}>
+            <Link
+              to="/dashboard/analytics"
+              style={{ color: 'var(--color-accent)', fontWeight: 600, fontSize: '0.9rem' }}
+            >
+              Open Full Analytics Dashboard →
+            </Link>
+          </div>
           {/* Dashboard-wide trend */}
           <div className="campaign-card" style={{ marginBottom: '1rem', minHeight: 'auto' }}>
             <div
@@ -1050,25 +1058,33 @@ export default function Dashboard() {
                   marginBottom: '0.75rem',
                 }}
               >
-                {campaigns.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => loadCampaignAnalytics(c.id)}
-                    style={{
-                      padding: '0.3rem 0.75rem',
-                      borderRadius: 8,
-                      border: '1px solid var(--color-border)',
-                      cursor: 'pointer',
-                      fontWeight: 600,
-                      fontSize: '0.82rem',
-                      background:
-                        selectedCampaignId === c.id ? 'var(--color-accent)' : 'transparent',
-                      color: selectedCampaignId === c.id ? '#fff' : 'var(--color-text-secondary)',
-                    }}
-                  >
-                    {c.title}
-                  </button>
+                    {campaigns.map((c) => (
+                  <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => loadCampaignAnalytics(c.id)}
+                      style={{
+                        padding: '0.3rem 0.75rem',
+                        borderRadius: 8,
+                        border: '1px solid var(--color-border)',
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                        fontSize: '0.82rem',
+                        background:
+                          selectedCampaignId === c.id ? 'var(--color-accent)' : 'transparent',
+                        color: selectedCampaignId === c.id ? '#fff' : 'var(--color-text-secondary)',
+                      }}
+                    >
+                      {c.title}
+                    </button>
+                    <Link
+                      to={`/dashboard/analytics/${c.id}`}
+                      style={{ color: 'var(--color-accent)', fontSize: '0.78rem', fontWeight: 600, whiteSpace: 'nowrap' }}
+                    >
+                      Deep Dive →
+                    </Link>
+                  </div>
                 ))}
               </div>
             )}

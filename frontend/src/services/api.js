@@ -617,6 +617,16 @@ export const api = {
     request('POST', `/contributions/${contributionId}/thank-you`, { message }),
   trackShare: (campaignId, platform) => request('POST', `/campaigns/${campaignId}/share`, { platform }),
 
+  // ── Creator Analytics ────────────────────────────────────────────────
+  getCreatorAnalyticsOverview: () => request('GET', '/creator/analytics/overview'),
+  getCreatorCampaignAnalytics: (id) => request('GET', `/creator/analytics/campaigns/${encodeURIComponent(id)}`),
+  getCreatorBenchmarks: () => request('GET', '/creator/analytics/benchmarks'),
+  exportCreatorCampaignData: (campaignId) =>
+    downloadFile(
+      `/creator/analytics/export?campaignId=${encodeURIComponent(campaignId)}`,
+      `campaign-${campaignId}-analytics-export.csv`
+    ),
+
   // ── Contribution Pools (#600) ──────────────────────────────────────
   listCampaignPools: (campaignId) =>
     request('GET', `/contribution-pools/campaign/${campaignId}`),

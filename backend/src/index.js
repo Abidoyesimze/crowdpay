@@ -291,6 +291,7 @@ app.use("/api/emails", require("./routes/emails"));
 app.use("/api/campaigns", require("./routes/thankYou"));
 app.use("/api/contributions", require("./routes/thankYou"));
 app.use("/api", require("./routes/announcement"));
+app.use("/api/creator/analytics", require("./routes/creatorAnalytics"));
 
 app.get("/health", async (_, res) => {
   try {
@@ -516,6 +517,17 @@ function startContractDeploymentRetryCron() {
   logger.info("Contract deployment retry cron scheduled (every 10 minutes)");
 }
 
+function startBenchmarkRefreshCron() {
+  const cron = require("node-cron");
+  cron.schedule("0 3 * * *", () => {
+    const { refreshPlatformBenchmarks } = require("./services/creatorAnalytics");
+    refreshPlatformBenchmarks().catch((err) => {
+      logger.error("Platform benchmarks refresh cron failed", { error: err.message });
+    });
+  });
+  logger.info("Platform benchmarks refresh cron scheduled (daily at 3 AM)");
+}
+
 async function bootstrap() {
   if (process.env.NODE_ENV === "production") {
     await assertNoLegacyPlaintextUserWalletSecrets();
@@ -536,6 +548,7 @@ async function bootstrap() {
     startRecommendationRefreshCron();
     startContractDeploymentRetryCron();
     startRecurringContributionsCron();
+    startBenchmarkRefreshCron();
   });
 }
 
