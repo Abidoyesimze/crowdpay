@@ -103,3 +103,155 @@ test('extractWebhookResult maps declined inquiry to rejected with reason', () =>
   assert.strictEqual(result.kycStatus, 'rejected');
   assert.strictEqual(result.reason, 'Document unreadable');
 });
+
+test('extractWebhookResult returns approved status and basic tier for approved inquiry with government-id check', () => {
+  const { extractWebhookResult } = loadProvider();
+  const result = extractWebhookResult({
+    data: {
+      attributes: {
+        name: 'inquiry.approved',
+        payload: {
+          data: {
+            id: 'inq_gov',
+            attributes: {
+              status: 'approved',
+              'reference-id': 'user-2',
+              checks: [
+                { type: 'government-id' },
+              ],
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.strictEqual(result.verificationStatus, 'approved');
+  assert.strictEqual(result.tier, 'basic');
+});
+
+test('extractWebhookResult returns enhanced tier for approved inquiry with government-id, address, and liveness checks', () => {
+  const { extractWebhookResult } = loadProvider();
+  const result = extractWebhookResult({
+    data: {
+      attributes: {
+        name: 'inquiry.approved',
+        payload: {
+          data: {
+            id: 'inq_enhanced',
+            attributes: {
+              status: 'approved',
+              'reference-id': 'user-3',
+              checks: [
+                { type: 'government-id' },
+                { type: 'address' },
+                { type: 'liveness' },
+              ],
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.strictEqual(result.verificationStatus, 'approved');
+  assert.strictEqual(result.tier, 'enhanced');
+});
+
+test('extractWebhookResult returns standard tier for government-id and address checks without liveness', () => {
+  const { extractWebhookResult } = loadProvider();
+  const result = extractWebhookResult({
+    data: {
+      attributes: {
+        name: 'inquiry.approved',
+        payload: {
+          data: {
+            id: 'inq_std',
+            attributes: {
+              status: 'approved',
+              'reference-id': 'user-4',
+              checks: [
+                { type: 'government-id' },
+                { type: 'address' },
+              ],
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.strictEqual(result.verificationStatus, 'approved');
+  assert.strictEqual(result.tier, 'standard');
+});
+
+test('extractWebhookResult returns none tier for declined inquiry', () => {
+  const { extractWebhookResult } = loadProvider();
+  const result = extractWebhookResult({
+    data: {
+      attributes: {
+        name: 'inquiry.declined',
+        payload: {
+          data: {
+            id: 'inq_decl',
+            attributes: {
+              status: 'declined',
+              'reference-id': 'user-5',
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.strictEqual(result.verificationStatus, 'declined');
+  assert.strictEqual(result.tier, 'none');
+});
+
+test('getTierLimit returns correct limits for each tier', () => {
+  const { getTierLimit } = loadProvider();
+  assert.strictEqual(getTierLimit('none'), 0);
+  assert.strictEqual(getTierLimit('basic'), 5000);
+  assert.strictEqual(getTierLimit('standard'), 50000);
+  assert.strictEqual(getTierLimit('enhanced'), Infinity);
+});
+
+test('determineVerificationTier returns basic for government-id check only', () => {
+  const { determineVerificationTier } = loadProvider();
+  const tier = determineVerificationTier({
+    data: {
+      attributes: {
+        payload: {
+          data: {
+            attributes: {
+              checks: [{ type: 'government-id' }],
+            },
+          },
+        },
+      },
+    },
+  });
+  assert.strictEqual(tier, 'basic');
+});
+
+test('determineVerificationTier returns enhanced for liveness check', () => {
+  const { determineVerificationTier } = loadProvider();
+  const tier = determineVerificationTier({
+    data: {
+      attributes: {
+        payload: {
+          data: {
+            attributes: {
+              checks: [
+                { type: 'government-id' },
+                { type: 'address' },
+                { type: 'liveness' },
+              ],
+            },
+          },
+        },
+      },
+    },
+  });
+  assert.strictEqual(tier, 'enhanced');
+});

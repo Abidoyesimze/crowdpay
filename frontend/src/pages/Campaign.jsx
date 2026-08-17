@@ -1205,7 +1205,7 @@ export default function Campaign() {
         <div style={styles.badgeRow}>
           <span style={styles.asset}>{campaign.asset_type}</span>
           <CampaignStatusBadge status={campaign.status} />
-          <VerificationBadge status={campaign.creator_kyc_status} />
+          <VerificationBadge status={campaign.creator_kyc_status || campaign.creator_verification_status} tier={campaign.creator_verification_tier} showTier />
           {user && <FavoriteToggle campaignId={campaign.id} />}
           {user && <FollowCampaignButton campaignId={campaign.id} />}
           {campaign.contract_address && (

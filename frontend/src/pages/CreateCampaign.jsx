@@ -601,12 +601,21 @@ export default function CreateCampaign() {
     user?.kyc_required_for_campaigns ??
     String(import.meta.env.VITE_KYC_REQUIRED_FOR_CAMPAIGNS ?? 'true').toLowerCase() !== 'false';
 
-  if (kycRequired && user?.kyc_status !== 'verified') {
+  const verificationStatus = user?.verification_status || user?.kyc_status || 'unverified';
+  const verificationTier = user?.verification_tier || 'none';
+  const isVerified = verificationStatus === 'verified' || verificationStatus === 'approved';
+
+  const TIER_LIMITS = { none: 0, basic: 5000, standard: 50000, enhanced: Infinity };
+  const tierLimit = TIER_LIMITS[verificationTier] ?? 0;
+  const goalAmount = Number(form.target_amount) || 0;
+  const exceedsTierLimit = kycRequired && isVerified && goalAmount > tierLimit && tierLimit < Infinity;
+
+  if (kycRequired && !isVerified) {
     return (
       <main className="container page-narrow" style={{ paddingTop: '3rem', paddingBottom: '3rem' }}>
-        <KycPrompt onUserUpdate={updateUser} title="Verify your identity first" />
+        <KycPrompt onUserUpdate={updateUser} title="Complete Verification to Create Campaigns" />
         <p style={{ marginTop: '1rem', fontSize: '0.9rem', color: 'var(--color-text-hint)' }}>
-          Current verification status: <strong>{user?.kyc_status || 'unverified'}</strong>.
+          Current verification status: <strong>{verificationStatus}</strong>.
         </p>
       </main>
     );
@@ -791,6 +800,22 @@ export default function CreateCampaign() {
                 required
                 aria-required="true"
               />
+              {kycRequired && isVerified && verificationTier !== 'enhanced' && (
+                <small style={{ color: 'var(--color-text-hint)', fontSize: '0.8rem' }}>
+                  Your {verificationTier} tier allows campaign goals up to ${tierLimit.toLocaleString()}.
+                  {verificationTier === 'basic' && ' Upgrade to Standard for up to $50,000.'}
+                  {verificationTier === 'standard' && ' Upgrade to Enhanced for unlimited goals.'}
+                </small>
+              )}
+              {exceedsTierLimit && (
+                <div className="alert alert--warning" style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
+                  <strong>Goal exceeds your {verificationTier} tier limit of ${tierLimit.toLocaleString()}.</strong>
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.82rem' }}>
+                    {verificationTier === 'basic' && 'Upgrade to Standard verification (ID + address) to run campaigns up to $50,000.'}
+                    {verificationTier === 'standard' && 'Upgrade to Enhanced verification (ID + address + liveness) for unlimited campaign goals.'}
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="form-stack" style={{ marginTop: '1rem' }}>

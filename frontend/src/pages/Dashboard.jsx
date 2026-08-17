@@ -639,7 +639,7 @@ export default function Dashboard() {
                         : ''}
                     </div>
                   </div>
-                  <VerificationBadge status={user?.kyc_status} />
+                  <VerificationBadge status={user?.verification_status || user?.kyc_status} tier={user?.verification_tier} showTier />
                 </div>
                 {kycRequired && user?.kyc_status !== 'verified' && (
                   <div style={{ marginTop: '0.85rem' }}>
