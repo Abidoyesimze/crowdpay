@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import Navbar from '../components/Navbar';
@@ -176,7 +176,7 @@ export default function Governance() {
 
   const getStellarExpertUrl = (contractId) => {
     if (!contractId) return '#';
-    const isTestnet = process.env.REACT_APP_STELLAR_NETWORK === 'testnet';
+    const isTestnet = import.meta.env.VITE_STELLAR_NETWORK === 'testnet';
     return isTestnet 
       ? `https://stellar.expert/testnet/contract/${contractId}`
       : `https://stellar.expert/mainnet/contract/${contractId}`;
@@ -200,7 +200,7 @@ export default function Governance() {
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900">Governance</h1>
           <p className="mt-2 text-gray-600">
-            Participate in CrowdPay's decentralized governance by voting on fee changes.
+            Participate in CrowdPay&apos;s decentralized governance by voting on fee changes.
           </p>
         </div>
 
