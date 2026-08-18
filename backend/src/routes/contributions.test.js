@@ -73,6 +73,7 @@ function buildApp({ queryImpl, stellarImpl, stellarTxImpl, connectImpl }) {
   const contributionServiceStub = {
     SLIPPAGE_BPS: 500,
     buildContributionMemo: () => 'cp-c-1',
+    buildAttributionMemo: (_campaignId, referralCode) => (referralCode ? `ref:${referralCode}` : 'cp-c-1'),
     buildContributionIntent: async ({ campaign, amount, sendAsset, contributorPublicKey }) => {
       if (sendAsset === campaign.asset_type) {
         return {
