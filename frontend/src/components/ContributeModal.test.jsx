@@ -134,7 +134,28 @@ describe('ContributeModal', () => {
           send_asset: 'USDC',
           idempotency_key: 'idem-key-123',
         }),
-        'test-token'
+        {}
+      );
+    });
+  });
+
+  it('forwards the referral code as a ?ref query parameter', async () => {
+    const user = userEvent.setup();
+    render(
+      <ContributeModal
+        campaign={campaign}
+        onClose={mockOnClose}
+        onSuccess={mockOnSuccess}
+        referralCode="a1b2c3d4"
+      />
+    );
+    await user.clear(screen.getByLabelText(/amount campaign receives/i));
+    await user.type(screen.getByLabelText(/amount campaign receives/i), '15');
+    await user.click(screen.getByRole('button', { name: /confirm payment/i }));
+    await waitFor(() => {
+      expect(mockContribute).toHaveBeenCalledWith(
+        expect.objectContaining({ campaign_id: campaign.id }),
+        { query: { ref: 'a1b2c3d4' } }
       );
     });
   });

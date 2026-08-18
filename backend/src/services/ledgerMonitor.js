@@ -262,14 +262,16 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
     const ipAddress = submittedRows[0]?.metadata?.ip_address || null;
     const deviceFingerprint = submittedRows[0]?.metadata?.device_fingerprint || null;
     const reservedTierId = submittedRows[0]?.metadata?.tier_id || null;
+    const referralLinkId = submittedRows[0]?.metadata?.referral_link_id || null;
     const nftRewardRequested = submittedRows[0]?.metadata?.nft_reward === true;
 
     const { rows: inserted } = await client.query(
       `INSERT INTO contributions
          (campaign_id, sender_public_key, amount, asset, anchor_id, anchor_transaction_id,
           anchor_asset, anchor_amount, payment_type, source_amount, source_asset,
-          conversion_rate, path, tx_hash, platform_fee_amount, display_name, ip_address, device_fingerprint)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18)
+          conversion_rate, path, tx_hash, platform_fee_amount, display_name, ip_address, device_fingerprint,
+          referral_link_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19)
        RETURNING id`,
       [
         campaignId,
@@ -290,6 +292,7 @@ async function handlePayment(campaignId, walletPublicKey, payment) {
         displayName,
         ipAddress,
         deviceFingerprint,
+        referralLinkId,
       ],
     );
 

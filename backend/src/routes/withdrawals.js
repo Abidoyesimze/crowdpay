@@ -23,6 +23,7 @@ const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhook
 const { withDecryptedWalletSecret } = require('../services/walletSecrets');
 const { createNotification } = require('../services/notifications');
 const { notifyContributorFundRelease } = require('../services/fundReleaseNotifications');
+const { calculateCommissions, settleCommissions } = require('../services/referral');
 const { parsePagination } = require('../utils/pagination');
 const asyncHandler = require('../utils/asyncHandler');
 
@@ -209,11 +210,35 @@ router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyn
     });
   }
 
+  // Referral commissions are settled out of the campaign balance in the same
+  // transaction as the creator payout (#675).
+  const { commissions, totalCommission } = await calculateCommissions(campaign_id);
+  const payableCommissions = commissions.filter(
+    (commission) => commission.destination_public_key && parseFloat(commission.commission_owed) > 0
+  );
+  const commissionTotal = payableCommissions.reduce(
+    (sum, commission) => sum + parseFloat(commission.commission_owed),
+    0
+  );
+  const creatorAmount = (parseFloat(amount) - commissionTotal).toFixed(7);
+
+  if (parseFloat(creatorAmount) <= 0) {
+    return res.status(422).json({
+      error: `Referral commissions of ${totalCommission} ${campaign.asset_type} exceed the requested withdrawal amount. Withdraw a larger amount.`,
+      code: 'COMMISSIONS_EXCEED_WITHDRAWAL',
+      total_commission: totalCommission,
+    });
+  }
+
   const xdr = await buildWithdrawalTransaction({
     campaignWalletPublicKey: campaign.wallet_public_key,
     destinationPublicKey: destination_key,
-    amount,
+    amount: creatorAmount,
     asset: campaign.asset_type,
+    commissions: payableCommissions.map((commission) => ({
+      destinationPublicKey: commission.destination_public_key,
+      amount: commission.commission_owed,
+    })),
   });
 
   const client = await db.connect();
@@ -242,10 +267,21 @@ router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyn
         amount,
         destination_key,
         asset_type: campaign.asset_type,
+        creator_amount: creatorAmount,
+        referral_commissions: payableCommissions.map((commission) => ({
+          referral_link_id: commission.referral_link_id,
+          code: commission.code,
+          destination_public_key: commission.destination_public_key,
+          commission_owed: commission.commission_owed,
+        })),
       },
     });
     await client.query('COMMIT');
-    res.status(201).json(rows[0]);
+    res.status(201).json({
+      ...rows[0],
+      creator_amount: creatorAmount,
+      referral_commissions: payableCommissions,
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     logger.error('Withdrawal request creation failed', { error: err.message, campaign_id });
@@ -516,6 +552,19 @@ const platformApproveHandler = async (req, res) => {
       [txHash, req.params.id]
     );
     updatedWithdrawalRow = updated[0];
+
+    // Record the commissions now settled on-chain so a later withdrawal for the
+    // same campaign does not pay the same referrers twice (#675).
+    const { rows: withdrawalTxRows } = await finalizeClient.query(
+      `SELECT metadata FROM stellar_transactions
+       WHERE withdrawal_request_id = $1 AND kind = 'withdrawal'
+       LIMIT 1`,
+      [req.params.id]
+    );
+    await settleCommissions(
+      finalizeClient,
+      withdrawalTxRows[0]?.metadata?.referral_commissions || []
+    );
 
     await finalizeWithdrawalSubmitted(finalizeClient, {
       withdrawalRequestId: req.params.id,

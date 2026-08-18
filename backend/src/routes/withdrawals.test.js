@@ -4,7 +4,7 @@ const express = require('express');
 const request = require('supertest');
 const proxyquire = require('proxyquire').noCallThru();
 
-function buildApp({ queryImpl, stellarImpl, userId = 'creator-1', role = 'creator', platformApproverUserId } = {}) {
+function buildApp({ queryImpl, stellarImpl, referralImpl, userId = 'creator-1', role = 'creator', platformApproverUserId } = {}) {
   const prevApprover = process.env.PLATFORM_APPROVER_USER_ID;
   if (platformApproverUserId !== false) {
     process.env.PLATFORM_APPROVER_USER_ID = platformApproverUserId ?? userId;
@@ -25,7 +25,14 @@ function buildApp({ queryImpl, stellarImpl, userId = 'creator-1', role = 'creato
     ...stellarImpl,
   };
 
+  const referralStub = {
+    calculateCommissions: async () => ({ program: null, commissions: [], totalCommission: '0.0000000' }),
+    settleCommissions: async () => {},
+    ...referralImpl,
+  };
+
   const router = proxyquire('./withdrawals', {
+    '../services/referral': referralStub,
     '../config/database': {
       connect: async () => ({
         query: queryImpl,
@@ -626,4 +633,167 @@ test('POST /api/withdrawals/:id/approve/platform returns 410 when XDR time bound
   cleanup();
   assert.equal(response.status, 410);
   assert.match(response.body.error, /expired/i);
+});
+
+test('POST /api/withdrawals/request splits the payout between the creator and referrers', async () => {
+  let builtWith;
+  let insertedMetadata;
+  const { app, cleanup } = buildApp({
+    referralImpl: {
+      calculateCommissions: async () => ({
+        program: { commission_percentage: 10, max_referrers: 10 },
+        commissions: [
+          {
+            referral_link_id: 'link-1',
+            code: 'aaaa1111',
+            destination_public_key: 'GALICE',
+            commission_owed: '60.0000000',
+          },
+          {
+            referral_link_id: 'link-2',
+            code: 'bbbb2222',
+            destination_public_key: 'GBOB',
+            commission_owed: '30.0000000',
+          },
+        ],
+        totalCommission: '90.0000000',
+      }),
+    },
+    stellarImpl: {
+      buildWithdrawalTransaction: async (params) => {
+        builtWith = params;
+        return 'xdr-base';
+      },
+    },
+    queryImpl: async (text, params) => {
+      if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes('FROM campaigns WHERE id')) return { rows: [campaignRow()] };
+      if (text.includes('FROM withdrawal_requests') && text.includes("status = 'pending'")) return { rows: [] };
+      if (text.includes('wallet_public_key FROM users')) return { rows: [{ wallet_public_key: 'GCREATOR' }] };
+      if (text.includes('INSERT INTO withdrawal_requests')) {
+        return { rows: [{ id: 'w-1', status: 'pending', creator_signed: false, platform_signed: false }] };
+      }
+      if (text.includes('INSERT INTO stellar_transactions')) {
+        insertedMetadata = JSON.parse(params[4]);
+        return { rows: [{ id: 'stellar-1' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/withdrawals/request')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: '11111111-1111-1111-1111-111111111111',
+      destination_key: VALID_DESTINATION,
+      amount: '1000.0000000',
+    });
+
+  cleanup();
+  assert.equal(response.status, 201);
+  // Creator receives the requested amount less the 90 owed to referrers
+  assert.equal(builtWith.amount, '910.0000000');
+  assert.equal(builtWith.commissions.length, 2);
+  assert.deepEqual(builtWith.commissions[0], { destinationPublicKey: 'GALICE', amount: '60.0000000' });
+  assert.deepEqual(builtWith.commissions[1], { destinationPublicKey: 'GBOB', amount: '30.0000000' });
+  assert.equal(insertedMetadata.referral_commissions.length, 2);
+  assert.equal(response.body.creator_amount, '910.0000000');
+});
+
+test('POST /api/withdrawals/request rejects a withdrawal smaller than the commissions owed', async () => {
+  const { app, cleanup } = buildApp({
+    referralImpl: {
+      calculateCommissions: async () => ({
+        program: { commission_percentage: 20, max_referrers: 10 },
+        commissions: [
+          {
+            referral_link_id: 'link-1',
+            code: 'aaaa1111',
+            destination_public_key: 'GALICE',
+            commission_owed: '60.0000000',
+          },
+        ],
+        totalCommission: '60.0000000',
+      }),
+    },
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns WHERE id')) return { rows: [campaignRow()] };
+      if (text.includes('FROM withdrawal_requests') && text.includes("status = 'pending'")) return { rows: [] };
+      if (text.includes('wallet_public_key FROM users')) return { rows: [{ wallet_public_key: 'GCREATOR' }] };
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/withdrawals/request')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: '11111111-1111-1111-1111-111111111111',
+      destination_key: VALID_DESTINATION,
+      amount: '50.0000000',
+    });
+
+  cleanup();
+  assert.equal(response.status, 422);
+  assert.equal(response.body.code, 'COMMISSIONS_EXCEED_WITHDRAWAL');
+});
+
+test('POST /api/withdrawals/:id/approve/platform settles the commissions it submitted', async () => {
+  let settled;
+  const { app, cleanup } = buildApp({
+    referralImpl: {
+      settleCommissions: async (_client, commissions) => {
+        settled = commissions;
+      },
+    },
+    queryImpl: async (text) => {
+      if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes('FROM withdrawal_requests wr')) {
+        return {
+          rows: [{
+            id: 'w-1',
+            campaign_id: '11111111-1111-1111-1111-111111111111',
+            status: 'pending',
+            creator_signed: true,
+            platform_signed: false,
+            unsigned_xdr: 'xdr-creator-signed',
+            amount: '910.0000000',
+            destination_key: VALID_DESTINATION,
+            campaign_status: 'active',
+            creator_id: 'creator-1',
+          }],
+        };
+      }
+      if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'approved'")) {
+        return { rows: [{ id: 'w-1', status: 'approved' }] };
+      }
+      if (text.includes('UPDATE withdrawal_requests') && text.includes("status = 'submitted'")) {
+        return { rows: [{ id: 'w-1', status: 'submitted', campaign_id: '11111111-1111-1111-1111-111111111111', amount: '910.0000000' }] };
+      }
+      if (text.includes('SELECT metadata FROM stellar_transactions')) {
+        return {
+          rows: [{
+            metadata: {
+              referral_commissions: [
+                { referral_link_id: 'link-1', code: 'aaaa1111', commission_owed: '60.0000000' },
+              ],
+            },
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/withdrawals/w-1/approve/platform')
+    .set('Authorization', 'Bearer token')
+    .send({});
+
+  cleanup();
+  assert.equal(response.status, 200);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].referral_link_id, 'link-1');
+  assert.equal(settled[0].commission_owed, '60.0000000');
 });
