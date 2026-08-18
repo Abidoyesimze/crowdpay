@@ -269,7 +269,11 @@ async function buildUnsignedContributionPayment({
     );
   }
 
-  const tx = builder.build();
+  if (memo) {
+    builder.addMemo(Memo.text(memo));
+  }
+
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
   return tx.toXDR();
 }
 
@@ -357,7 +361,11 @@ async function buildUnsignedContributionPathPayment({
     );
   }
 
-  const tx = builder.build();
+  if (memo) {
+    builder.addMemo(Memo.text(memo));
+  }
+
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
   return tx.toXDR();
 }
 
@@ -433,27 +441,48 @@ async function getPathPaymentQuote({ sendAsset, destAsset, destAmount }) {
 /**
  * Build a withdrawal transaction for a campaign wallet.
  * Returns the unsigned XDR — both the creator and platform must sign it.
+ *
+ * `commissions` (issue #675) adds one extra Payment operation per referrer, so
+ * the creator's net payout and every affiliate commission settle atomically in
+ * a single transaction. Zero-amount commissions are dropped rather than turned
+ * into an operation Stellar would reject.
  */
 async function buildWithdrawalTransaction({
   campaignWalletPublicKey,
   destinationPublicKey,
   amount,
   asset,
+  commissions = [],
 }) {
   const campaignAccount = await server.loadAccount(campaignWalletPublicKey);
   const stellarAsset = toStellarAsset(asset);
 
-  const tx = new TransactionBuilder(campaignAccount, {
+  const payableCommissions = commissions.filter(
+    (commission) => commission.destinationPublicKey && parseFloat(commission.amount) > 0
+  );
+
+  const builder = new TransactionBuilder(campaignAccount, {
     fee: BASE_FEE,
     networkPassphrase,
-  })
-    .addOperation(
+  }).addOperation(
+    Operation.payment({
+      destination: destinationPublicKey,
+      asset: stellarAsset,
+      amount: String(amount),
+    })
+  );
+
+  for (const commission of payableCommissions) {
+    builder.addOperation(
       Operation.payment({
-        destination: destinationPublicKey,
+        destination: commission.destinationPublicKey,
         asset: stellarAsset,
-        amount: String(amount),
+        amount: String(commission.amount),
       })
-    )
+    );
+  }
+
+  const tx = builder
     .setTimeout(TX_TIMEOUT_WITHDRAWAL_S) // platform approver may not be available immediately (see issue #128)
     .build();
 
