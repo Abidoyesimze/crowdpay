@@ -67,6 +67,12 @@ const {
   canChangeRoles,
   canAssignRole,
 } = require('../lib/campaignPermissions');
+const {
+  createReferralProgram,
+  createReferralLink,
+  getReferralProgram,
+  listCampaignReferrers,
+} = require('../services/referral');
 const { stripHtml } = require('../lib/sanitize');
 const { getSimhash, simhashSimilarity } = require('../utils/simhash');
 const { parsePagination } = require('../utils/pagination');
@@ -2298,6 +2304,56 @@ router.get('/:id/referrals', requireAuth, requireCampaignMember('owner'), asyncH
     [req.params.id]
   );
   res.json(rows);
+}));
+
+// ── Referral & affiliate program (#675) ──────────────────────────────────────
+
+// POST /campaigns/:id/referrals — creator enables referrals on the campaign
+router.post('/:id/referrals', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const { commissionPercentage, maxReferrers } = req.body || {};
+  try {
+    const program = await createReferralProgram(req.params.id, { commissionPercentage, maxReferrers });
+    res.status(201).json(program);
+  } catch (err) {
+    if (err.statusCode === 400) {
+      return res.status(400).json({ error: err.message, code: err.code });
+    }
+    throw err;
+  }
+}));
+
+// GET /campaigns/:id/referrals/program — public program terms
+router.get('/:id/referrals/program', asyncHandler(async (req, res) => {
+  const program = await getReferralProgram(req.params.id);
+  if (!program) return res.status(404).json({ error: 'This campaign does not have a referral program' });
+  const { rows } = await db.query(
+    'SELECT COUNT(*)::int AS total FROM referral_links WHERE campaign_id = $1',
+    [req.params.id]
+  );
+  res.json({ ...program, referrer_count: rows[0]?.total || 0 });
+}));
+
+// POST /campaigns/:id/referrals/links — any registered user claims a referrer link
+router.post('/:id/referrals/links', requireAuth, asyncHandler(async (req, res) => {
+  try {
+    const { code, shareUrl, created } = await createReferralLink({
+      campaignId: req.params.id,
+      userId: req.user.userId,
+    });
+    res.status(created ? 201 : 200).json({ code, shareUrl });
+  } catch (err) {
+    if (err.statusCode === 409 || err.statusCode === 404) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
+    throw err;
+  }
+}));
+
+// GET /campaigns/:id/referrals/commissions — creator-only referrer breakdown
+router.get('/:id/referrals/commissions', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const data = await listCampaignReferrers(req.params.id);
+  if (!data.program) return res.status(404).json({ error: 'This campaign does not have a referral program' });
+  res.json(data);
 }));
 
 // POST /campaigns/:id/share — increment share_count
