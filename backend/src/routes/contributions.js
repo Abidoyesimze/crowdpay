@@ -24,8 +24,8 @@ const {
 const { sendEmail } = require("../services/emailService");
 const { SLIPPAGE_BPS } = require("../config/constants");
 const {
+  buildAttributionMemo,
   buildContributionIntent,
-  buildContributionMemo,
   submitCustodialContribution,
 } = require('../services/contributionService');
 const {
@@ -39,6 +39,7 @@ const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } =
 const { assertUserKycVerified } = require('../services/kycService');
 const asyncHandler = require('../utils/asyncHandler');
 const { getReferralCodeFromRequest } = require('../services/referralService');
+const { resolveReferralLink } = require('../services/referral');
 const { reserveTierSlot } = require('../services/rewardTierService');
 const { hashDeviceFingerprint } = require('../utils/deviceFingerprint');
 
@@ -66,6 +67,22 @@ function withReferralMetadata(flowMetadata, campaignId, req) {
   const referralCode = getReferralCodeFromRequest(campaignId, req);
   if (!referralCode) return flowMetadata;
   return { ...flowMetadata, referral_code: referralCode };
+}
+
+/**
+ * Resolve the `?ref=<code>` affiliate link for a campaign (#675).
+ * Throws a 404 INVALID_REFERRAL_CODE error when the code is unknown or belongs
+ * to a different campaign; returns null when no code was supplied.
+ */
+async function resolveAffiliateLink(campaignId, req) {
+  const code = typeof req.query?.ref === 'string' ? req.query.ref.trim() : '';
+  if (!code) return null;
+  return resolveReferralLink({ campaignId, code });
+}
+
+function respondInvalidReferralCode(res, err) {
+  if (err.code !== 'INVALID_REFERRAL_CODE') return null;
+  return res.status(404).json({ error: err.message, code: 'INVALID_REFERRAL_CODE' });
 }
 
 function validateFreighterPublicKey(publicKey) {
@@ -405,6 +422,15 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
     }
   }
 
+  let affiliateLink;
+  try {
+    affiliateLink = await resolveAffiliateLink(campaign_id, req);
+  } catch (err) {
+    const handled = respondInvalidReferralCode(res, err);
+    if (handled) return handled;
+    throw err;
+  }
+
   try {
     const intent = await buildContributionIntent({
       campaign,
@@ -414,6 +440,7 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
       displayName: display_name,
     });
 
+    const memo = buildAttributionMemo(campaign_id, affiliateLink?.code || null);
     const unsignedXdr =
       intent.kind === 'payment'
         ? await buildUnsignedContributionPayment({
@@ -421,7 +448,7 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
             destinationPublicKey: campaign.wallet_public_key,
             asset: send_asset,
             amount,
-            memo: buildContributionMemo(campaign_id),
+            memo,
           })
         : await buildUnsignedContributionPathPayment({
             senderPublicKey: sender_public_key,
@@ -430,7 +457,7 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
             sendMax: intent.sendMax,
             destAmount: amount,
             destAssetCode: campaign.asset_type,
-            memo: buildContributionMemo(campaign_id),
+            memo,
           });
 
     const prepareToken = createPreparedContributionToken({
@@ -438,7 +465,14 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
       campaign_id,
       sender_public_key,
       unsigned_xdr: unsignedXdr,
-      flow_metadata: { ...withReferralMetadata(intent.flowMetadata, campaign_id, req), ip_address: req.ip, device_fingerprint: hashDeviceFingerprint(req.body.device_fingerprint) },
+      flow_metadata: {
+        ...withReferralMetadata(intent.flowMetadata, campaign_id, req),
+        ip_address: req.ip,
+        device_fingerprint: hashDeviceFingerprint(req.body.device_fingerprint),
+        ...(affiliateLink
+          ? { referral_link_id: affiliateLink.id, referral_link_code: affiliateLink.code }
+          : {}),
+      },
       conversion_quote: intent.conversionQuote,
     });
 
@@ -601,6 +635,15 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
     });
   }
 
+  let affiliateLink;
+  try {
+    affiliateLink = await resolveAffiliateLink(campaign_id, req);
+  } catch (err) {
+    const handled = respondInvalidReferralCode(res, err);
+    if (handled) return handled;
+    throw err;
+  }
+
   // If a specific reward tier was chosen, validate it exists and belongs to this campaign
   if (tier_id) {
     const { rows: tierRows } = await db.query(
@@ -661,6 +704,8 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
       sendAsset: send_asset,
       displayName: display_name,
       referralCode: getReferralCodeFromRequest(campaign_id, req),
+      referralLinkId: affiliateLink?.id || null,
+      referralLinkCode: affiliateLink?.code || null,
       ipAddress: req.ip,
       deviceFingerprint: hashDeviceFingerprint(req.body.device_fingerprint),
       client,

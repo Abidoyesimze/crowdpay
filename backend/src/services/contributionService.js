@@ -8,9 +8,18 @@ const {
   ensureCustodialAccountFundedAndTrusted,
 } = require('./stellarService');
 const { SLIPPAGE_BPS } = require('../config/constants');
+const { buildReferralMemo } = require('./referral');
 
 function buildContributionMemo(campaignId) {
   return `cp-${String(campaignId).replace(/-/g, '').slice(0, 25)}`.slice(0, 28);
+}
+
+/**
+ * A referred contribution carries `ref:<code>` instead of the campaign memo, so
+ * attribution is recorded on-chain and stays verifiable from Horizon (#675).
+ */
+function buildAttributionMemo(campaignId, referralCode) {
+  return referralCode ? buildReferralMemo(referralCode) : buildContributionMemo(campaignId);
 }
 
 async function buildContributionIntent({
@@ -86,6 +95,8 @@ async function submitCustodialContribution({
   anchorMetadata,
   displayName,
   referralCode,
+  referralLinkCode,
+  referralLinkId,
   ipAddress,
   deviceFingerprint,
   client,
@@ -119,7 +130,7 @@ async function submitCustodialContribution({
           destinationPublicKey: campaign.wallet_public_key,
           asset: sendAsset,
           amount,
-          memo: buildContributionMemo(campaignId),
+          memo: buildAttributionMemo(campaignId, referralLinkCode),
         });
       }
 
@@ -130,7 +141,7 @@ async function submitCustodialContribution({
         sendMax: intent.sendMax,
         destAmount: amount,
         destAssetCode: campaign.asset_type,
-        memo: buildContributionMemo(campaignId),
+        memo: buildAttributionMemo(campaignId, referralLinkCode),
       });
     }
   );
@@ -151,6 +162,7 @@ async function submitCustodialContribution({
     tier_id: tierId || null,
     nft_reward: Boolean(tierId),
     ...(referralCode ? { referral_code: referralCode } : {}),
+    ...(referralLinkId ? { referral_link_id: referralLinkId, referral_link_code: referralLinkCode } : {}),
     ...(anchorMetadata
       ? {
           anchor: {
@@ -184,6 +196,7 @@ async function submitCustodialContribution({
 }
 
 module.exports = {
+  buildAttributionMemo,
   buildContributionIntent,
   buildContributionMemo,
   submitCustodialContribution,
