@@ -1,0 +1,470 @@
+const { invokeContract, invokeContractReadOnly, nativeToScVal, scValToNative } = require('./sorobanService');
+const { server } = require('../config/stellar');
+const logger = require('../config/logger');
+const db = require('../config/database');
+
+const FEE_REGISTRY_CONTRACT_ID = process.env.FEE_REGISTRY_CONTRACT_ID;
+const GOVERNANCE_TOKEN_ID = process.env.GOVERNANCE_TOKEN_ID;
+const MIN_TOKEN_BALANCE = 1000;
+const QUORUM_THRESHOLD = 1000; // 10% of total supply (assuming 10,000 total)
+
+/**
+ * Get the current pending proposal from the contract.
+ * @returns {Promise<object|null>} Proposal data or null if no active proposal
+ */
+async function getPendingProposal() {
+  if (!FEE_REGISTRY_CONTRACT_ID) {
+    return null;
+  }
+
+  try {
+    const proposal = await invokeContractReadOnly({
+      contractId: FEE_REGISTRY_CONTRACT_ID,
+      method: 'get_pending_proposal',
+      args: [],
+    });
+
+    if (!proposal) {
+      return null;
+    }
+
+    return {
+      id: proposal.id,
+      proposed_fee_bps: proposal.proposed_fee_bps,
+      proposed_creator_share_bps: proposal.proposed_creator_share_bps,
+      votes_for: Number(proposal.votes_for),
+      votes_against: Number(proposal.votes_against),
+      deadline: Number(proposal.deadline),
+      status: mapProposalStatus(proposal.status),
+    };
+  } catch (error) {
+    logger.error('Failed to get pending proposal', { error: error.message });
+    return null;
+  }
+}
+
+/**
+ * Map contract proposal status to API status.
+ */
+function mapProposalStatus(status) {
+  if (typeof status === 'object' && status !== null) {
+    if (status.tag === 'Active') return 'active';
+    if (status.tag === 'Passed') return 'passed';
+    if (status.tag === 'Failed') return 'failed';
+    if (status.tag === 'Executed') return 'executed';
+  }
+  return String(status).toLowerCase();
+}
+
+/**
+ * Get all proposals (active and historical) from the database.
+ * @returns {Promise<Array>} List of proposals
+ */
+async function getAllProposals() {
+  const query = `
+    SELECT 
+      gp.id,
+      gp.stellar_proposal_id,
+      gp.proposer,
+      gp.rationale_text,
+      gp.created_at,
+      gp.proposed_fee_bps,
+      gp.proposed_creator_share_bps,
+      gp.status,
+      gp.votes_for,
+      gp.votes_against,
+      gp.deadline,
+      gp.executed_at
+    FROM governance_proposals_meta gp
+    ORDER BY gp.created_at DESC
+  `;
+
+  const result = await db.query(query);
+  return result.rows;
+}
+
+/**
+ * Get a single proposal by ID with full details.
+ * @param {number} proposalId - Database proposal ID
+ * @returns {Promise<object|null>} Proposal details
+ */
+async function getProposalById(proposalId) {
+  const query = `
+    SELECT 
+      gp.id,
+      gp.stellar_proposal_id,
+      gp.proposer,
+      gp.rationale_text,
+      gp.created_at,
+      gp.proposed_fee_bps,
+      gp.proposed_creator_share_bps,
+      gp.status,
+      gp.votes_for,
+      gp.votes_against,
+      gp.deadline,
+      gp.executed_at
+    FROM governance_proposals_meta gp
+    WHERE gp.id = $1
+  `;
+
+  const result = await db.query(query, [proposalId]);
+  
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const proposal = result.rows[0];
+
+  // Get vote statistics
+  const voteStatsQuery = `
+    SELECT 
+      COUNT(*) as total_votes,
+      COUNT(CASE WHEN in_favor = true THEN 1 END) as votes_for,
+      COUNT(CASE WHEN in_favor = false THEN 1 END) as votes_against,
+      SUM(token_balance_at_vote) as total_token_weight
+    FROM governance_votes_log
+    WHERE proposal_id = $1
+  `;
+
+  const voteStats = await db.query(voteStatsQuery, [proposalId]);
+  const stats = voteStats.rows[0];
+
+  // Get current on-chain proposal if active
+  let onChainProposal = null;
+  if (proposal.status === 'active') {
+    onChainProposal = await getPendingProposal();
+  }
+
+  // Calculate participation rate and outcome projection
+  const totalVotes = Number(stats.total_votes) || 0;
+  const votesFor = Number(stats.votes_for) || 0;
+  const votesAgainst = Number(stats.votes_against) || 0;
+  const totalTokenWeight = Number(stats.total_token_weight) || 0;
+  const participationRate = QUORUM_THRESHOLD > 0 ? (totalTokenWeight / QUORUM_THRESHOLD) * 100 : 0;
+  
+  let outcomeProjection = 'pending';
+  if (proposal.status !== 'active') {
+    outcomeProjection = proposal.status;
+  } else if (votesFor > votesAgainst && totalTokenWeight >= QUORUM_THRESHOLD) {
+    outcomeProjection = 'likely_pass';
+  } else if (votesFor > votesAgainst) {
+    outcomeProjection = 'needs_quorum';
+  } else {
+    outcomeProjection = 'likely_fail';
+  }
+
+  return {
+    ...proposal,
+    vote_stats: {
+      total_votes: totalVotes,
+      votes_for: votesFor,
+      votes_against: votesAgainst,
+      total_token_weight: totalTokenWeight,
+      participation_rate: participationRate.toFixed(2),
+    },
+    outcome_projection: outcomeProjection,
+    on_chain_data: onChainProposal,
+  };
+}
+
+/**
+ * Check if a user holds governance tokens.
+ * @param {string} publicKey - Stellar public key
+ * @returns {Promise<boolean>} Whether user holds tokens
+ */
+async function checkUserTokenBalance(publicKey) {
+  if (!GOVERNANCE_TOKEN_ID) {
+    logger.warn('GOVERNANCE_TOKEN_ID not configured');
+    return false;
+  }
+
+  try {
+    const account = await server.loadAccount(publicKey);
+    const balance = account.balances.find(
+      (b) => b.asset_code === 'CROWD' && b.asset_issuer === GOVERNANCE_TOKEN_ID
+    );
+
+    if (!balance) {
+      return false;
+    }
+
+    const balanceNum = parseFloat(balance.balance);
+    return balanceNum >= MIN_TOKEN_BALANCE;
+  } catch (error) {
+    logger.error('Failed to check user token balance', { error: error.message, publicKey });
+    return false;
+  }
+}
+
+/**
+ * Get user's token balance.
+ * @param {string} publicKey - Stellar public key
+ * @returns {Promise<number>} Token balance
+ */
+async function getUserTokenBalance(publicKey) {
+  if (!GOVERNANCE_TOKEN_ID) {
+    return 0;
+  }
+
+  try {
+    const account = await server.loadAccount(publicKey);
+    const balance = account.balances.find(
+      (b) => b.asset_code === 'CROWD' && b.asset_issuer === GOVERNANCE_TOKEN_ID
+    );
+
+    return balance ? parseFloat(balance.balance) : 0;
+  } catch (error) {
+    logger.error('Failed to get user token balance', { error: error.message, publicKey });
+    return 0;
+  }
+}
+
+/**
+ * Create a proposal on-chain.
+ * @param {string} proposerPublicKey - Proposer's Stellar public key
+ * @param {number} newFeeBps - Proposed platform fee in basis points
+ * @param {number} newCreatorShareBps - Proposed creator share in basis points
+ * @param {string} rationaleText - Rationale for the proposal
+ * @param {string} signerSecret - Signer's secret key
+ * @returns {Promise<object>} Created proposal data
+ */
+async function createProposal(proposerPublicKey, newFeeBps, newCreatorShareBps, rationaleText, signerSecret) {
+  if (!FEE_REGISTRY_CONTRACT_ID) {
+    throw new Error('FEE_REGISTRY_CONTRACT_ID not configured');
+  }
+
+  // Check token balance
+  const hasTokens = await checkUserTokenBalance(proposerPublicKey);
+  if (!hasTokens) {
+    throw new Error('Proposer must hold at least 1,000 governance tokens');
+  }
+
+  try {
+    // Call propose_change on contract
+    const proposalId = await invokeContract({
+      contractId: FEE_REGISTRY_CONTRACT_ID,
+      method: 'propose_change',
+      args: [
+        nativeToScVal(proposerPublicKey, { type: 'address' }),
+        nativeToScVal(newFeeBps, { type: 'u32' }),
+        nativeToScVal(newCreatorShareBps, { type: 'u32' }),
+      ],
+      signerSecret,
+    });
+
+    // Store proposal metadata in database
+    const insertQuery = `
+      INSERT INTO governance_proposals_meta 
+      (stellar_proposal_id, proposer, rationale_text, proposed_fee_bps, proposed_creator_share_bps, status, votes_for, votes_against, deadline)
+      VALUES ($1, $2, $3, $4, $5, 'active', 0, 0, NOW() + INTERVAL '7 days')
+      RETURNING id
+    `;
+
+    const result = await db.query(insertQuery, [
+      Number(proposalId),
+      proposerPublicKey,
+      rationaleText,
+      newFeeBps,
+      newCreatorShareBps,
+    ]);
+
+    logger.info('Proposal created', { 
+      proposalId: result.rows[0].id, 
+      stellarProposalId: proposalId,
+      proposer: proposerPublicKey 
+    });
+
+    return {
+      id: result.rows[0].id,
+      stellar_proposal_id: Number(proposalId),
+      proposer: proposerPublicKey,
+      rationale_text: rationaleText,
+      proposed_fee_bps: newFeeBps,
+      proposed_creator_share_bps: newCreatorShareBps,
+      status: 'active',
+    };
+  } catch (error) {
+    logger.error('Failed to create proposal', { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Vote on a proposal on-chain.
+ * @param {number} proposalId - Database proposal ID
+ * @param {string} voterPublicKey - Voter's Stellar public key
+ * @param {boolean} inFavor - Whether vote is in favor
+ * @param {string} signerSecret - Signer's secret key
+ * @returns {Promise<object>} Vote result
+ */
+async function voteOnProposal(proposalId, voterPublicKey, inFavor, signerSecret) {
+  if (!FEE_REGISTRY_CONTRACT_ID) {
+    throw new Error('FEE_REGISTRY_CONTRACT_ID not configured');
+  }
+
+  // Get proposal from database
+  const proposalQuery = `
+    SELECT stellar_proposal_id, status FROM governance_proposals_meta WHERE id = $1
+  `;
+  const proposalResult = await db.query(proposalQuery, [proposalId]);
+
+  if (proposalResult.rows.length === 0) {
+    throw new Error('Proposal not found');
+  }
+
+  const proposal = proposalResult.rows[0];
+
+  if (proposal.status !== 'active') {
+    throw new Error('Proposal is not active for voting');
+  }
+
+  // Check if user holds tokens
+  const tokenBalance = await getUserTokenBalance(voterPublicKey);
+  if (tokenBalance <= 0) {
+    throw new Error('Voter must hold governance tokens');
+  }
+
+  try {
+    // Call vote on contract
+    await invokeContract({
+      contractId: FEE_REGISTRY_CONTRACT_ID,
+      method: 'vote',
+      args: [
+        nativeToScVal(voterPublicKey, { type: 'address' }),
+        nativeToScVal(proposal.stellar_proposal_id, { type: 'u32' }),
+        nativeToScVal(inFavor, { type: 'bool' }),
+      ],
+      signerSecret,
+    });
+
+    // Log vote in database
+    const insertVoteQuery = `
+      INSERT INTO governance_votes_log (proposal_id, voter_public_key, in_favor, token_balance_at_vote, voted_at)
+      VALUES ($1, $2, $3, $4, NOW())
+    `;
+
+    await db.query(insertVoteQuery, [proposalId, voterPublicKey, inFavor, tokenBalance]);
+
+    logger.info('Vote recorded', { proposalId, voter: voterPublicKey, inFavor });
+
+    return {
+      proposal_id: proposalId,
+      voter: voterPublicKey,
+      in_favor: inFavor,
+      token_balance: tokenBalance,
+    };
+  } catch (error) {
+    logger.error('Failed to vote on proposal', { error: error.message, proposalId });
+    throw error;
+  }
+}
+
+/**
+ * Execute a proposal on-chain.
+ * @param {number} proposalId - Database proposal ID
+ * @param {string} signerSecret - Signer's secret key
+ * @returns {Promise<object>} Execution result
+ */
+async function executeProposal(proposalId, signerSecret) {
+  if (!FEE_REGISTRY_CONTRACT_ID) {
+    throw new Error('FEE_REGISTRY_CONTRACT_ID not configured');
+  }
+
+  // Get proposal from database
+  const proposalQuery = `
+    SELECT stellar_proposal_id, status FROM governance_proposals_meta WHERE id = $1
+  `;
+  const proposalResult = await db.query(proposalQuery, [proposalId]);
+
+  if (proposalResult.rows.length === 0) {
+    throw new Error('Proposal not found');
+  }
+
+  const proposal = proposalResult.rows[0];
+
+  if (proposal.status !== 'active') {
+    throw new Error('Proposal is not active');
+  }
+
+  try {
+    // Call execute_proposal on contract
+    await invokeContract({
+      contractId: FEE_REGISTRY_CONTRACT_ID,
+      method: 'execute_proposal',
+      args: [
+        nativeToScVal(proposal.stellar_proposal_id, { type: 'u32' }),
+      ],
+      signerSecret,
+    });
+
+    // Get updated proposal status from contract
+    const onChainProposal = await getPendingProposal();
+    const newStatus = onChainProposal ? onChainProposal.status : 'failed';
+
+    // Update database
+    const updateQuery = `
+      UPDATE governance_proposals_meta 
+      SET status = $1, executed_at = NOW()
+      WHERE id = $2
+    `;
+
+    await db.query(updateQuery, [newStatus, proposalId]);
+
+    logger.info('Proposal executed', { proposalId, status: newStatus });
+
+    return {
+      proposal_id: proposalId,
+      status: newStatus,
+      executed_at: new Date(),
+    };
+  } catch (error) {
+    logger.error('Failed to execute proposal', { error: error.message, proposalId });
+    throw error;
+  }
+}
+
+/**
+ * Sync proposal data from on-chain to database.
+ * Called periodically to keep database in sync.
+ */
+async function syncProposalData() {
+  try {
+    const onChainProposal = await getPendingProposal();
+    
+    if (!onChainProposal) {
+      return;
+    }
+
+    const updateQuery = `
+      UPDATE governance_proposals_meta
+      SET 
+        votes_for = $1,
+        votes_against = $2,
+        status = $3
+      WHERE stellar_proposal_id = $4
+    `;
+
+    await db.query(updateQuery, [
+      onChainProposal.votes_for,
+      onChainProposal.votes_against,
+      onChainProposal.status,
+      onChainProposal.id,
+    ]);
+
+    logger.info('Proposal data synced from on-chain', { proposalId: onChainProposal.id });
+  } catch (error) {
+    logger.error('Failed to sync proposal data', { error: error.message });
+  }
+}
+
+module.exports = {
+  getPendingProposal,
+  getAllProposals,
+  getProposalById,
+  checkUserTokenBalance,
+  getUserTokenBalance,
+  createProposal,
+  voteOnProposal,
+  executeProposal,
+  syncProposalData,
+};

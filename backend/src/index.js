@@ -292,6 +292,7 @@ app.use("/api/campaigns", require("./routes/thankYou"));
 app.use("/api/contributions", require("./routes/thankYou"));
 app.use("/api", require("./routes/announcement"));
 app.use("/api/creator/analytics", require("./routes/creatorAnalytics"));
+app.use("/api/governance", require("./routes/governance"));
 
 app.get("/health", async (_, res) => {
   try {
@@ -490,6 +491,18 @@ function startNotificationDigestCron() {
   logger.info("Notification digest cron scheduled", { schedule });
 }
 
+function startFeeCacheRefreshCron() {
+  const cron = require("node-cron");
+  const { refreshFeeCache } = require("./services/feeRegistry");
+  // Refresh every 5 minutes
+  cron.schedule("*/5 * * * *", () => {
+    refreshFeeCache().catch((err) => {
+      logger.error("Fee cache refresh cron failed", { error: err.message });
+    });
+  });
+  logger.info("Fee cache refresh cron scheduled (every 5 minutes)");
+}
+
 function startRecommendationRefreshCron() {
   const cron = require("node-cron");
   const schedule = process.env.RECOMMENDATION_REFRESH_CRON || "0 2 * * *";
@@ -549,6 +562,7 @@ async function bootstrap() {
     startContractDeploymentRetryCron();
     startRecurringContributionsCron();
     startBenchmarkRefreshCron();
+    startFeeCacheRefreshCron();
   });
 }
 

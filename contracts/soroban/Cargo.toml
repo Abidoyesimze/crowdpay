@@ -1,7 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-  "contracts/*",
+  "contracts/crowdpay",
+  "contracts/escrow",
+  "contracts/matching_pool",
+  "contracts/milestones",
+  "contracts/fee_registry",
 ]
 
 [workspace.dependencies]
