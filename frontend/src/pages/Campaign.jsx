@@ -6,6 +6,7 @@ import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import ContributeModal from '../components/ContributeModal';
+import RecurringPledgeForm from '../components/RecurringPledgeForm';
 import RelativeTime from '../components/RelativeTime';
 import DisputeModal from '../components/DisputeModal';
 import TransactionHistory from '../components/TransactionHistory';
@@ -1389,6 +1390,14 @@ export default function Campaign() {
               Contribute with Freighter
             </button>
           </div>
+        )}
+
+        {user && campaign.status === 'active' && (
+          <RecurringPledgeForm
+            campaignId={id}
+            asset={campaign.asset_type}
+            onSubscribed={() => setContributed((prev) => !prev)}
+          />
         )}
 
         {user && (
