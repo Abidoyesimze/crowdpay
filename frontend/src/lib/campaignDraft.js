@@ -4,11 +4,20 @@ const STORAGE_KEY = 'crowdpay:campaign_draft';
 // likely to confuse a creator than help them.
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-const IGNORED_FIELDS = new Set(['asset_type', 'show_backer_amounts']);
+const IGNORED_FIELDS = new Set([
+  'asset_type',
+  'show_backer_amounts',
+  // Treasury mode defaults to 'standard' with a default policy object, so both
+  // are always set; neither means the creator has entered anything yet.
+  'wallet_mode',
+  'treasury_policy',
+]);
 
 /**
  * Whether a form holds anything worth restoring. Defaults the creator never
- * touched (asset type, backer visibility) do not count.
+ * touched (asset type, backer visibility, treasury mode) do not count. The
+ * fields are still stored and restored — they just cannot make an untouched
+ * form look dirty.
  */
 export function hasDraftContent(form) {
   if (!form) return false;
