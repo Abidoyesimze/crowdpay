@@ -9,6 +9,7 @@ import ContributeModal from '../components/ContributeModal';
 import RecurringPledgeForm from '../components/RecurringPledgeForm';
 import ReferralProgramSettings from '../components/ReferralProgramSettings';
 import CampaignReferralsTab from '../components/CampaignReferralsTab';
+import TreasuryPanel, { TreasuryTransparencyPanel } from '../components/TreasuryPanel';
 import RelativeTime from '../components/RelativeTime';
 import DisputeModal from '../components/DisputeModal';
 import TransactionHistory from '../components/TransactionHistory';
@@ -1246,6 +1247,15 @@ export default function Campaign() {
           }}
         />
       </div>
+
+      {campaign.wallet_mode === 'contract' && (
+        <div style={{ ...styles.card, marginBottom: '1rem' }}>
+          <TreasuryTransparencyPanel
+            campaignId={campaign.id}
+            assetType={campaign.asset_type}
+          />
+        </div>
+      )}
 
       <CampaignComments campaignId={campaign.id} campaign={campaign} />
 
@@ -2511,6 +2521,25 @@ export default function Campaign() {
             >
               Referrals
             </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'treasury'}
+              onClick={() => setAnalyticsTab('treasury')}
+              style={{
+                background: analyticsTab === 'treasury' ? 'var(--color-accent)' : 'transparent',
+                color: analyticsTab === 'treasury' ? 'var(--color-bg)' : 'var(--color-text-primary)',
+                border: '1px solid var(--color-border-light)',
+                borderRadius: '6px',
+                padding: '0.4rem 0.9rem',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+              }}
+            >
+              Treasury
+            </button>
           </div>
 
           {analyticsTab === 'overview' && (
@@ -2602,6 +2631,17 @@ export default function Campaign() {
 
           {analyticsTab === 'referrals' && (
             <CampaignReferralsTab campaignId={campaign.id} assetType={campaign.asset_type} />
+          )}
+
+          {analyticsTab === 'treasury' && (
+            <TreasuryPanel
+              campaignId={campaign.id}
+              assetType={campaign.asset_type}
+              isAuditor={
+                Boolean(campaign.auditor_public_key) &&
+                campaign.auditor_public_key === user?.wallet_public_key
+              }
+            />
           )}
         </div>
       )}

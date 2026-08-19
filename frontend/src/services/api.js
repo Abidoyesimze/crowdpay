@@ -629,6 +629,22 @@ export const api = {
     request('GET', `/campaigns/${encodeURIComponent(campaignId)}/referrals/commissions`),
   getMyReferralLinks: () => request('GET', '/referrals/links'),
 
+  // Soroban treasury (#687)
+  setTreasuryPolicy: (campaignId, body) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/treasury/policy`, body),
+  getTreasuryStatus: (campaignId) =>
+    request('GET', `/campaigns/${encodeURIComponent(campaignId)}/treasury/status`),
+  requestTreasuryWithdrawal: (campaignId, body) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/treasury/withdrawal`, body),
+  approveTreasuryWithdrawal: (campaignId, pendingId) =>
+    request(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/treasury/withdrawal/${encodeURIComponent(pendingId)}/approve`,
+      {}
+    ),
+  triggerTreasuryRefund: (campaignId) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/treasury/refund`, {}),
+
   sendBulkThankYou: (campaignId, message) =>
     request('POST', `/campaigns/${campaignId}/thank-you`, { message }),
   sendContributionThankYou: (contributionId, message) =>

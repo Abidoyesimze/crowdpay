@@ -2544,4 +2544,8 @@ router.delete('/:id/stretch-goals/:goalId', requireAuth, requireCampaignMember('
   res.status(204).end();
 }));
 
+// Soroban treasury endpoints (#687) live in their own router to keep this file
+// from growing further; they are mounted under /api/campaigns/:id/treasury.
+router.use('/:id/treasury', require('./treasury'));
+
 module.exports = router;

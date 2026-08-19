@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const proxyquire = require('proxyquire').noCallThru();
 
-function buildLedgerMonitor(mockQuery) {
+function buildLedgerMonitor(mockQuery, treasuryStub) {
   const updates = [];
   const wrappedQuery = async (text, params) => {
     if (text.includes('UPDATE campaigns') && text.includes('raised_amount = raised_amount +')) {
@@ -42,6 +42,9 @@ function buildLedgerMonitor(mockQuery) {
     './campaignStatusActions': {
       triggerCampaignStatusActions: async () => {},
     },
+    './contractTreasury': {
+      indexContribution: treasuryStub || (async () => ({ indexed: true })),
+    },
   });
 
   return { ledgerMonitor, updates };
@@ -50,7 +53,7 @@ function buildLedgerMonitor(mockQuery) {
 test('handlePayment updates stellar_transactions when a contribution row is created', async () => {
   const stellarUpdates = [];
   const mockQuery = async (text, params) => {
-    if (text.includes('SELECT status FROM campaigns')) return { rows: [{ status: 'active' }] };
+    if (text.includes('SELECT status, wallet_mode FROM campaigns')) return { rows: [{ status: 'active', wallet_mode: 'standard' }] };
     if (text.includes('SELECT id FROM contributions')) return { rows: [] };
     if (text.includes('SELECT creator_id FROM campaigns')) {
       return { rows: [{ creator_id: 'user-creator' }] };
@@ -102,7 +105,7 @@ test('handlePayment updates stellar_transactions when a contribution row is crea
 test('handlePayment accepts contributions on funded campaigns', async () => {
   let insertCalled = false;
   const mockQuery = async (text) => {
-    if (text.includes('SELECT status FROM campaigns')) return { rows: [{ status: 'funded' }] };
+    if (text.includes('SELECT status, wallet_mode FROM campaigns')) return { rows: [{ status: 'funded', wallet_mode: 'standard' }] };
     if (text.includes('SELECT id FROM contributions')) return { rows: [] };
     if (text.includes('SELECT creator_id FROM campaigns')) {
       return { rows: [{ creator_id: 'user-creator' }] };
@@ -134,4 +137,85 @@ test('handlePayment accepts contributions on funded campaigns', async () => {
   });
 
   assert.equal(insertCalled, true);
+});
+
+/** Query stub for a contract-mode campaign that reaches the end of handlePayment. */
+function contractModeQuery(seen = {}) {
+  return async (text) => {
+    if (text.includes('SELECT status, wallet_mode FROM campaigns')) {
+      return { rows: [{ status: 'active', wallet_mode: 'contract' }] };
+    }
+    if (text.includes('SELECT id FROM contributions')) return { rows: [] };
+    if (text.includes('SELECT creator_id FROM campaigns')) {
+      return { rows: [{ creator_id: 'user-creator' }] };
+    }
+    if (text.includes('SELECT metadata FROM stellar_transactions')) {
+      return { rows: [{ metadata: {} }] };
+    }
+    if (text === 'BEGIN') return { rows: [] };
+    if (text.includes('INSERT INTO contributions')) {
+      seen.insert = true;
+      return { rows: [{ id: 'contrib-1' }] };
+    }
+    if (text.includes('SELECT raised_amount FROM campaigns')) {
+      return { rows: [{ raised_amount: '100' }] };
+    }
+    if (text === 'COMMIT') {
+      seen.commit = true;
+      return { rows: [] };
+    }
+    if (text === 'ROLLBACK') {
+      seen.rollback = true;
+      return { rows: [] };
+    }
+    return { rows: [] };
+  };
+}
+
+test('handlePayment books the contribution on the treasury for a contract-mode campaign', async () => {
+  const indexed = [];
+  const mockQuery = contractModeQuery();
+
+  const { ledgerMonitor } = buildLedgerMonitor(mockQuery, async (campaignId, params) => {
+    indexed.push({ campaignId, ...params });
+    return { indexed: true };
+  });
+
+  await ledgerMonitor.handlePayment('camp-1', 'GWALLET', {
+    to: 'GWALLET',
+    from: 'GFROM',
+    type: 'payment',
+    asset_type: 'native',
+    amount: '25',
+    transaction_hash: 'txhash-contract',
+  });
+
+  assert.equal(indexed.length, 1);
+  assert.equal(indexed[0].campaignId, 'camp-1');
+  assert.equal(indexed[0].contributor, 'GFROM');
+  assert.equal(indexed[0].amount, '25');
+});
+
+test('a treasury indexing failure does not undo an already-committed contribution', async () => {
+  const seen = { insert: false, commit: false, rollback: false };
+  const mockQuery = contractModeQuery(seen);
+
+  const { ledgerMonitor } = buildLedgerMonitor(mockQuery, async () => {
+    throw new Error('soroban rpc unavailable');
+  });
+
+  // The payment is final on Stellar, so the contribution stands and the failure
+  // is only logged for retry.
+  await ledgerMonitor.handlePayment('camp-1', 'GWALLET', {
+    to: 'GWALLET',
+    from: 'GFROM',
+    type: 'payment',
+    asset_type: 'native',
+    amount: '25',
+    transaction_hash: 'txhash-treasury-down',
+  });
+
+  assert.equal(seen.insert, true, 'the contribution row is still written');
+  assert.equal(seen.commit, true, 'the transaction still commits');
+  assert.equal(seen.rollback, false, 'a confirmed contribution is never rolled back');
 });
