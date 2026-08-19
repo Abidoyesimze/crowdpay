@@ -3,6 +3,12 @@ resolver = "2"
 members = [
   "contracts/*",
 ]
+# contracts/matching_pool holds a bare lib.rs with no Cargo.toml and no src/
+# layout, so the members glob above picks it up and fails the whole workspace.
+# Excluded until that contract is given a manifest.
+exclude = [
+  "contracts/matching_pool",
+]
 
 [workspace.dependencies]
 soroban-sdk = "21.3.0"
