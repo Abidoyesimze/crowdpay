@@ -41,7 +41,6 @@ function buildApp({ queryImpl = async () => ({ rows: [] }), treasuryStub = {}, u
   const app = express();
   app.use(express.json());
   app.use('/api/campaigns/:id/treasury', router);
-  // eslint-disable-next-line no-unused-vars
   app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }));
   return app;
 }
