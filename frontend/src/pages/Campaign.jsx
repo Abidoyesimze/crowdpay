@@ -6,6 +6,7 @@ import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import ContributeModal from '../components/ContributeModal';
+import RecurringPledgeForm from '../components/RecurringPledgeForm';
 import ReferralProgramSettings from '../components/ReferralProgramSettings';
 import CampaignReferralsTab from '../components/CampaignReferralsTab';
 import RelativeTime from '../components/RelativeTime';
@@ -1391,6 +1392,14 @@ export default function Campaign() {
               Contribute with Freighter
             </button>
           </div>
+        )}
+
+        {user && campaign.status === 'active' && (
+          <RecurringPledgeForm
+            campaignId={id}
+            asset={campaign.asset_type}
+            onSubscribed={() => setContributed((prev) => !prev)}
+          />
         )}
 
         {user && (

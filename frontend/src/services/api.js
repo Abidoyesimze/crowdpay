@@ -497,6 +497,12 @@ export const api = {
   requestContributionRefund: (contributionId) =>
     request('POST', `/contributions/${contributionId}/refund`, {}),
 
+  createSubscription: (campaignId, body) =>
+    request('POST', `/campaigns/${campaignId}/subscriptions`, body),
+  cancelSubscription: (campaignId, subscriptionId) =>
+    request('DELETE', `/campaigns/${campaignId}/subscriptions/${subscriptionId}`),
+  getMySubscriptions: () => request('GET', '/subscriptions/mine'),
+
   getContributorDashboard: () => request('GET', '/contributions/dashboard'),
   exportContributionsCsv: () =>
     downloadFile('/contributions/dashboard/export.csv', 'contributions.csv'),

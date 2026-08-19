@@ -16,6 +16,8 @@ const {
   Asset,
   BASE_FEE,
   Memo,
+  Claimant,
+  xdr,
 } = require('@stellar/stellar-sdk');
 const {
   server,
@@ -634,6 +636,118 @@ async function getWalletPayments(publicKey, limit = 100) {
   }));
 }
 
+/** Balance IDs of the claimable balances created by a submitted transaction, in operation order. */
+function parseCreatedClaimableBalanceIds(resultXdrBase64) {
+  const results = xdr.TransactionResult.fromXDR(resultXdrBase64, 'base64').result().results();
+  const balanceIds = [];
+  for (const opResult of results) {
+    if (opResult.switch().name !== 'opInner') continue;
+    const tr = opResult.tr();
+    if (tr.switch().name !== 'createClaimableBalance') continue;
+    balanceIds.push(tr.createClaimableBalanceResult().balanceId().toXDR('hex'));
+  }
+  return balanceIds;
+}
+
+/**
+ * Lock one claimable balance per subscription period, all in a single transaction.
+ *
+ * Every balance names the platform as an unconditional claimant so the claim worker can
+ * release it on its scheduled date, plus the contributor under a `not(before_absolute_time)`
+ * predicate — an after-absolute-time window that lets them reclaim the funds themselves if
+ * the platform never claims.
+ *
+ * @param {Object[]} entries - One per period: { amount, reclaimAfterUnix }.
+ */
+async function createSubscriptionClaimableBalances({
+  sourceSecret,
+  asset,
+  entries,
+}) {
+  const sourceKeypair = Keypair.fromSecret(sourceSecret);
+  const sourceAccount = await server.loadAccount(sourceKeypair.publicKey());
+  const stellarAsset = toStellarAsset(asset);
+
+  const builder = new TransactionBuilder(sourceAccount, { fee: BASE_FEE, networkPassphrase });
+  for (const entry of entries) {
+    builder.addOperation(
+      Operation.createClaimableBalance({
+        asset: stellarAsset,
+        amount: String(entry.amount),
+        claimants: [
+          new Claimant(PLATFORM_KEYPAIR.publicKey(), Claimant.predicateUnconditional()),
+          new Claimant(
+            sourceKeypair.publicKey(),
+            Claimant.predicateNot(
+              Claimant.predicateBeforeAbsoluteTime(String(entry.reclaimAfterUnix))
+            )
+          ),
+        ],
+      })
+    );
+  }
+
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
+  tx.sign(sourceKeypair);
+  const result = await server.submitTransaction(tx);
+
+  const balanceIds = parseCreatedClaimableBalanceIds(result.result_xdr);
+  if (balanceIds.length !== entries.length) {
+    throw new Error(
+      `Expected ${entries.length} claimable balances, ledger reported ${balanceIds.length}`
+    );
+  }
+  return { txHash: result.hash, balanceIds };
+}
+
+/** Horizon record for a claimable balance, or null once it has been claimed or never existed. */
+async function getClaimableBalance(balanceId) {
+  try {
+    return await server.claimableBalances().claimableBalance(balanceId).call();
+  } catch (err) {
+    if (err?.response?.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Claim a due subscription balance with the platform key and forward it to the campaign
+ * wallet in the same transaction, so the funds never rest on the platform account.
+ */
+async function claimSubscriptionBalanceToCampaign({
+  balanceId,
+  asset,
+  amount,
+  destinationPublicKey,
+  memo,
+}) {
+  const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
+  const stellarAsset = toStellarAsset(asset);
+
+  const builder = new TransactionBuilder(platformAccount, { fee: BASE_FEE, networkPassphrase })
+    .addOperation(Operation.claimClaimableBalance({ balanceId }))
+    .addOperation(
+      Operation.payment({
+        destination: destinationPublicKey,
+        asset: stellarAsset,
+        amount: String(amount),
+      })
+    );
+
+  if (memo) builder.addMemo(Memo.text(memo));
+
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
+  tx.sign(PLATFORM_KEYPAIR);
+  const result = await server.submitTransaction(tx);
+  return result.hash;
+}
+
+/** True when a failed claim is explained by the balance already being gone from the ledger. */
+function isClaimableBalanceGoneError(err) {
+  const codes = err?.response?.data?.extras?.result_codes?.operations;
+  return Array.isArray(codes) && codes.includes('op_does_not_exist');
+}
+
 async function friendbotFund(publicKey) {
   if (!isTestnet) throw new Error('Friendbot only available on testnet');
   const response = await fetch(
@@ -866,6 +980,12 @@ module.exports = {
   getWalletPayments,
   revokeAndCloseCampaignWallet,
   closeCampaignWalletBySecret,
+
+  createSubscriptionClaimableBalances,
+  claimSubscriptionBalanceToCampaign,
+  getClaimableBalance,
+  isClaimableBalanceGoneError,
+  parseCreatedClaimableBalanceIds,
 
   accountExistsOnLedger,
   getCampaignBalance,

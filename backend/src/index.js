@@ -47,6 +47,9 @@ const {
 const {
   startRecurringContributionsCron,
 } = require("./services/recurringContributionsService");
+const {
+  startSubscriptionClaimWorker,
+} = require("./services/recurring");
 const db = require("./config/database");
 const swaggerUi = require("swagger-ui-express");
 const swaggerJsdoc = require("swagger-jsdoc");
@@ -266,6 +269,7 @@ app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api/users", require("./routes/users"));
 app.use("/api", require("./routes/sponsorMatching"));
 app.use("/api/invites", require("./routes/invites"));
+app.use("/api", require("./routes/subscriptions"));
 app.use("/api/campaigns", require("./routes/campaignUpdates"));
 app.use("/api/campaigns", require("./routes/campaignComments"));
 app.use("/api/campaigns", require("./routes/campaignFollowers"));
@@ -548,6 +552,7 @@ async function bootstrap() {
     startRecommendationRefreshCron();
     startContractDeploymentRetryCron();
     startRecurringContributionsCron();
+    startSubscriptionClaimWorker();
     startBenchmarkRefreshCron();
   });
 }
