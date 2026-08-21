@@ -79,6 +79,9 @@ export default function App() {
                   }
                 />
                 <Route path="/campaigns/:id" element={<Campaign />} />
+                <Route path="/campaigns/:id/share" element={<CampaignShare />} />
+                {/* Short share link handed out by the referral system (#675) */}
+                <Route path="/c/:id" element={<Campaign />} />
                 <Route path="/campaigns/:id/invite/:token" element={<AcceptInvite />} />
                 <Route path="/embed/campaigns/:id" element={<CampaignEmbed />} />
                 <Route path="/widget/campaigns/:id" element={<Widget />} />
@@ -107,6 +110,14 @@ export default function App() {
                   element={
                     <PrivateRoute>
                       <Dashboard />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/dashboard/referrals"
+                  element={
+                    <PrivateRoute>
+                      <ReferralDashboard />
                     </PrivateRoute>
                   }
                 />

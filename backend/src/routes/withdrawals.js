@@ -24,6 +24,7 @@ const { emitWebhookEventForUser, WEBHOOK_EVENTS } = require('../services/webhook
 const { withDecryptedWalletSecret } = require('../services/walletSecrets');
 const { createNotification } = require('../services/notifications');
 const { notifyContributorFundRelease } = require('../services/fundReleaseNotifications');
+const { calculateCommissions, settleCommissions } = require('../services/referral');
 const { parsePagination } = require('../utils/pagination');
 const asyncHandler = require('../utils/asyncHandler');
 
@@ -222,7 +223,7 @@ router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyn
   const xdr = await buildWithdrawalTransaction({
     campaignWalletPublicKey: campaign.wallet_public_key,
     destinationPublicKey: destination_key,
-    amount,
+    amount: creatorAmount,
     asset: campaign.asset_type,
     collectedFees,
     creatorPublicKey,
@@ -254,10 +255,21 @@ router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyn
         amount,
         destination_key,
         asset_type: campaign.asset_type,
+        creator_amount: creatorAmount,
+        referral_commissions: payableCommissions.map((commission) => ({
+          referral_link_id: commission.referral_link_id,
+          code: commission.code,
+          destination_public_key: commission.destination_public_key,
+          commission_owed: commission.commission_owed,
+        })),
       },
     });
     await client.query('COMMIT');
-    res.status(201).json(rows[0]);
+    res.status(201).json({
+      ...rows[0],
+      creator_amount: creatorAmount,
+      referral_commissions: payableCommissions,
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     logger.error('Withdrawal request creation failed', { error: err.message, campaign_id });

@@ -6,6 +6,10 @@ import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import ContributeModal from '../components/ContributeModal';
+import RecurringPledgeForm from '../components/RecurringPledgeForm';
+import ReferralProgramSettings from '../components/ReferralProgramSettings';
+import CampaignReferralsTab from '../components/CampaignReferralsTab';
+import TreasuryPanel, { TreasuryTransparencyPanel } from '../components/TreasuryPanel';
 import RelativeTime from '../components/RelativeTime';
 import DisputeModal from '../components/DisputeModal';
 import TransactionHistory from '../components/TransactionHistory';
@@ -1244,6 +1248,15 @@ export default function Campaign() {
         />
       </div>
 
+      {campaign.wallet_mode === 'contract' && (
+        <div style={{ ...styles.card, marginBottom: '1rem' }}>
+          <TreasuryTransparencyPanel
+            campaignId={campaign.id}
+            assetType={campaign.asset_type}
+          />
+        </div>
+      )}
+
       <CampaignComments campaignId={campaign.id} campaign={campaign} />
 
       {nftRewards.length > 0 && (
@@ -1389,6 +1402,14 @@ export default function Campaign() {
               Contribute with Freighter
             </button>
           </div>
+        )}
+
+        {user && campaign.status === 'active' && (
+          <RecurringPledgeForm
+            campaignId={id}
+            asset={campaign.asset_type}
+            onSubscribed={() => setContributed((prev) => !prev)}
+          />
         )}
 
         {user && (
@@ -1576,11 +1597,34 @@ export default function Campaign() {
           >
             {linkCopied ? 'Copied!' : 'Copy link'}
           </button>
+
+          <Link
+            to={`/campaigns/${campaign.id}/share`}
+            className="btn-secondary"
+            style={{
+              fontSize: '0.85rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.5rem',
+              width: '100%',
+              textDecoration: 'none',
+            }}
+          >
+            Share page &amp; referral link
+          </Link>
         </div>
       </div>
 
       {user && campaign && isOwner && (
         <CampaignPublishControls campaign={campaign} isOwner={isOwner} navigate={navigate} />
+      )}
+
+      {user && campaign && isOwner && (
+        <div data-no-print style={{ marginBottom: '1.75rem' }}>
+          <h2 style={styles.sectionTitle}>Referrals</h2>
+          <ReferralProgramSettings campaignId={campaign.id} />
+        </div>
       )}
 
       {/* Edit campaign — owner or editor */}
@@ -2458,6 +2502,44 @@ export default function Campaign() {
             >
               Backers
             </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'referrals'}
+              onClick={() => setAnalyticsTab('referrals')}
+              style={{
+                background: analyticsTab === 'referrals' ? 'var(--color-accent)' : 'transparent',
+                color: analyticsTab === 'referrals' ? 'var(--color-bg)' : 'var(--color-text-primary)',
+                border: '1px solid var(--color-border-light)',
+                borderRadius: '6px',
+                padding: '0.4rem 0.9rem',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+              }}
+            >
+              Referrals
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'treasury'}
+              onClick={() => setAnalyticsTab('treasury')}
+              style={{
+                background: analyticsTab === 'treasury' ? 'var(--color-accent)' : 'transparent',
+                color: analyticsTab === 'treasury' ? 'var(--color-bg)' : 'var(--color-text-primary)',
+                border: '1px solid var(--color-border-light)',
+                borderRadius: '6px',
+                padding: '0.4rem 0.9rem',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+              }}
+            >
+              Treasury
+            </button>
           </div>
 
           {analyticsTab === 'overview' && (
@@ -2545,6 +2627,21 @@ export default function Campaign() {
 
           {analyticsTab === 'backers' && (
             <p style={{ color: 'var(--color-text-muted)' }}>Backer insights coming soon.</p>
+          )}
+
+          {analyticsTab === 'referrals' && (
+            <CampaignReferralsTab campaignId={campaign.id} assetType={campaign.asset_type} />
+          )}
+
+          {analyticsTab === 'treasury' && (
+            <TreasuryPanel
+              campaignId={campaign.id}
+              assetType={campaign.asset_type}
+              isAuditor={
+                Boolean(campaign.auditor_public_key) &&
+                campaign.auditor_public_key === user?.wallet_public_key
+              }
+            />
           )}
         </div>
       )}
@@ -2655,6 +2752,7 @@ export default function Campaign() {
         <ContributeModal
           campaign={campaign}
           tiers={tiers}
+          referralCode={refParam}
           guestFreighterMode={freighterGuestMode}
           onClose={() => {
             setShowModal(false);

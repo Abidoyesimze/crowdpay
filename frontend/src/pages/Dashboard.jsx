@@ -7,6 +7,7 @@ import KycPrompt from '../components/KycPrompt';
 import VerificationBadge from '../components/VerificationBadge';
 import CampaignStatusBadge from '../components/CampaignStatusBadge';
 import ContributorDashboard from '../components/ContributorDashboard';
+import SubscriptionsPanel from '../components/SubscriptionsPanel';
 import FollowedCampaigns from '../components/FollowedCampaigns';
 import DepositModal from '../components/DepositModal';
 import ApiKeysPanel from '../components/ApiKeysPanel';
@@ -19,6 +20,7 @@ const MiniLineChart = React.lazy(() => import('../components/MiniLineChart'));
 const TABS = [
   { id: 'campaigns', labelKey: 'dashboard.tabs.campaigns' },
   { id: 'contributions', labelKey: 'dashboard.tabs.contributions' },
+  { id: 'subscriptions', labelKey: 'dashboard.tabs.subscriptions' },
   { id: 'following', labelKey: 'dashboard.tabs.following' },
   { id: 'analytics', labelKey: 'dashboard.tabs.analytics' },
   { id: 'api-keys', labelKey: 'dashboard.tabs.apiKeys' },
@@ -259,15 +261,17 @@ export default function Dashboard() {
   const activeTab =
     tabParam === 'contributions'
       ? 'contributions'
-      : tabParam === 'following'
-        ? 'following'
-        : tabParam === 'referrals'
-          ? 'referrals'
-          : tabParam === 'analytics'
-            ? 'analytics'
-            : tabParam === 'api-keys'
-              ? 'api-keys'
-              : 'campaigns';
+      : tabParam === 'subscriptions'
+        ? 'subscriptions'
+        : tabParam === 'following'
+          ? 'following'
+          : tabParam === 'referrals'
+            ? 'referrals'
+            : tabParam === 'analytics'
+              ? 'analytics'
+              : tabParam === 'api-keys'
+                ? 'api-keys'
+                : 'campaigns';
 
   const [stats, setStats] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
@@ -490,6 +494,8 @@ export default function Dashboard() {
   function setTab(tabId) {
     if (tabId === 'contributions') {
       setSearchParams({ tab: 'contributions' });
+    } else if (tabId === 'subscriptions') {
+      setSearchParams({ tab: 'subscriptions' });
     } else if (tabId === 'following') {
       setSearchParams({ tab: 'following' });
     } else if (tabId === 'analytics') {
@@ -862,6 +868,12 @@ export default function Dashboard() {
       {activeTab === 'contributions' && (
         <section role="tabpanel" aria-labelledby="tab-contributions">
           <ContributorDashboard />
+        </section>
+      )}
+
+      {activeTab === 'subscriptions' && (
+        <section role="tabpanel" aria-labelledby="tab-subscriptions">
+          <SubscriptionsPanel />
         </section>
       )}
 

@@ -8,6 +8,7 @@ const {
   getUserFraudChecks,
   resolveFraudCheck,
 } = require('../services/referralService');
+const { listUserReferralLinks } = require('../services/referral');
 const asyncHandler = require('../utils/asyncHandler');
 
 /**
@@ -46,6 +47,38 @@ router.get('/leaderboard', asyncHandler(async (req, res) => {
   const { limit = 20, offset = 0 } = req.query;
   const leaderboard = await getLeaderboard({ limit: Math.min(Number(limit), 100), offset: Math.max(Number(offset), 0) });
   res.json({ leaderboard });
+}));
+
+/**
+ * @openapi
+ * /api/referrals/links:
+ *   get:
+ *     tags: [Referrals]
+ *     summary: Affiliate links held by the authenticated user, with commission earned
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: List of referral links
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 links:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       code: { type: string }
+ *                       campaign_title: { type: string }
+ *                       share_url: { type: string }
+ *                       referred_amount: { type: string }
+ *                       commission_earned: { type: string }
+ *                       status: { type: string, enum: [no_referrals, pending, paid] }
+ */
+router.get('/links', requireAuth, asyncHandler(async (req, res) => {
+  const links = await listUserReferralLinks(req.user.userId);
+  res.json({ links });
 }));
 
 /**

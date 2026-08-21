@@ -476,8 +476,9 @@ export const api = {
   voteMilestone: (id, body) => request('POST', `/milestones/${id}/votes`, body || {}),
   approveMilestone: (id, body) => request('POST', `/milestones/${id}/release`, body || {}),
   rejectMilestone: (id, body) => request('POST', `/milestones/${id}/reject`, body || {}),
-  contribute: (body) => request('POST', '/contributions', body),
-  prepareContribution: (body) => request('POST', '/contributions/prepare', body),
+  contribute: (body, options = {}) => request('POST', '/contributions', body, options),
+  prepareContribution: (body, options = {}) =>
+    request('POST', '/contributions/prepare', body, options),
   submitSignedContribution: (body) => request('POST', '/contributions/submit-signed', body),
   buildContributionXdr: (body) => request('POST', '/contributions/build-xdr', body),
   guestContribute: (body) => request('POST', '/contributions/guest', body),
@@ -495,6 +496,12 @@ export const api = {
   approveRefundPlatform: (id) => request('POST', `/campaigns/${id}/refund/approve/platform`, {}),
   requestContributionRefund: (contributionId) =>
     request('POST', `/contributions/${contributionId}/refund`, {}),
+
+  createSubscription: (campaignId, body) =>
+    request('POST', `/campaigns/${campaignId}/subscriptions`, body),
+  cancelSubscription: (campaignId, subscriptionId) =>
+    request('DELETE', `/campaigns/${campaignId}/subscriptions/${subscriptionId}`),
+  getMySubscriptions: () => request('GET', '/subscriptions/mine'),
 
   getContributorDashboard: () => request('GET', '/contributions/dashboard'),
   exportContributionsCsv: () =>
@@ -610,6 +617,33 @@ export const api = {
 
   getReferralCode: (campaignId) => request('GET', `/campaigns/${campaignId}/referral`),
   getReferralLeaderboard: (campaignId) => request('GET', `/campaigns/${campaignId}/referrals`),
+
+  // ── Referral & affiliate program ─────────────────────────────────────
+  enableReferralProgram: (campaignId, body) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/referrals`, body),
+  getReferralProgram: (campaignId) =>
+    request('GET', `/campaigns/${encodeURIComponent(campaignId)}/referrals/program`),
+  createReferralLink: (campaignId) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/referrals/links`, {}),
+  getCampaignReferralCommissions: (campaignId) =>
+    request('GET', `/campaigns/${encodeURIComponent(campaignId)}/referrals/commissions`),
+  getMyReferralLinks: () => request('GET', '/referrals/links'),
+
+  // Soroban treasury (#687)
+  setTreasuryPolicy: (campaignId, body) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/treasury/policy`, body),
+  getTreasuryStatus: (campaignId) =>
+    request('GET', `/campaigns/${encodeURIComponent(campaignId)}/treasury/status`),
+  requestTreasuryWithdrawal: (campaignId, body) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/treasury/withdrawal`, body),
+  approveTreasuryWithdrawal: (campaignId, pendingId) =>
+    request(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/treasury/withdrawal/${encodeURIComponent(pendingId)}/approve`,
+      {}
+    ),
+  triggerTreasuryRefund: (campaignId) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/treasury/refund`, {}),
 
   sendBulkThankYou: (campaignId, message) =>
     request('POST', `/campaigns/${campaignId}/thank-you`, { message }),
