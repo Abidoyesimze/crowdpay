@@ -1037,18 +1037,102 @@ function MilestonesQueue() {
   );
 }
 
+function ContractUpgradeModal({ campaign, onClose, onUpgraded }) {
+  const [upgrading, setUpgrading] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function confirmUpgrade() {
+    setUpgrading(true);
+    setError(null);
+    try {
+      await api.adminUpgradeCampaignContract(campaign.id);
+      onUpgraded();
+    } catch (err) {
+      setError(err.message || 'Could not upgrade contract');
+    } finally {
+      setUpgrading(false);
+    }
+  }
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0, 0, 0, 0.5)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{ ...cardStyle, maxWidth: '420px', width: '90%' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 style={{ marginTop: 0 }}>Upgrade Contract to V2</h3>
+        <p style={{ fontSize: '0.9rem' }}>
+          <strong>Campaign:</strong> {campaign.title}
+        </p>
+        <p style={{ fontSize: '0.85rem', color: 'var(--color-text-hint)', wordBreak: 'break-all' }}>
+          <strong>Current contract:</strong> {campaign.escrow_contract_id}
+        </p>
+        <p style={{ fontSize: '0.85rem', color: 'var(--color-text-hint)' }}>
+          <strong>Estimated migration time:</strong> ~1&ndash;2 minutes
+        </p>
+        <p
+          style={{
+            fontSize: '0.85rem',
+            padding: '0.6rem',
+            borderRadius: '6px',
+            background: 'var(--color-warning-bg, #fff3cd)',
+            color: 'var(--color-warning-text, #7a5b00)',
+          }}
+        >
+          Contributions and milestone submissions will be paused for this campaign until migration
+          completes.
+        </p>
+        {error && (
+          <p style={{ fontSize: '0.85rem', color: 'var(--color-error-text)' }}>{error}</p>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1rem' }}>
+          <button type="button" onClick={onClose} disabled={upgrading}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={confirmUpgrade}
+            disabled={upgrading}
+            style={{ background: 'var(--color-teal)', color: '#fff', border: 'none', borderRadius: '6px', padding: '0.4rem 0.8rem' }}
+          >
+            {upgrading ? 'Upgrading…' : 'Confirm Upgrade'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CampaignsQueue() {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const [upgradeTarget, setUpgradeTarget] = useState(null);
+
+  const reload = useCallback(() => {
+    return api.getAdminCampaigns({ flagged_only: flaggedOnly }).then(setCampaigns);
+  }, [flaggedOnly]);
 
   useEffect(() => {
     setLoading(true);
-    api
-      .getAdminCampaigns({ flagged_only: flaggedOnly })
-      .then(setCampaigns)
-      .finally(() => setLoading(false));
-  }, [flaggedOnly]);
+    reload().finally(() => setLoading(false));
+  }, [reload]);
+
+  async function handleUpgraded() {
+    setUpgradeTarget(null);
+    await reload();
+  }
 
   async function unflag(id) {
     if (!window.confirm('Remove duplicate flag and allow publishing?')) return;
@@ -1112,6 +1196,22 @@ function CampaignsQueue() {
           >
             <div>
               <strong>{c.title}</strong>
+              {c.escrow_contract_id && (
+                <span
+                  title="Milestone escrow contract version"
+                  style={{
+                    marginLeft: '0.5rem',
+                    fontSize: '0.7rem',
+                    fontWeight: 700,
+                    padding: '0.1rem 0.4rem',
+                    borderRadius: '4px',
+                    background: c.escrow_contract_version >= 2 ? 'var(--color-teal)' : 'var(--color-text-hint)',
+                    color: '#fff',
+                  }}
+                >
+                  {c.escrow_contract_version >= 2 ? 'V2' : 'V1'}
+                </span>
+              )}
               {c.is_flagged_duplicate && (
                 <span
                   style={{
@@ -1181,11 +1281,33 @@ function CampaignsQueue() {
                   </button>
                 </>
               )}
+              {c.escrow_contract_id && c.escrow_contract_version < 2 && !c.has_active_review && (
+                <button
+                  type="button"
+                  onClick={() => setUpgradeTarget(c)}
+                  disabled={c.migration_in_progress}
+                  style={{
+                    fontSize: '0.75rem',
+                    padding: '0.25rem 0.7rem',
+                    borderRadius: '6px',
+                    cursor: c.migration_in_progress ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {c.migration_in_progress ? 'Migrating…' : 'Upgrade Contract'}
+                </button>
+              )}
             </div>
           </div>
         </div>
       ))}
       </div>
+      {upgradeTarget && (
+        <ContractUpgradeModal
+          campaign={upgradeTarget}
+          onClose={() => setUpgradeTarget(null)}
+          onUpgraded={handleUpgraded}
+        />
+      )}
     </div>
   );
 }

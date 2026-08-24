@@ -3,6 +3,16 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol, Vec, IntoVal
 };
 
+// V2 of the milestones contract (see contracts/soroban/contracts/milestones for V1).
+//
+// Soroban contracts cannot be arbitrarily upgraded in place, so a change to
+// contract logic ships as a new contract deployment instead. This crate keeps
+// every V1 function with an identical signature for ABI compatibility, and
+// adds a version marker, a platform-controlled pause switch, and a
+// migrate_from_v1 entry point that copies milestone state across from an
+// already-deployed V1 contract. See contracts/soroban/contracts/migration
+// for the orchestrator that drives a live upgrade end to end.
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[contracttype]
 pub enum MilestoneStatus {
@@ -30,19 +40,16 @@ pub enum DataKey {
     Milestones,
     Initialized,
     Paused,
+    ContractVersion,
 }
 
-// Define the interface for the Escrow contract
-#[contract]
-pub struct MilestonesContract;
+pub const CONTRACT_VERSION: u32 = 2;
 
-// Note: We use invoke_contract for cross-contract calls to avoid strict build dependencies
-// on the escrow wasm during the initial build of this contract.
-// Note: If the wasm is not available yet, we can use a manual client definition.
-// Since we are building this together, I'll use a manual client to avoid build order issues.
+#[contract]
+pub struct MilestonesV2Contract;
 
 #[contractimpl]
-impl MilestonesContract {
+impl MilestonesV2Contract {
     pub fn initialize(
         env: Env,
         creator: Address,
@@ -67,13 +74,38 @@ impl MilestonesContract {
         env.storage().instance().set(&DataKey::Escrow, &escrow);
         env.storage().instance().set(&DataKey::Milestones, &milestones);
         env.storage().instance().set(&DataKey::Initialized, &true);
+        env.storage().instance().set(&DataKey::ContractVersion, &CONTRACT_VERSION);
+    }
+
+    /// Callable by the platform only. Reads every milestone from an
+    /// already-deployed V1 contract (`v1_contract_id`) via a cross-contract
+    /// call to `get_all_milestones()` and writes it into this contract's own
+    /// storage, replacing whatever milestones it was initialized with.
+    pub fn migrate_from_v1(env: Env, v1_contract_id: Address) {
+        let platform: Address = env.storage().instance().get(&DataKey::Platform).expect("Not initialized");
+        platform.require_auth();
+
+        let v1_milestones: Vec<Milestone> = env.invoke_contract(
+            &v1_contract_id,
+            &Symbol::new(&env, "get_all_milestones"),
+            Vec::new(&env),
+        );
+
+        env.storage().instance().set(&DataKey::Milestones, &v1_milestones);
+        env.storage().instance().set(&DataKey::ContractVersion, &CONTRACT_VERSION);
+
+        env.events().publish(
+            (symbol_short!("migrated"),),
+            (v1_contract_id, v1_milestones.len()),
+        );
+    }
+
+    pub fn get_version(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::ContractVersion).unwrap_or(CONTRACT_VERSION)
     }
 
     /// Callable by the platform only. When paused, all state-mutating
-    /// functions (submit_milestone, approve_milestone, reject_milestone)
-    /// revert with CONTRACT_PAUSED. Added to let the upgrade-migration
-    /// orchestrator (see contracts/soroban/contracts/migration) freeze this
-    /// contract while its state is copied over to a v2 contract.
+    /// functions revert with CONTRACT_PAUSED.
     pub fn set_paused(env: Env, paused: bool) {
         let platform: Address = env.storage().instance().get(&DataKey::Platform).expect("Not initialized");
         platform.require_auth();
@@ -114,6 +146,9 @@ impl MilestonesContract {
         );
     }
 
+    /// Approves a submitted milestone and releases its share of escrow funds
+    /// to the creator. This is the "release_funds" state-mutating function
+    /// gated by set_paused.
     pub fn approve_milestone(env: Env, index: u32) {
         Self::require_not_paused(&env);
         let platform: Address = env.storage().instance().get(&DataKey::Platform).expect("Not initialized");
@@ -134,18 +169,14 @@ impl MilestonesContract {
         let escrow_address: Address = env.storage().instance().get(&DataKey::Escrow).expect("Not initialized");
         let creator: Address = env.storage().instance().get(&DataKey::Creator).expect("Not initialized");
 
-        // Use a cross-contract call to get the total raised amount from escrow
         let total_raised: i128 = env.invoke_contract(&escrow_address, &Symbol::new(&env, "get_total_raised"), Vec::new(&env));
-        
+
         let release_amount = (total_raised * (release_bps as i128)) / 10000;
 
         if release_amount > 0 {
-            // Approve the withdrawal in escrow (Milestones contract must be the Admin of Escrow)
             let _ : () = env.invoke_contract(&escrow_address, &Symbol::new(&env, "approve_withdrawal"), (release_amount,).into_val(&env));
-            
-            // Execute the withdrawal
             let _ : () = env.invoke_contract(&escrow_address, &Symbol::new(&env, "execute_withdrawal"), (creator.clone(), release_amount).into_val(&env));
-            
+
             env.events().publish(
                 (symbol_short!("release"), index),
                 (creator, release_amount),
@@ -159,6 +190,7 @@ impl MilestonesContract {
     }
 
     pub fn reject_milestone(env: Env, index: u32, reason_hash: BytesN<32>) {
+        Self::require_not_paused(&env);
         let platform: Address = env.storage().instance().get(&DataKey::Platform).expect("Not initialized");
         platform.require_auth();
 
@@ -186,5 +218,10 @@ impl MilestonesContract {
 
     pub fn get_all_milestones(env: Env) -> Vec<Milestone> {
         env.storage().instance().get(&DataKey::Milestones).expect("Not initialized")
+    }
+
+    pub fn get_milestone_count(env: Env) -> u32 {
+        let milestones: Vec<Milestone> = env.storage().instance().get(&DataKey::Milestones).expect("Not initialized");
+        milestones.len()
     }
 }

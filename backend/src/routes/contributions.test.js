@@ -372,6 +372,33 @@ test('POST /api/contributions uses direct payment for same USDC asset', async ()
   assert.equal(submitted.length, 1);
 });
 
+test('POST /api/contributions is blocked while the campaign contract is being migrated', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{
+            id: '11111111-1111-1111-1111-111111111111',
+            status: 'active',
+            asset_type: 'USDC',
+            wallet_public_key: VALID_G,
+            migration_in_progress: true,
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions')
+    .set('Authorization', 'Bearer token')
+    .send({ campaign_id: '11111111-1111-1111-1111-111111111111', amount: '5.0000000', send_asset: 'USDC' });
+
+  assert.equal(response.status, 503);
+  assert.equal(response.body.code, 'CAMPAIGN_MIGRATION_IN_PROGRESS');
+});
+
 test('POST /api/contributions uses path payment for conversion', async () => {
   let pathPayload = null;
   const app = buildApp({
