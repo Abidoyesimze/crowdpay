@@ -106,6 +106,9 @@ function FavoriteToggle({ campaignId }) {
   );
 }
 
+const UPDATE_BODY_MAX = 5000;
+const UPDATE_BODY_WARN_THRESHOLD = Math.round(UPDATE_BODY_MAX * 0.9);
+
 function CampaignPublishControls({ campaign, isOwner, navigate }) {
   const [cloning, setCloning] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -1043,6 +1046,14 @@ export default function Campaign() {
   async function submitUpdate(e) {
     e.preventDefault();
     setUpdatesError('');
+
+    if (updateForm.body.length > UPDATE_BODY_MAX) {
+      setUpdatesError(
+        `Update body must be ${UPDATE_BODY_MAX} characters or fewer (currently ${updateForm.body.length})`
+      );
+      return;
+    }
+
     setUpdateBusy(true);
 
     try {
@@ -2382,6 +2393,22 @@ export default function Campaign() {
             rows={4}
             required
           />
+          <div
+            aria-live="polite"
+            style={{
+              fontSize: '0.8rem',
+              marginTop: '0.25rem',
+              textAlign: 'right',
+              color:
+                updateForm.body.length > UPDATE_BODY_MAX
+                  ? 'var(--color-status-error)'
+                  : updateForm.body.length >= UPDATE_BODY_WARN_THRESHOLD
+                    ? 'var(--color-status-warning, var(--color-status-error))'
+                    : 'var(--color-text-hint)',
+            }}
+          >
+            {UPDATE_BODY_MAX - updateForm.body.length} characters left
+          </div>
           {updatesError && (
             <div
               style={{

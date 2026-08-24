@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS campaign_updates (
   campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   author_id UUID NOT NULL REFERENCES users(id),
   title TEXT NOT NULL,
-  body TEXT NOT NULL,
+  body TEXT NOT NULL CONSTRAINT campaign_updates_body_length CHECK (char_length(body) <= 5000),
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
