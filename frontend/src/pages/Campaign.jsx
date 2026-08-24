@@ -12,6 +12,7 @@ import CampaignReferralsTab from '../components/CampaignReferralsTab';
 import TreasuryPanel, { TreasuryTransparencyPanel } from '../components/TreasuryPanel';
 import RelativeTime from '../components/RelativeTime';
 import DisputeModal from '../components/DisputeModal';
+import EvidenceForm from '../components/EvidenceForm';
 import TransactionHistory from '../components/TransactionHistory';
 import WithdrawalHistoryTimeline from '../components/WithdrawalHistoryTimeline';
 import MilestoneTracker from '../components/MilestoneTracker';
@@ -305,6 +306,9 @@ export default function Campaign() {
   const [showModal, setShowModal] = useState(false);
   const [showDisputeModal, setShowDisputeModal] = useState(false);
   const [disputeSubmitted, setDisputeSubmitted] = useState(false);
+  const [activeDispute, setActiveDispute] = useState(null);
+  const [showEvidenceForm, setShowEvidenceForm] = useState(false);
+  const [evidenceSubmitted, setEvidenceSubmitted] = useState(false);
   const [contributed, setContributed] = useState(false);
 
   const [freighterGuestMode, setFreighterGuestMode] = useState(false);
@@ -548,6 +552,17 @@ export default function Campaign() {
         .catch(() => setHasPendingWithdrawal(false));
     }
   }, [id, token, contributed, showAll]);
+
+  useEffect(() => {
+    if (!id || !user || campaign?.status !== 'disputed') {
+      setActiveDispute(null);
+      return;
+    }
+    api
+      .getCampaignDispute(id)
+      .then((data) => setActiveDispute(data.dispute))
+      .catch(() => setActiveDispute(null));
+  }, [id, user, campaign?.status]);
 
   useEffect(() => {
     if (!campaign || !id || !user) return;
@@ -1238,6 +1253,32 @@ export default function Campaign() {
           defaultDescription={campaign.description || ''}
           onTranslationChange={setTranslation}
         />
+        {campaign.status === 'disputed' && (
+          <div
+            className="alert alert--error"
+            role="status"
+            style={{ marginBottom: '1rem', display: 'grid', gap: '0.5rem' }}
+          >
+            <strong>This campaign has an open dispute.</strong>
+            <span style={{ fontSize: '0.85rem' }}>
+              New contributions are paused and the escrow is frozen while the platform reviews
+              the case.
+            </span>
+            {activeDispute &&
+              (evidenceSubmitted ? (
+                <span style={{ fontSize: '0.85rem' }}>Your evidence has been submitted.</span>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ fontSize: '0.85rem', width: 'fit-content' }}
+                  onClick={() => setShowEvidenceForm(true)}
+                >
+                  Submit evidence
+                </button>
+              ))}
+          </div>
+        )}
         <h1 style={styles.title}>{translation?.title || campaign.title}</h1>
         {campaign.creator_name && <p style={styles.creator}>by {campaign.creator_name}</p>}
         <div
@@ -2768,6 +2809,44 @@ export default function Campaign() {
           onClose={() => setShowDisputeModal(false)}
           onSubmitted={() => setDisputeSubmitted(true)}
         />
+      )}
+
+      {showEvidenceForm && activeDispute && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="evidence-form-title"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              background: 'var(--color-bg)',
+              borderRadius: '12px',
+              padding: '1.75rem',
+              width: '100%',
+              maxWidth: '480px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+            }}
+          >
+            <h2 id="evidence-form-title" style={{ fontSize: '1.2rem', fontWeight: 700, marginTop: 0 }}>
+              Submit evidence
+            </h2>
+            <EvidenceForm
+              disputeId={activeDispute.id}
+              onClose={() => setShowEvidenceForm(false)}
+              onSubmitted={() => setEvidenceSubmitted(true)}
+            />
+          </div>
+        </div>
       )}
 
       {/* Edit Campaign Modal */}

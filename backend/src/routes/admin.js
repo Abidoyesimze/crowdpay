@@ -972,7 +972,8 @@ router.get('/disputes', async (req, res) => {
               (SELECT COALESCE(SUM(co.amount::numeric), 0)
                FROM contributions co
                WHERE co.campaign_id = d.campaign_id
-                 AND co.sender_public_key = reporter.wallet_public_key) AS amount_in_dispute
+                 AND co.sender_public_key = reporter.wallet_public_key) AS amount_in_dispute,
+              (SELECT COUNT(*)::int FROM dispute_evidence de WHERE de.dispute_id = d.id) AS evidence_count
        FROM disputes d
        JOIN campaigns c ON c.id = d.campaign_id
        JOIN users reporter ON reporter.id = d.raised_by
@@ -1022,7 +1023,16 @@ router.get('/disputes/:id', async (req, res) => {
       [req.params.id]
     );
 
-    res.json({ dispute: rows[0], thread: events });
+    const { rows: evidence } = await db.query(
+      `SELECT ev.*, u.name AS submitted_by_name
+       FROM dispute_evidence ev
+       LEFT JOIN users u ON u.id = ev.submitted_by
+       WHERE ev.dispute_id = $1
+       ORDER BY ev.submitted_at ASC`,
+      [req.params.id]
+    );
+
+    res.json({ dispute: rows[0], thread: events, evidence });
   } catch (err) {
     logger.error('Error fetching dispute detail', { error: err.message, disputeId: req.params.id });
     res.status(500).json({ error: 'Failed to fetch dispute' });
