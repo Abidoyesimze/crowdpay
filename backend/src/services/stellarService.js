@@ -16,6 +16,8 @@ const {
   Asset,
   BASE_FEE,
   Memo,
+  Claimant,
+  xdr,
 } = require('@stellar/stellar-sdk');
 const {
   server,
@@ -35,11 +37,13 @@ const {
 const logger = require('../config/logger');
 const db = require('../config/database');
 const { withDecryptedWalletSecret } = require('./walletSecrets');
+const { getPlatformFee } = require('./feeRegistry');
 
 const PLATFORM_KEYPAIR = Keypair.fromSecret(process.env.PLATFORM_SECRET_KEY);
+const ARBITRATOR_KEYPAIR = Keypair.fromSecret(process.env.ARBITRATOR_SECRET_KEY);
 
-function calcFee(amount) {
-  const bps = parseInt(process.env.PLATFORM_FEE_BPS || '0', 10);
+async function calcFee(amount) {
+  const bps = await getPlatformFee();
   const fee = parseFloat((parseFloat(amount) * bps / 10000).toFixed(7));
   const net = parseFloat((parseFloat(amount) - fee).toFixed(7));
   return { feeAmount: fee, campaignAmount: net, bps };
@@ -236,6 +240,118 @@ async function createCampaignWallet(creatorPublicKey, campaignKeypair) {
   };
 }
 
+async function loadDecryptedCreatorSecret(creatorId) {
+  const { rows } = await db.query(
+    'SELECT id, wallet_public_key, wallet_secret_encrypted FROM users WHERE id = $1',
+    [creatorId]
+  );
+  const userRow = rows[0];
+  if (!userRow || !userRow.wallet_secret_encrypted) {
+    throw new Error('Creator wallet secret is unavailable');
+  }
+  let creatorSecret = null;
+  await withDecryptedWalletSecret(
+    userRow.wallet_secret_encrypted,
+    { userId: userRow.id, walletPublicKey: userRow.wallet_public_key },
+    async (secret) => {
+      creatorSecret = secret;
+    }
+  );
+  return creatorSecret;
+}
+
+/**
+ * Dispute escrow freeze: adds the platform arbitrator as a third signer
+ * (weight 1) and raises the medium/high thresholds from 2 to 3, so that any
+ * further movement of funds requires creator + platform + arbitrator
+ * agreement. This is a high-threshold SetOptions op, so it needs signatures
+ * meeting the *current* (pre-freeze) high threshold of 2 — creator and
+ * platform. Both secrets are held custodially, so this is built, signed and
+ * submitted in one shot rather than routed through the async
+ * creator-approval flow used for withdrawals.
+ */
+async function freezeCampaignEscrow({ campaignWalletPublicKey, creatorId }) {
+  const campaignAccount = await server.loadAccount(campaignWalletPublicKey);
+  const creatorSecret = await loadDecryptedCreatorSecret(creatorId);
+
+  const tx = new TransactionBuilder(campaignAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(
+      Operation.setOptions({
+        signer: { ed25519PublicKey: ARBITRATOR_KEYPAIR.publicKey(), weight: 1 },
+      })
+    )
+    .addOperation(
+      Operation.setOptions({
+        medThreshold: 3,
+        highThreshold: 3,
+      })
+    )
+    .setTimeout(TX_TIMEOUT_WITHDRAWAL_S)
+    .build();
+
+  tx.sign(Keypair.fromSecret(creatorSecret));
+  tx.sign(PLATFORM_KEYPAIR);
+
+  const result = await server.submitTransaction(tx);
+  return { hash: result.hash };
+}
+
+/**
+ * Reverses freezeCampaignEscrow: removes the arbitrator signer and restores
+ * thresholds to 2. The account currently requires all three signers (weight
+ * 3 threshold) to authorize this, so creator + platform + arbitrator all
+ * sign here.
+ */
+async function releaseEscrowFreeze({ campaignWalletPublicKey, creatorId }) {
+  const campaignAccount = await server.loadAccount(campaignWalletPublicKey);
+  const creatorSecret = await loadDecryptedCreatorSecret(creatorId);
+
+  const tx = new TransactionBuilder(campaignAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(
+      Operation.setOptions({
+        signer: { ed25519PublicKey: ARBITRATOR_KEYPAIR.publicKey(), weight: 0 },
+      })
+    )
+    .addOperation(
+      Operation.setOptions({
+        medThreshold: 2,
+        highThreshold: 2,
+      })
+    )
+    .setTimeout(TX_TIMEOUT_WITHDRAWAL_S)
+    .build();
+
+  tx.sign(Keypair.fromSecret(creatorSecret));
+  tx.sign(PLATFORM_KEYPAIR);
+  tx.sign(ARBITRATOR_KEYPAIR);
+
+  const result = await server.submitTransaction(tx);
+  return { hash: result.hash };
+}
+
+/**
+ * Submits a batch refund transaction while a campaign is under an active
+ * dispute freeze (3-of-3 threshold): creator + platform + arbitrator sign.
+ */
+async function submitDisputeRefund({ campaignWalletPublicKey, creatorId, refunds }) {
+  const unsignedXdr = await buildBatchRefundTransaction({ campaignWalletPublicKey, refunds });
+  const creatorSecret = await loadDecryptedCreatorSecret(creatorId);
+
+  const tx = TransactionBuilder.fromXDR(unsignedXdr, networkPassphrase);
+  tx.sign(Keypair.fromSecret(creatorSecret));
+  tx.sign(PLATFORM_KEYPAIR);
+  tx.sign(ARBITRATOR_KEYPAIR);
+
+  const result = await server.submitTransaction(tx);
+  return { hash: result.hash, xdr: tx.toXDR() };
+}
+
 /**
  * Build an unsigned payment contribution transaction.
  */
@@ -248,7 +364,7 @@ async function buildUnsignedContributionPayment({
 }) {
   const senderAccount = await server.loadAccount(senderPublicKey);
   const stellarAsset = toStellarAsset(asset);
-  const { feeAmount, campaignAmount } = calcFee(amount);
+  const { feeAmount, campaignAmount } = await calcFee(amount);
 
   const builder = new TransactionBuilder(senderAccount, { fee: BASE_FEE, networkPassphrase })
     .addOperation(
@@ -269,7 +385,11 @@ async function buildUnsignedContributionPayment({
     );
   }
 
-  const tx = builder.build();
+  if (memo) {
+    builder.addMemo(Memo.text(memo));
+  }
+
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
   return tx.toXDR();
 }
 
@@ -284,7 +404,7 @@ async function prepareSignedContributionPayment({
   memo,
 }) {
   const senderKeypair = Keypair.fromSecret(senderSecret);
-  const { feeAmount } = calcFee(amount);
+  const { feeAmount } = await calcFee(amount);
   const unsignedXdr = await buildUnsignedContributionPayment({
     senderPublicKey: senderKeypair.publicKey(),
     destinationPublicKey,
@@ -322,7 +442,7 @@ async function buildUnsignedContributionPathPayment({
   const senderAccount = await server.loadAccount(senderPublicKey);
   const sourceStellarAsset = toStellarAsset(sendAsset);
   const destStellarAsset = toStellarAsset(destAssetCode);
-  const { feeAmount, campaignAmount, bps } = calcFee(destAmount);
+  const { feeAmount, campaignAmount, bps } = await calcFee(destAmount);
 
   const sendMaxFloat = parseFloat(sendMax);
   const campaignSendMax = feeAmount > 0
@@ -357,7 +477,11 @@ async function buildUnsignedContributionPathPayment({
     );
   }
 
-  const tx = builder.build();
+  if (memo) {
+    builder.addMemo(Memo.text(memo));
+  }
+
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
   return tx.toXDR();
 }
 
@@ -374,7 +498,7 @@ async function prepareSignedContributionPathPayment({
   memo,
 }) {
   const senderKeypair = Keypair.fromSecret(senderSecret);
-  const { feeAmount } = calcFee(destAmount);
+  const { feeAmount } = await calcFee(destAmount);
   const unsignedXdr = await buildUnsignedContributionPathPayment({
     senderPublicKey: senderKeypair.publicKey(),
     destinationPublicKey,
@@ -433,27 +557,61 @@ async function getPathPaymentQuote({ sendAsset, destAsset, destAmount }) {
 /**
  * Build a withdrawal transaction for a campaign wallet.
  * Returns the unsigned XDR — both the creator and platform must sign it.
+ * 
+ * @param {object} params - Transaction parameters
+ * @param {string} params.campaignWalletPublicKey - Campaign wallet public key
+ * @param {string} params.destinationPublicKey - Destination public key (creator's withdrawal destination)
+ * @param {number} params.amount - Withdrawal amount
+ * @param {string} params.asset - Asset type (XLM, USDC, etc.)
+ * @param {number} params.collectedFees - Total platform fees collected for this campaign
+ * @param {string} params.creatorPublicKey - Creator's public key (for revenue share)
  */
 async function buildWithdrawalTransaction({
   campaignWalletPublicKey,
   destinationPublicKey,
   amount,
   asset,
+  collectedFees = 0,
+  creatorPublicKey = null,
 }) {
   const campaignAccount = await server.loadAccount(campaignWalletPublicKey);
   const stellarAsset = toStellarAsset(asset);
 
-  const tx = new TransactionBuilder(campaignAccount, {
+  const builder = new TransactionBuilder(campaignAccount, {
     fee: BASE_FEE,
     networkPassphrase,
-  })
-    .addOperation(
-      Operation.payment({
-        destination: destinationPublicKey,
-        asset: stellarAsset,
-        amount: String(amount),
-      })
-    )
+  });
+
+  // Main withdrawal payment to destination
+  builder.addOperation(
+    Operation.payment({
+      destination: destinationPublicKey,
+      asset: stellarAsset,
+      amount: String(amount),
+    })
+  );
+
+  // Creator revenue share payment (if applicable)
+  if (collectedFees > 0 && creatorPublicKey) {
+    const { calculateCreatorShare } = require('./feeRegistry');
+    const creatorShare = await calculateCreatorShare(collectedFees);
+    
+    if (creatorShare > 0) {
+      builder.addOperation(
+        Operation.payment({
+          destination: PLATFORM_KEYPAIR.publicKey(),
+          asset: stellarAsset,
+          amount: String(creatorShare),
+        })
+      );
+      
+      // Note: In production, this would need to be sent from the platform fee wallet
+      // to the creator's wallet. For now, we're including it in the transaction
+      // for audit purposes. The actual transfer would be handled separately.
+    }
+  }
+
+  const tx = builder
     .setTimeout(TX_TIMEOUT_WITHDRAWAL_S) // platform approver may not be available immediately (see issue #128)
     .build();
 
@@ -603,6 +761,118 @@ async function getWalletPayments(publicKey, limit = 100) {
     amount: p.amount,
     asset_type: p.asset_type === 'native' ? 'XLM' : p.asset_code,
   }));
+}
+
+/** Balance IDs of the claimable balances created by a submitted transaction, in operation order. */
+function parseCreatedClaimableBalanceIds(resultXdrBase64) {
+  const results = xdr.TransactionResult.fromXDR(resultXdrBase64, 'base64').result().results();
+  const balanceIds = [];
+  for (const opResult of results) {
+    if (opResult.switch().name !== 'opInner') continue;
+    const tr = opResult.tr();
+    if (tr.switch().name !== 'createClaimableBalance') continue;
+    balanceIds.push(tr.createClaimableBalanceResult().balanceId().toXDR('hex'));
+  }
+  return balanceIds;
+}
+
+/**
+ * Lock one claimable balance per subscription period, all in a single transaction.
+ *
+ * Every balance names the platform as an unconditional claimant so the claim worker can
+ * release it on its scheduled date, plus the contributor under a `not(before_absolute_time)`
+ * predicate — an after-absolute-time window that lets them reclaim the funds themselves if
+ * the platform never claims.
+ *
+ * @param {Object[]} entries - One per period: { amount, reclaimAfterUnix }.
+ */
+async function createSubscriptionClaimableBalances({
+  sourceSecret,
+  asset,
+  entries,
+}) {
+  const sourceKeypair = Keypair.fromSecret(sourceSecret);
+  const sourceAccount = await server.loadAccount(sourceKeypair.publicKey());
+  const stellarAsset = toStellarAsset(asset);
+
+  const builder = new TransactionBuilder(sourceAccount, { fee: BASE_FEE, networkPassphrase });
+  for (const entry of entries) {
+    builder.addOperation(
+      Operation.createClaimableBalance({
+        asset: stellarAsset,
+        amount: String(entry.amount),
+        claimants: [
+          new Claimant(PLATFORM_KEYPAIR.publicKey(), Claimant.predicateUnconditional()),
+          new Claimant(
+            sourceKeypair.publicKey(),
+            Claimant.predicateNot(
+              Claimant.predicateBeforeAbsoluteTime(String(entry.reclaimAfterUnix))
+            )
+          ),
+        ],
+      })
+    );
+  }
+
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
+  tx.sign(sourceKeypair);
+  const result = await server.submitTransaction(tx);
+
+  const balanceIds = parseCreatedClaimableBalanceIds(result.result_xdr);
+  if (balanceIds.length !== entries.length) {
+    throw new Error(
+      `Expected ${entries.length} claimable balances, ledger reported ${balanceIds.length}`
+    );
+  }
+  return { txHash: result.hash, balanceIds };
+}
+
+/** Horizon record for a claimable balance, or null once it has been claimed or never existed. */
+async function getClaimableBalance(balanceId) {
+  try {
+    return await server.claimableBalances().claimableBalance(balanceId).call();
+  } catch (err) {
+    if (err?.response?.status === 404) return null;
+    throw err;
+  }
+}
+
+/**
+ * Claim a due subscription balance with the platform key and forward it to the campaign
+ * wallet in the same transaction, so the funds never rest on the platform account.
+ */
+async function claimSubscriptionBalanceToCampaign({
+  balanceId,
+  asset,
+  amount,
+  destinationPublicKey,
+  memo,
+}) {
+  const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
+  const stellarAsset = toStellarAsset(asset);
+
+  const builder = new TransactionBuilder(platformAccount, { fee: BASE_FEE, networkPassphrase })
+    .addOperation(Operation.claimClaimableBalance({ balanceId }))
+    .addOperation(
+      Operation.payment({
+        destination: destinationPublicKey,
+        asset: stellarAsset,
+        amount: String(amount),
+      })
+    );
+
+  if (memo) builder.addMemo(Memo.text(memo));
+
+  const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
+  tx.sign(PLATFORM_KEYPAIR);
+  const result = await server.submitTransaction(tx);
+  return result.hash;
+}
+
+/** True when a failed claim is explained by the balance already being gone from the ledger. */
+function isClaimableBalanceGoneError(err) {
+  const codes = err?.response?.data?.extras?.result_codes?.operations;
+  return Array.isArray(codes) && codes.includes('op_does_not_exist');
 }
 
 async function friendbotFund(publicKey) {
@@ -838,8 +1108,20 @@ module.exports = {
   revokeAndCloseCampaignWallet,
   closeCampaignWalletBySecret,
 
+  createSubscriptionClaimableBalances,
+  claimSubscriptionBalanceToCampaign,
+  getClaimableBalance,
+  isClaimableBalanceGoneError,
+  parseCreatedClaimableBalanceIds,
+
   accountExistsOnLedger,
   getCampaignBalance,
   friendbotFund,
   PLATFORM_PUBLIC_KEY: PLATFORM_KEYPAIR.publicKey(),
+
+  freezeCampaignEscrow,
+  releaseEscrowFreeze,
+  submitDisputeRefund,
+  buildBatchRefundTransaction,
+  ARBITRATOR_PUBLIC_KEY: ARBITRATOR_KEYPAIR.publicKey(),
 };

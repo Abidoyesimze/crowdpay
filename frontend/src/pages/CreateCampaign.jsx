@@ -71,6 +71,16 @@ export default function CreateCampaign() {
     max_per_user: location.state?.prefill?.max_per_user || '',
     show_backer_amounts: location.state?.prefill?.show_backer_amounts ?? true,
     template_id: '',
+    // Soroban treasury (#687). 'standard' keeps the threshold-2 multisig wallet;
+    // 'contract' deploys a treasury contract that enforces the policy below.
+    wallet_mode: 'standard',
+    treasury_policy: {
+      minHoldDays: 0,
+      maxSingleWithdrawalPct: 100,
+      withdrawalCooldownHours: 0,
+      requireAuditorForAbove: '0',
+      autoRefundOnMiss: false,
+    },
     milestones: [],
     reward_tiers: [],
 
@@ -243,6 +253,10 @@ export default function CreateCampaign() {
 
   function setField(field) {
     return (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
+  }
+
+  function updateTreasuryPolicy(field, value) {
+    setForm((f) => ({ ...f, treasury_policy: { ...f.treasury_policy, [field]: value } }));
   }
 
   function setDescription(value) {
@@ -543,6 +557,20 @@ export default function CreateCampaign() {
           : undefined,
       });
 
+      // The policy needs a campaign to attach to, so it is saved once the campaign
+      // exists. A failure here leaves the campaign on the standard wallet rather
+      // than presenting it as contract-backed when it is not.
+      if (form.wallet_mode === 'contract') {
+        try {
+          await api.setTreasuryPolicy(campaign.id, form.treasury_policy);
+        } catch (policyError) {
+          setError(
+            policyError.message ||
+              'Campaign created, but the treasury policy could not be saved. Set it in campaign settings.'
+          );
+        }
+      }
+
       clearDraft();
       if (draftId) {
         api.deleteCampaignDraft(draftId).catch(() => {});
@@ -601,12 +629,21 @@ export default function CreateCampaign() {
     user?.kyc_required_for_campaigns ??
     String(import.meta.env.VITE_KYC_REQUIRED_FOR_CAMPAIGNS ?? 'true').toLowerCase() !== 'false';
 
-  if (kycRequired && user?.kyc_status !== 'verified') {
+  const verificationStatus = user?.verification_status || user?.kyc_status || 'unverified';
+  const verificationTier = user?.verification_tier || 'none';
+  const isVerified = verificationStatus === 'verified' || verificationStatus === 'approved';
+
+  const TIER_LIMITS = { none: 0, basic: 5000, standard: 50000, enhanced: Infinity };
+  const tierLimit = TIER_LIMITS[verificationTier] ?? 0;
+  const goalAmount = Number(form.target_amount) || 0;
+  const exceedsTierLimit = kycRequired && isVerified && goalAmount > tierLimit && tierLimit < Infinity;
+
+  if (kycRequired && !isVerified) {
     return (
       <main className="container page-narrow" style={{ paddingTop: '3rem', paddingBottom: '3rem' }}>
-        <KycPrompt onUserUpdate={updateUser} title="Verify your identity first" />
+        <KycPrompt onUserUpdate={updateUser} title="Complete Verification to Create Campaigns" />
         <p style={{ marginTop: '1rem', fontSize: '0.9rem', color: 'var(--color-text-hint)' }}>
-          Current verification status: <strong>{user?.kyc_status || 'unverified'}</strong>.
+          Current verification status: <strong>{verificationStatus}</strong>.
         </p>
       </main>
     );
@@ -791,6 +828,22 @@ export default function CreateCampaign() {
                 required
                 aria-required="true"
               />
+              {kycRequired && isVerified && verificationTier !== 'enhanced' && (
+                <small style={{ color: 'var(--color-text-hint)', fontSize: '0.8rem' }}>
+                  Your {verificationTier} tier allows campaign goals up to ${tierLimit.toLocaleString()}.
+                  {verificationTier === 'basic' && ' Upgrade to Standard for up to $50,000.'}
+                  {verificationTier === 'standard' && ' Upgrade to Enhanced for unlimited goals.'}
+                </small>
+              )}
+              {exceedsTierLimit && (
+                <div className="alert alert--warning" style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
+                  <strong>Goal exceeds your {verificationTier} tier limit of ${tierLimit.toLocaleString()}.</strong>
+                  <p style={{ margin: '0.35rem 0 0', fontSize: '0.82rem' }}>
+                    {verificationTier === 'basic' && 'Upgrade to Standard verification (ID + address) to run campaigns up to $50,000.'}
+                    {verificationTier === 'standard' && 'Upgrade to Enhanced verification (ID + address + liveness) for unlimited campaign goals.'}
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="form-stack" style={{ marginTop: '1rem' }}>
@@ -873,6 +926,113 @@ export default function CreateCampaign() {
                   </label>
                 ))}
               </div>
+            </fieldset>
+
+            <fieldset className="form-stack" style={{ marginTop: '1rem' }}>
+              <legend className="label-strong">Treasury mode</legend>
+              <p style={{ color: 'var(--color-text-muted)', marginBottom: '0.65rem' }}>
+                Standard uses the two-of-two multisig wallet. Contract holds the funds in a
+                Soroban treasury that enforces your spending rules on-chain — the rules cannot be
+                changed once the campaign is created.
+              </p>
+              <div role="radiogroup" aria-label="Treasury mode">
+                <label>
+                  <input
+                    type="radio"
+                    name="wallet_mode"
+                    value="standard"
+                    checked={form.wallet_mode === 'standard'}
+                    onChange={() => setForm((f) => ({ ...f, wallet_mode: 'standard' }))}
+                  />
+                  Standard multisig
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="wallet_mode"
+                    value="contract"
+                    checked={form.wallet_mode === 'contract'}
+                    onChange={() => setForm((f) => ({ ...f, wallet_mode: 'contract' }))}
+                  />
+                  Soroban contract treasury
+                </label>
+              </div>
+
+              {form.wallet_mode === 'contract' && (
+                <div className="form-stack" aria-label="Treasury policy">
+                  <label htmlFor="cc-min-hold">
+                    Minimum hold period: <strong>{form.treasury_policy.minHoldDays} days</strong>{' '}
+                    after the deadline
+                  </label>
+                  <input
+                    id="cc-min-hold"
+                    type="range"
+                    min="0"
+                    max="90"
+                    value={form.treasury_policy.minHoldDays}
+                    onChange={(e) => updateTreasuryPolicy('minHoldDays', Number(e.target.value))}
+                  />
+
+                  <label htmlFor="cc-max-pct">
+                    Maximum single withdrawal:{' '}
+                    <strong>{form.treasury_policy.maxSingleWithdrawalPct}%</strong> of the balance
+                  </label>
+                  <input
+                    id="cc-max-pct"
+                    type="range"
+                    min="10"
+                    max="100"
+                    value={form.treasury_policy.maxSingleWithdrawalPct}
+                    onChange={(e) =>
+                      updateTreasuryPolicy('maxSingleWithdrawalPct', Number(e.target.value))
+                    }
+                  />
+
+                  <label htmlFor="cc-cooldown">
+                    Cooldown between withdrawals:{' '}
+                    <strong>{form.treasury_policy.withdrawalCooldownHours} hours</strong>
+                  </label>
+                  <input
+                    id="cc-cooldown"
+                    type="range"
+                    min="0"
+                    max="168"
+                    value={form.treasury_policy.withdrawalCooldownHours}
+                    onChange={(e) =>
+                      updateTreasuryPolicy('withdrawalCooldownHours', Number(e.target.value))
+                    }
+                  />
+
+                  <label htmlFor="cc-auditor-above">
+                    Auditor required above ({form.asset_type})
+                  </label>
+                  <input
+                    id="cc-auditor-above"
+                    type="text"
+                    inputMode="decimal"
+                    value={form.treasury_policy.requireAuditorForAbove}
+                    onChange={(e) =>
+                      updateTreasuryPolicy('requireAuditorForAbove', e.target.value)
+                    }
+                  />
+
+                  <label htmlFor="cc-auto-refund">
+                    <input
+                      id="cc-auto-refund"
+                      type="checkbox"
+                      checked={form.treasury_policy.autoRefundOnMiss}
+                      onChange={(e) =>
+                        updateTreasuryPolicy('autoRefundOnMiss', e.target.checked)
+                      }
+                    />
+                    Refund contributors automatically if the goal is missed
+                  </label>
+                  <small style={{ color: 'var(--color-text-muted)' }}>
+                    Anyone can trigger the refund once the deadline passes, so contributors are
+                    not dependent on you or CrowdPay acting.
+                  </small>
+                </div>
+              )}
             </fieldset>
 
             <div className="form-stack" style={{ marginTop: '1rem' }}>

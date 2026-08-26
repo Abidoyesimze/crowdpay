@@ -127,7 +127,8 @@ export default function Profile() {
     user?.kyc_required_for_campaigns ??
     String(import.meta.env.VITE_KYC_REQUIRED_FOR_CAMPAIGNS ?? 'true').toLowerCase() !== 'false';
 
-  const kycStatus = user?.kyc_status || 'unverified';
+  const kycStatus = user?.verification_status || user?.kyc_status || 'unverified';
+  const verificationTier = user?.verification_tier || 'none';
 
   return (
     <main className="container page-narrow" style={{ paddingTop: '3rem', paddingBottom: '4rem' }}>
@@ -240,17 +241,31 @@ export default function Profile() {
           }}
         >
           <h2 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0 }}>Identity verification</h2>
-          <VerificationBadge status={kycStatus} />
+          <VerificationBadge status={kycStatus} tier={verificationTier} showTier />
         </div>
 
-        {kycStatus === 'verified' && (
-          <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.9rem', margin: 0 }}>
-            Your identity is verified
-            {user.kyc_completed_at
-              ? ` as of ${new Date(user.kyc_completed_at).toLocaleDateString()}`
-              : ''}
-            .
-          </p>
+        {(kycStatus === 'verified' || kycStatus === 'approved') && (
+          <div>
+            <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.9rem', margin: 0 }}>
+              Your identity is verified as <strong>{verificationTier}</strong> tier
+              {user.kyc_completed_at
+                ? ` as of ${new Date(user.kyc_completed_at).toLocaleDateString()}`
+                : ''}
+              .
+            </p>
+            {verificationTier !== 'enhanced' && kycRequired && (
+              <div style={{ marginTop: '0.75rem' }}>
+                <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.85rem', marginBottom: '0.5rem' }}>
+                  {verificationTier === 'basic' && 'Upgrade to Standard (ID + address) to run campaigns up to $50,000.'}
+                  {verificationTier === 'standard' && 'Upgrade to Enhanced (ID + address + liveness) for unlimited campaign goals.'}
+                </p>
+                <KycPrompt
+                  onUserUpdate={updateUser}
+                  title={`Upgrade to ${verificationTier === 'basic' ? 'Standard' : 'Enhanced'} verification`}
+                />
+              </div>
+            )}
+          </div>
         )}
 
         {kycStatus === 'pending' && (
@@ -259,7 +274,7 @@ export default function Profile() {
           </p>
         )}
 
-        {kycStatus === 'rejected' && kycRequired && (
+        {(kycStatus === 'rejected' || kycStatus === 'declined') && kycRequired && (
           <div>
             <p className="alert alert--error" style={{ marginBottom: '0.75rem' }}>
               Verification was not approved. You can submit again with updated documents.
@@ -268,7 +283,7 @@ export default function Profile() {
           </div>
         )}
 
-        {kycStatus === 'unverified' && kycRequired && (
+        {(kycStatus === 'unverified' || kycStatus === 'not_started') && kycRequired && (
           <KycPrompt onUserUpdate={updateUser} title="Verify your identity" />
         )}
       </div>

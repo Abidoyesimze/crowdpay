@@ -14,6 +14,7 @@ const {
 const { reconcileSingleCampaign, getRecentReconciliationRuns } = require('../services/reconciliation');
 const { server } = require('../config/stellar');
 const { deployCampaignContracts } = require('../services/sorobanService');
+const { upgradeCampaignContract, UpgradeError } = require('../services/contractUpgrade');
 const {
   processDelivery,
   processCampaignWebhookDelivery,
@@ -226,10 +227,14 @@ router.get('/campaigns', async (req, res) => {
     const total = countResult.rows[0].total;
 
     const { rows } = await db.query(
-      `SELECT c.id, c.title, c.status, c.raised_amount, c.target_amount, 
+      `SELECT c.id, c.title, c.status, c.raised_amount, c.target_amount,
               c.asset_type, c.created_at, c.deleted_at, c.is_flagged_duplicate,
               c.contract_deployment_status, c.contract_deployment_error,
-              c.escrow_contract_id,
+              c.escrow_contract_id, c.escrow_contract_version, c.migration_in_progress,
+              EXISTS (
+                SELECT 1 FROM milestones m
+                WHERE m.campaign_id = c.id AND m.status = 'pending_review'
+              ) AS has_active_review,
               u.id as creator_id, u.name as creator_name, u.email as creator_email,
               COALESCE(con.contribution_count, 0)::int as contribution_count
        FROM campaigns c 
@@ -972,7 +977,8 @@ router.get('/disputes', async (req, res) => {
               (SELECT COALESCE(SUM(co.amount::numeric), 0)
                FROM contributions co
                WHERE co.campaign_id = d.campaign_id
-                 AND co.sender_public_key = reporter.wallet_public_key) AS amount_in_dispute
+                 AND co.sender_public_key = reporter.wallet_public_key) AS amount_in_dispute,
+              (SELECT COUNT(*)::int FROM dispute_evidence de WHERE de.dispute_id = d.id) AS evidence_count
        FROM disputes d
        JOIN campaigns c ON c.id = d.campaign_id
        JOIN users reporter ON reporter.id = d.raised_by
@@ -1022,7 +1028,16 @@ router.get('/disputes/:id', async (req, res) => {
       [req.params.id]
     );
 
-    res.json({ dispute: rows[0], thread: events });
+    const { rows: evidence } = await db.query(
+      `SELECT ev.*, u.name AS submitted_by_name
+       FROM dispute_evidence ev
+       LEFT JOIN users u ON u.id = ev.submitted_by
+       WHERE ev.dispute_id = $1
+       ORDER BY ev.submitted_at ASC`,
+      [req.params.id]
+    );
+
+    res.json({ dispute: rows[0], thread: events, evidence });
   } catch (err) {
     logger.error('Error fetching dispute detail', { error: err.message, disputeId: req.params.id });
     res.status(500).json({ error: 'Failed to fetch dispute' });
@@ -1440,6 +1455,48 @@ router.post('/campaigns/:id/redeploy-contract', async (req, res) => {
     res.status(500).json({ error: 'Failed to redeploy contract' });
   }
 });
+
+/**
+ * POST /api/admin/campaigns/:id/upgrade-contract
+ * Deploys a V2 milestones contract, migrates on-chain milestone state
+ * across from the currently deployed V1 contract, and points the campaign
+ * at the new contract. See services/contractUpgrade.js.
+ */
+router.post('/campaigns/:id/upgrade-contract', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await upgradeCampaignContract(id, req.user.userId);
+
+    await logAdminAction(req.user.userId, 'upgrade_contract', 'campaign', id, {
+      v1_contract_id: result.v1ContractId,
+      v2_contract_id: result.v2ContractId,
+      migration_tx_hash: result.migrationTxHash,
+      milestone_count: result.milestoneCount,
+    });
+
+    res.json({
+      message: 'Contract upgraded to V2 successfully',
+      v1_contract_id: result.v1ContractId,
+      v2_contract_id: result.v2ContractId,
+      migration_tx_hash: result.migrationTxHash,
+      milestone_count: result.milestoneCount,
+    });
+  } catch (err) {
+    if (err instanceof UpgradeError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
+
+    logger.error('Error in upgrade-contract', { error: err.message, campaignId: id });
+    Sentry.withScope((scope) => {
+      scope.setLevel('error');
+      scope.setTag('admin_upgrade', 'contract_migration');
+      scope.setContext('upgrade', { campaignId: id, adminId: req.user.userId });
+      Sentry.captureMessage(`Admin contract upgrade failed for campaign ${id}: ${err.message}`);
+    });
+    res.status(502).json({ error: 'Contract upgrade failed', detail: err.message });
+  }
+}));
 
 module.exports = router;
 module.exports.logAdminAction = logAdminAction;

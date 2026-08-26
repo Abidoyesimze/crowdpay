@@ -140,6 +140,9 @@ async function request(method, path, body, options = {}) {
       err.code = errorBody.code;
       err.fields = errorBody.fields;
     }
+    // Some routes return { error: 'message', code: '...' } (flat) instead of
+    // { error: { message, code } } (nested) — fall back to the top-level code.
+    err.code = err.code || data.code;
 
     throw err;
   }
@@ -200,6 +203,9 @@ async function uploadFormData(path, formData) {
       err.code = errorBody.code;
       err.fields = errorBody.fields;
     }
+    // Some routes return { error: 'message', code: '...' } (flat) instead of
+    // { error: { message, code } } (nested) — fall back to the top-level code.
+    err.code = err.code || data.code;
 
     throw err;
   }
@@ -372,6 +378,8 @@ export const api = {
     request('GET', '/campaigns/recommended', null, { query: options }),
   getCampaignCategories: () => request('GET', '/campaigns/categories'),
   getCampaignFacets: () => request('GET', '/campaigns/facets'),
+  getTrendingCampaigns: (options = {}) =>
+  request('GET', '/campaigns/trending', null, { query: options }),
   getCampaigns: (options = {}) => request('GET', '/campaigns', null, { query: options }),
   getCampaign: (id, options = {}) => request('GET', `/campaigns/${id}`, null, { query: options }),
   getCampaignAnalytics: (id) => request('GET', `/campaigns/${id}/analytics`),
@@ -476,8 +484,9 @@ export const api = {
   voteMilestone: (id, body) => request('POST', `/milestones/${id}/votes`, body || {}),
   approveMilestone: (id, body) => request('POST', `/milestones/${id}/release`, body || {}),
   rejectMilestone: (id, body) => request('POST', `/milestones/${id}/reject`, body || {}),
-  contribute: (body) => request('POST', '/contributions', body),
-  prepareContribution: (body) => request('POST', '/contributions/prepare', body),
+  contribute: (body, options = {}) => request('POST', '/contributions', body, options),
+  prepareContribution: (body, options = {}) =>
+    request('POST', '/contributions/prepare', body, options),
   submitSignedContribution: (body) => request('POST', '/contributions/submit-signed', body),
   buildContributionXdr: (body) => request('POST', '/contributions/build-xdr', body),
   guestContribute: (body) => request('POST', '/contributions/guest', body),
@@ -495,6 +504,12 @@ export const api = {
   approveRefundPlatform: (id) => request('POST', `/campaigns/${id}/refund/approve/platform`, {}),
   requestContributionRefund: (contributionId) =>
     request('POST', `/contributions/${contributionId}/refund`, {}),
+
+  createSubscription: (campaignId, body) =>
+    request('POST', `/campaigns/${campaignId}/subscriptions`, body),
+  cancelSubscription: (campaignId, subscriptionId) =>
+    request('DELETE', `/campaigns/${campaignId}/subscriptions/${subscriptionId}`),
+  getMySubscriptions: () => request('GET', '/subscriptions/mine'),
 
   getContributorDashboard: () => request('GET', '/contributions/dashboard'),
   exportContributionsCsv: () =>
@@ -538,8 +553,11 @@ export const api = {
 
   raiseDispute: (campaignId, body) => request('POST', `/campaigns/${campaignId}/disputes`, body),
   getCampaignDisputes: (campaignId) => request('GET', `/campaigns/${campaignId}/disputes`),
+  getCampaignDispute: (campaignId) => request('GET', `/campaigns/${campaignId}/dispute`),
   updateDispute: (id, body) => request('PATCH', `/disputes/${id}`, body),
   getDisputeEvents: (id) => request('GET', `/disputes/${id}/events`),
+  submitDisputeEvidence: (id, body) => request('POST', `/disputes/${id}/evidence`, body),
+  decideDispute: (id, body) => request('POST', `/admin/disputes/${id}/decide`, body),
 
   getAdminStats: () => request('GET', '/admin/stats'),
   getAdminHealth: () => request('GET', '/admin/health'),
@@ -580,6 +598,7 @@ export const api = {
   adminFeatureCampaign: (id, body) => request('PATCH', `/admin/campaigns/${id}/feature`, body),
   adminUnfeatureCampaign: (id) => request('PATCH', `/admin/campaigns/${id}/unfeature`, {}),
   adminUnflagCampaign: (id) => request('PATCH', `/admin/campaigns/${id}/unflag`),
+  adminUpgradeCampaignContract: (id) => request('POST', `/admin/campaigns/${id}/upgrade-contract`, {}),
   getAdminFraudCampaigns: () => request('GET', '/admin/fraud/flagged'),
   getAdminFraudStats: () => request('GET', '/admin/fraud/stats'),
   adminApproveFraudCampaign: (id) => request('PATCH', `/admin/campaigns/${id}/fraud-approve`),
@@ -611,11 +630,48 @@ export const api = {
   getReferralCode: (campaignId) => request('GET', `/campaigns/${campaignId}/referral`),
   getReferralLeaderboard: (campaignId) => request('GET', `/campaigns/${campaignId}/referrals`),
 
+  // ── Referral & affiliate program ─────────────────────────────────────
+  enableReferralProgram: (campaignId, body) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/referrals`, body),
+  getReferralProgram: (campaignId) =>
+    request('GET', `/campaigns/${encodeURIComponent(campaignId)}/referrals/program`),
+  createReferralLink: (campaignId) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/referrals/links`, {}),
+  getCampaignReferralCommissions: (campaignId) =>
+    request('GET', `/campaigns/${encodeURIComponent(campaignId)}/referrals/commissions`),
+  getMyReferralLinks: () => request('GET', '/referrals/links'),
+
+  // Soroban treasury (#687)
+  setTreasuryPolicy: (campaignId, body) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/treasury/policy`, body),
+  getTreasuryStatus: (campaignId) =>
+    request('GET', `/campaigns/${encodeURIComponent(campaignId)}/treasury/status`),
+  requestTreasuryWithdrawal: (campaignId, body) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/treasury/withdrawal`, body),
+  approveTreasuryWithdrawal: (campaignId, pendingId) =>
+    request(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/treasury/withdrawal/${encodeURIComponent(pendingId)}/approve`,
+      {}
+    ),
+  triggerTreasuryRefund: (campaignId) =>
+    request('POST', `/campaigns/${encodeURIComponent(campaignId)}/treasury/refund`, {}),
+
   sendBulkThankYou: (campaignId, message) =>
     request('POST', `/campaigns/${campaignId}/thank-you`, { message }),
   sendContributionThankYou: (contributionId, message) =>
     request('POST', `/contributions/${contributionId}/thank-you`, { message }),
   trackShare: (campaignId, platform) => request('POST', `/campaigns/${campaignId}/share`, { platform }),
+
+  // ── Creator Analytics ────────────────────────────────────────────────
+  getCreatorAnalyticsOverview: () => request('GET', '/creator/analytics/overview'),
+  getCreatorCampaignAnalytics: (id) => request('GET', `/creator/analytics/campaigns/${encodeURIComponent(id)}`),
+  getCreatorBenchmarks: () => request('GET', '/creator/analytics/benchmarks'),
+  exportCreatorCampaignData: (campaignId) =>
+    downloadFile(
+      `/creator/analytics/export?campaignId=${encodeURIComponent(campaignId)}`,
+      `campaign-${campaignId}-analytics-export.csv`
+    ),
 
   // ── Contribution Pools (#600) ──────────────────────────────────────
   listCampaignPools: (campaignId) =>

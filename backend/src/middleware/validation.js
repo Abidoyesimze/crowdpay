@@ -219,6 +219,8 @@ const thankYouValidation = [
     .withMessage('Message must be between 1 and 500 characters'),
 ];
 
+const CAMPAIGN_UPDATE_BODY_MAX_LENGTH = 5000;
+
 const createCampaignUpdateValidation = [
   body('title')
     .customSanitizer(stripHtml)
@@ -227,7 +229,11 @@ const createCampaignUpdateValidation = [
   body('body')
     .customSanitizer(stripHtml)
     .notEmpty()
-    .withMessage('Body is required'),
+    .withMessage('Body is required')
+    .isLength({ max: CAMPAIGN_UPDATE_BODY_MAX_LENGTH })
+    .withMessage(
+      `Update body must be ${CAMPAIGN_UPDATE_BODY_MAX_LENGTH} characters or fewer`
+    ),
 ];
 
 const contributionQuoteValidation = [
@@ -440,6 +446,7 @@ module.exports = {
   contributionQuoteValidation,
   withdrawalValidation,
   createAnnouncementValidation,
+  CAMPAIGN_UPDATE_BODY_MAX_LENGTH,
   announcementIdValidation,
   getCampaignsValidation,
   validateRequest,

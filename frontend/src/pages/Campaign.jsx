@@ -6,8 +6,13 @@ import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import ContributeModal from '../components/ContributeModal';
+import RecurringPledgeForm from '../components/RecurringPledgeForm';
+import ReferralProgramSettings from '../components/ReferralProgramSettings';
+import CampaignReferralsTab from '../components/CampaignReferralsTab';
+import TreasuryPanel, { TreasuryTransparencyPanel } from '../components/TreasuryPanel';
 import RelativeTime from '../components/RelativeTime';
 import DisputeModal from '../components/DisputeModal';
+import EvidenceForm from '../components/EvidenceForm';
 import TransactionHistory from '../components/TransactionHistory';
 import WithdrawalHistoryTimeline from '../components/WithdrawalHistoryTimeline';
 import MilestoneTracker from '../components/MilestoneTracker';
@@ -101,6 +106,9 @@ function FavoriteToggle({ campaignId }) {
     </button>
   );
 }
+
+const UPDATE_BODY_MAX = 5000;
+const UPDATE_BODY_WARN_THRESHOLD = Math.round(UPDATE_BODY_MAX * 0.9);
 
 function CampaignPublishControls({ campaign, isOwner, navigate }) {
   const [cloning, setCloning] = useState(false);
@@ -301,6 +309,9 @@ export default function Campaign() {
   const [showModal, setShowModal] = useState(false);
   const [showDisputeModal, setShowDisputeModal] = useState(false);
   const [disputeSubmitted, setDisputeSubmitted] = useState(false);
+  const [activeDispute, setActiveDispute] = useState(null);
+  const [showEvidenceForm, setShowEvidenceForm] = useState(false);
+  const [evidenceSubmitted, setEvidenceSubmitted] = useState(false);
   const [contributed, setContributed] = useState(false);
 
   const [freighterGuestMode, setFreighterGuestMode] = useState(false);
@@ -544,6 +555,17 @@ export default function Campaign() {
         .catch(() => setHasPendingWithdrawal(false));
     }
   }, [id, token, contributed, showAll]);
+
+  useEffect(() => {
+    if (!id || !user || campaign?.status !== 'disputed') {
+      setActiveDispute(null);
+      return;
+    }
+    api
+      .getCampaignDispute(id)
+      .then((data) => setActiveDispute(data.dispute))
+      .catch(() => setActiveDispute(null));
+  }, [id, user, campaign?.status]);
 
   useEffect(() => {
     if (!campaign || !id || !user) return;
@@ -1039,6 +1061,14 @@ export default function Campaign() {
   async function submitUpdate(e) {
     e.preventDefault();
     setUpdatesError('');
+
+    if (updateForm.body.length > UPDATE_BODY_MAX) {
+      setUpdatesError(
+        `Update body must be ${UPDATE_BODY_MAX} characters or fewer (currently ${updateForm.body.length})`
+      );
+      return;
+    }
+
     setUpdateBusy(true);
 
     try {
@@ -1205,7 +1235,7 @@ export default function Campaign() {
         <div style={styles.badgeRow}>
           <span style={styles.asset}>{campaign.asset_type}</span>
           <CampaignStatusBadge status={campaign.status} />
-          <VerificationBadge status={campaign.creator_kyc_status} />
+          <VerificationBadge status={campaign.creator_kyc_status || campaign.creator_verification_status} tier={campaign.creator_verification_tier} showTier />
           {user && <FavoriteToggle campaignId={campaign.id} />}
           {user && <FollowCampaignButton campaignId={campaign.id} />}
           {campaign.contract_address && (
@@ -1234,6 +1264,32 @@ export default function Campaign() {
           defaultDescription={campaign.description || ''}
           onTranslationChange={setTranslation}
         />
+        {campaign.status === 'disputed' && (
+          <div
+            className="alert alert--error"
+            role="status"
+            style={{ marginBottom: '1rem', display: 'grid', gap: '0.5rem' }}
+          >
+            <strong>This campaign has an open dispute.</strong>
+            <span style={{ fontSize: '0.85rem' }}>
+              New contributions are paused and the escrow is frozen while the platform reviews
+              the case.
+            </span>
+            {activeDispute &&
+              (evidenceSubmitted ? (
+                <span style={{ fontSize: '0.85rem' }}>Your evidence has been submitted.</span>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ fontSize: '0.85rem', width: 'fit-content' }}
+                  onClick={() => setShowEvidenceForm(true)}
+                >
+                  Submit evidence
+                </button>
+              ))}
+          </div>
+        )}
         <h1 style={styles.title}>{translation?.title || campaign.title}</h1>
         {campaign.creator_name && <p style={styles.creator}>by {campaign.creator_name}</p>}
         <div
@@ -1243,6 +1299,15 @@ export default function Campaign() {
           }}
         />
       </div>
+
+      {campaign.wallet_mode === 'contract' && (
+        <div style={{ ...styles.card, marginBottom: '1rem' }}>
+          <TreasuryTransparencyPanel
+            campaignId={campaign.id}
+            assetType={campaign.asset_type}
+          />
+        </div>
+      )}
 
       <CampaignComments campaignId={campaign.id} campaign={campaign} />
 
@@ -1389,6 +1454,14 @@ export default function Campaign() {
               Contribute with Freighter
             </button>
           </div>
+        )}
+
+        {user && campaign.status === 'active' && (
+          <RecurringPledgeForm
+            campaignId={id}
+            asset={campaign.asset_type}
+            onSubscribed={() => setContributed((prev) => !prev)}
+          />
         )}
 
         {user && (
@@ -1576,11 +1649,34 @@ export default function Campaign() {
           >
             {linkCopied ? 'Copied!' : 'Copy link'}
           </button>
+
+          <Link
+            to={`/campaigns/${campaign.id}/share`}
+            className="btn-secondary"
+            style={{
+              fontSize: '0.85rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.5rem',
+              width: '100%',
+              textDecoration: 'none',
+            }}
+          >
+            Share page &amp; referral link
+          </Link>
         </div>
       </div>
 
       {user && campaign && isOwner && (
         <CampaignPublishControls campaign={campaign} isOwner={isOwner} navigate={navigate} />
+      )}
+
+      {user && campaign && isOwner && (
+        <div data-no-print style={{ marginBottom: '1.75rem' }}>
+          <h2 style={styles.sectionTitle}>Referrals</h2>
+          <ReferralProgramSettings campaignId={campaign.id} />
+        </div>
       )}
 
       {/* Edit campaign — owner or editor */}
@@ -2338,6 +2434,22 @@ export default function Campaign() {
             rows={4}
             required
           />
+          <div
+            aria-live="polite"
+            style={{
+              fontSize: '0.8rem',
+              marginTop: '0.25rem',
+              textAlign: 'right',
+              color:
+                updateForm.body.length > UPDATE_BODY_MAX
+                  ? 'var(--color-status-error)'
+                  : updateForm.body.length >= UPDATE_BODY_WARN_THRESHOLD
+                    ? 'var(--color-status-warning, var(--color-status-error))'
+                    : 'var(--color-text-hint)',
+            }}
+          >
+            {UPDATE_BODY_MAX - updateForm.body.length} characters left
+          </div>
           {updatesError && (
             <div
               style={{
@@ -2458,6 +2570,44 @@ export default function Campaign() {
             >
               Backers
             </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'referrals'}
+              onClick={() => setAnalyticsTab('referrals')}
+              style={{
+                background: analyticsTab === 'referrals' ? 'var(--color-accent)' : 'transparent',
+                color: analyticsTab === 'referrals' ? 'var(--color-bg)' : 'var(--color-text-primary)',
+                border: '1px solid var(--color-border-light)',
+                borderRadius: '6px',
+                padding: '0.4rem 0.9rem',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+              }}
+            >
+              Referrals
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={analyticsTab === 'treasury'}
+              onClick={() => setAnalyticsTab('treasury')}
+              style={{
+                background: analyticsTab === 'treasury' ? 'var(--color-accent)' : 'transparent',
+                color: analyticsTab === 'treasury' ? 'var(--color-bg)' : 'var(--color-text-primary)',
+                border: '1px solid var(--color-border-light)',
+                borderRadius: '6px',
+                padding: '0.4rem 0.9rem',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+              }}
+            >
+              Treasury
+            </button>
           </div>
 
           {analyticsTab === 'overview' && (
@@ -2545,6 +2695,21 @@ export default function Campaign() {
 
           {analyticsTab === 'backers' && (
             <p style={{ color: 'var(--color-text-muted)' }}>Backer insights coming soon.</p>
+          )}
+
+          {analyticsTab === 'referrals' && (
+            <CampaignReferralsTab campaignId={campaign.id} assetType={campaign.asset_type} />
+          )}
+
+          {analyticsTab === 'treasury' && (
+            <TreasuryPanel
+              campaignId={campaign.id}
+              assetType={campaign.asset_type}
+              isAuditor={
+                Boolean(campaign.auditor_public_key) &&
+                campaign.auditor_public_key === user?.wallet_public_key
+              }
+            />
           )}
         </div>
       )}
@@ -2655,6 +2820,7 @@ export default function Campaign() {
         <ContributeModal
           campaign={campaign}
           tiers={tiers}
+          referralCode={refParam}
           guestFreighterMode={freighterGuestMode}
           onClose={() => {
             setShowModal(false);
@@ -2670,6 +2836,44 @@ export default function Campaign() {
           onClose={() => setShowDisputeModal(false)}
           onSubmitted={() => setDisputeSubmitted(true)}
         />
+      )}
+
+      {showEvidenceForm && activeDispute && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="evidence-form-title"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              background: 'var(--color-bg)',
+              borderRadius: '12px',
+              padding: '1.75rem',
+              width: '100%',
+              maxWidth: '480px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+            }}
+          >
+            <h2 id="evidence-form-title" style={{ fontSize: '1.2rem', fontWeight: 700, marginTop: 0 }}>
+              Submit evidence
+            </h2>
+            <EvidenceForm
+              disputeId={activeDispute.id}
+              onClose={() => setShowEvidenceForm(false)}
+              onSubmitted={() => setEvidenceSubmitted(true)}
+            />
+          </div>
+        </div>
       )}
 
       {/* Edit Campaign Modal */}

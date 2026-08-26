@@ -1,0 +1,140 @@
+const router = require('express').Router();
+const { requireAuth } = require('../middleware/auth');
+const asyncHandler = require('../utils/asyncHandler');
+const {
+  createSubscription,
+  cancelSubscription,
+  listSubscriptionsForUser,
+} = require('../services/recurring');
+
+/**
+ * @openapi
+ * tags:
+ *   - name: Subscriptions
+ *     description: Recurring pledges backed by Stellar claimable balance schedules
+ */
+
+function respondWithServiceError(res, err) {
+  if (!err.statusCode) throw err;
+  return res.status(err.statusCode).json({
+    error: err.message,
+    ...(err.code ? { code: err.code } : {}),
+  });
+}
+
+/**
+ * @openapi
+ * /api/campaigns/{id}/subscriptions:
+ *   post:
+ *     tags: [Subscriptions]
+ *     summary: Enable a recurring pledge on a campaign
+ *     description: >
+ *       Locks the full commitment into one Stellar claimable balance per period. Each balance
+ *       is claimable unconditionally by the platform and, 30 days after its scheduled date,
+ *       by the contributor.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [amountPerPeriod, asset, periodMonths, totalPeriods]
+ *             properties:
+ *               amountPerPeriod: { type: number }
+ *               asset: { type: string, example: XLM }
+ *               periodMonths: { type: integer, enum: [1, 3, 6] }
+ *               totalPeriods: { type: integer, minimum: 2, maximum: 24 }
+ *     responses:
+ *       201: { description: Subscription created }
+ *       400: { description: Invalid input or INSUFFICIENT_BALANCE_FOR_SUBSCRIPTION }
+ *       404: { description: Campaign not found }
+ */
+router.post(
+  '/campaigns/:id/subscriptions',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { amountPerPeriod, asset, periodMonths, totalPeriods } = req.body || {};
+    try {
+      const subscription = await createSubscription({
+        campaignId: req.params.id,
+        userId: req.user.userId,
+        amountPerPeriod,
+        asset,
+        periodMonths,
+        totalPeriods,
+      });
+      res.status(201).json(subscription);
+    } catch (err) {
+      return respondWithServiceError(res, err);
+    }
+  })
+);
+
+/**
+ * @openapi
+ * /api/campaigns/{id}/subscriptions/{subscriptionId}:
+ *   delete:
+ *     tags: [Subscriptions]
+ *     summary: Cancel a recurring pledge
+ *     description: >
+ *       Periods scheduled more than 7 days out stop being claimed and become reclaimable by the
+ *       contributor. Periods due sooner, or already claimed, are returned as non-cancellable.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *       - in: path
+ *         name: subscriptionId
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200: { description: Cancellation summary }
+ *       404: { description: Subscription not found }
+ */
+router.delete(
+  '/campaigns/:id/subscriptions/:subscriptionId',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    try {
+      const result = await cancelSubscription({
+        campaignId: req.params.id,
+        subscriptionId: req.params.subscriptionId,
+        userId: req.user.userId,
+      });
+      res.json(result);
+    } catch (err) {
+      return respondWithServiceError(res, err);
+    }
+  })
+);
+
+/**
+ * @openapi
+ * /api/subscriptions/mine:
+ *   get:
+ *     tags: [Subscriptions]
+ *     summary: List the authenticated contributor's subscriptions
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200: { description: Subscriptions with next payment date and claimed period count }
+ */
+router.get(
+  '/subscriptions/mine',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    res.json({ subscriptions: await listSubscriptionsForUser(req.user.userId) });
+  })
+);
+
+module.exports = router;

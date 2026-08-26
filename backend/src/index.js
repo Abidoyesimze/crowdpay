@@ -41,12 +41,16 @@ const { upsertRecommendationsForUser } = require("./services/campaignRecommendat
 const { flushQuietHours } = require("./services/notifications");
 const { sendAlert } = require("./services/alerting");
 const ff = require("./services/featureFlags");
+
 const {
   assertNoLegacyPlaintextUserWalletSecrets,
 } = require("./services/walletSecrets");
 const {
   startRecurringContributionsCron,
 } = require("./services/recurringContributionsService");
+const {
+  startSubscriptionClaimWorker,
+} = require("./services/recurring");
 const db = require("./config/database");
 const swaggerUi = require("swagger-ui-express");
 const swaggerJsdoc = require("swagger-jsdoc");
@@ -110,6 +114,7 @@ app.use(
 );
 app.use(requestIdMiddleware);
 app.use(requestLogger);
+
 app.use(normalizeErrorResponse);
 
 const isTest = process.env.NODE_ENV === "test";
@@ -266,6 +271,7 @@ app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api/users", require("./routes/users"));
 app.use("/api", require("./routes/sponsorMatching"));
 app.use("/api/invites", require("./routes/invites"));
+app.use("/api", require("./routes/subscriptions"));
 app.use("/api/campaigns", require("./routes/campaignUpdates"));
 app.use("/api/campaigns", require("./routes/campaignComments"));
 app.use("/api/campaigns", require("./routes/campaignFollowers"));
@@ -291,6 +297,9 @@ app.use("/api/emails", require("./routes/emails"));
 app.use("/api/campaigns", require("./routes/thankYou"));
 app.use("/api/contributions", require("./routes/thankYou"));
 app.use("/api", require("./routes/announcement"));
+app.use("/api/creator/analytics", require("./routes/creatorAnalytics"));
+app.use("/api/governance", require("./routes/governance"));
+app.use("/api/embed", require("./routes/embed"));
 
 app.get("/health", async (_, res) => {
   try {
@@ -489,6 +498,18 @@ function startNotificationDigestCron() {
   logger.info("Notification digest cron scheduled", { schedule });
 }
 
+function startFeeCacheRefreshCron() {
+  const cron = require("node-cron");
+  const { refreshFeeCache } = require("./services/feeRegistry");
+  // Refresh every 5 minutes
+  cron.schedule("*/5 * * * *", () => {
+    refreshFeeCache().catch((err) => {
+      logger.error("Fee cache refresh cron failed", { error: err.message });
+    });
+  });
+  logger.info("Fee cache refresh cron scheduled (every 5 minutes)");
+}
+
 function startRecommendationRefreshCron() {
   const cron = require("node-cron");
   const schedule = process.env.RECOMMENDATION_REFRESH_CRON || "0 2 * * *";
@@ -515,6 +536,26 @@ function startContractDeploymentRetryCron() {
   });
   logger.info("Contract deployment retry cron scheduled (every 10 minutes)");
 }
+function startTrendingCron() {
+  const cron = require("node-cron");
+  const { recomputeTrendingScores } = require("./services/trendingService");
+  cron.schedule("*/15 * * * *", () => {
+    recomputeTrendingScores().catch((err) => {
+      logger.error("Trending recompute cron failed", { error: err.message });
+    });
+  });
+  logger.info("Trending recompute cron scheduled (every 15 minutes)");
+}
+function startBenchmarkRefreshCron() {
+  const cron = require("node-cron");
+  cron.schedule("0 3 * * *", () => {
+    const { refreshPlatformBenchmarks } = require("./services/creatorAnalytics");
+    refreshPlatformBenchmarks().catch((err) => {
+      logger.error("Platform benchmarks refresh cron failed", { error: err.message });
+    });
+  });
+  logger.info("Platform benchmarks refresh cron scheduled (daily at 3 AM)");
+}
 
 async function bootstrap() {
   if (process.env.NODE_ENV === "production") {
@@ -536,6 +577,10 @@ async function bootstrap() {
     startRecommendationRefreshCron();
     startContractDeploymentRetryCron();
     startRecurringContributionsCron();
+    startSubscriptionClaimWorker();
+    startBenchmarkRefreshCron();
+    startFeeCacheRefreshCron();
+    startTrendingCron();
   });
 }
 

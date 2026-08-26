@@ -21,8 +21,8 @@ const {
 const { sendEmail } = require("../services/emailService");
 const { SLIPPAGE_BPS, STELLAR_ASSET_DECIMALS_SCALE } = require("../config/constants");
 const {
+  buildAttributionMemo,
   buildContributionIntent,
-  buildContributionMemo,
   submitCustodialContribution,
 } = require('../services/contributionService');
 const {
@@ -38,9 +38,11 @@ const {
 } = require('../services/sorobanService');
 const { recordConfirmedContribution } = require('../services/ledgerMonitor');
 const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
+const { ERROR_CODES } = require('../services/dispute');
 const { assertUserKycVerified } = require('../services/kycService');
 const asyncHandler = require('../utils/asyncHandler');
 const { getReferralCodeFromRequest } = require('../services/referralService');
+const { resolveReferralLink } = require('../services/referral');
 const { reserveTierSlot } = require('../services/rewardTierService');
 const { hashDeviceFingerprint } = require('../utils/deviceFingerprint');
 
@@ -70,6 +72,22 @@ function withReferralMetadata(flowMetadata, campaignId, req) {
   return { ...flowMetadata, referral_code: referralCode };
 }
 
+/**
+ * Resolve the `?ref=<code>` affiliate link for a campaign (#675).
+ * Throws a 404 INVALID_REFERRAL_CODE error when the code is unknown or belongs
+ * to a different campaign; returns null when no code was supplied.
+ */
+async function resolveAffiliateLink(campaignId, req) {
+  const code = typeof req.query?.ref === 'string' ? req.query.ref.trim() : '';
+  if (!code) return null;
+  return resolveReferralLink({ campaignId, code });
+}
+
+function respondInvalidReferralCode(res, err) {
+  if (err.code !== 'INVALID_REFERRAL_CODE') return null;
+  return res.status(404).json({ error: err.message, code: 'INVALID_REFERRAL_CODE' });
+}
+
 function validateFreighterPublicKey(publicKey) {
   try {
     Keypair.fromPublicKey(publicKey);
@@ -77,6 +95,11 @@ function validateFreighterPublicKey(publicKey) {
   } catch (_err) {
     return false;
   }
+}
+
+async function campaignIsDisputed(campaignId) {
+  const { rows } = await db.query('SELECT status FROM campaigns WHERE id = $1', [campaignId]);
+  return rows[0]?.status === 'disputed';
 }
 
 async function loadActiveCampaign(campaignId) {
@@ -417,6 +440,12 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
     });
   }
 
+  if (await campaignIsDisputed(campaign_id)) {
+    return res.status(409).json({
+      error: 'This campaign has an open dispute and cannot accept new contributions',
+      code: ERROR_CODES.CAMPAIGN_DISPUTED,
+    });
+  }
   const campaign = await loadActiveCampaign(campaign_id);
   if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 
@@ -487,6 +516,15 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
     reservationClient.release();
   }
 
+  let affiliateLink;
+  try {
+    affiliateLink = await resolveAffiliateLink(campaign_id, req);
+  } catch (err) {
+    const handled = respondInvalidReferralCode(res, err);
+    if (handled) return handled;
+    throw err;
+  }
+
   try {
     const intent = await buildContributionIntent({
       campaign,
@@ -496,6 +534,7 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
       displayName: display_name,
     });
 
+    const memo = buildAttributionMemo(campaign_id, affiliateLink?.code || null);
     const unsignedXdr = contractMode
       ? await buildUnsignedEscrowDeposit({
           contractId: campaign.escrow_contract_id,
@@ -508,7 +547,7 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
             destinationPublicKey: campaign.wallet_public_key,
             asset: send_asset,
             amount,
-            memo: buildContributionMemo(campaign_id),
+            memo,
           })
         : await buildUnsignedContributionPathPayment({
             senderPublicKey: sender_public_key,
@@ -517,7 +556,7 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
             sendMax: intent.sendMax,
             destAmount: amount,
             destAssetCode: campaign.asset_type,
-            memo: buildContributionMemo(campaign_id),
+            memo,
           });
 
     const prepareToken = createPreparedContributionToken({
@@ -530,6 +569,9 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
         ip_address: req.ip,
         device_fingerprint: hashDeviceFingerprint(req.body.device_fingerprint),
         contract_mode: contractMode,
+        ...(affiliateLink
+          ? { referral_link_id: affiliateLink.id, referral_link_code: affiliateLink.code }
+          : {}),
       },
       conversion_quote: intent.conversionQuote,
       reservation_id: reservation.id,
@@ -783,8 +825,20 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
 
   const { campaign_id, amount, send_asset, display_name, tier_id } = req.body;
 
+  if (await campaignIsDisputed(campaign_id)) {
+    return res.status(409).json({
+      error: 'This campaign has an open dispute and cannot accept new contributions',
+      code: ERROR_CODES.CAMPAIGN_DISPUTED,
+    });
+  }
   const campaign = await loadActiveCampaign(campaign_id);
   if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+  if (campaign.migration_in_progress) {
+    return res.status(503).json({
+      error: 'Contributions are temporarily paused while this campaign\'s contract is being upgraded',
+      code: 'CAMPAIGN_MIGRATION_IN_PROGRESS',
+    });
+  }
 
   const { rows: users } = await db.query(
     'SELECT wallet_secret_encrypted, wallet_public_key FROM users WHERE id = $1',
@@ -802,6 +856,15 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
     return res.status(400).json({
       error: `Maximum contribution is ${campaign.max_contribution} ${campaign.asset_type}`,
     });
+  }
+
+  let affiliateLink;
+  try {
+    affiliateLink = await resolveAffiliateLink(campaign_id, req);
+  } catch (err) {
+    const handled = respondInvalidReferralCode(res, err);
+    if (handled) return handled;
+    throw err;
   }
 
   // If a specific reward tier was chosen, validate it exists and belongs to this campaign
@@ -866,6 +929,8 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
       sendAsset: send_asset,
       displayName: display_name,
       referralCode: getReferralCodeFromRequest(campaign_id, req),
+      referralLinkId: affiliateLink?.id || null,
+      referralLinkCode: affiliateLink?.code || null,
       ipAddress: req.ip,
       deviceFingerprint: hashDeviceFingerprint(req.body.device_fingerprint),
       client,

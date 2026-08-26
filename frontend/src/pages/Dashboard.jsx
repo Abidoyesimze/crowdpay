@@ -7,6 +7,7 @@ import KycPrompt from '../components/KycPrompt';
 import VerificationBadge from '../components/VerificationBadge';
 import CampaignStatusBadge from '../components/CampaignStatusBadge';
 import ContributorDashboard from '../components/ContributorDashboard';
+import SubscriptionsPanel from '../components/SubscriptionsPanel';
 import FollowedCampaigns from '../components/FollowedCampaigns';
 import DepositModal from '../components/DepositModal';
 import ApiKeysPanel from '../components/ApiKeysPanel';
@@ -19,6 +20,7 @@ const MiniLineChart = React.lazy(() => import('../components/MiniLineChart'));
 const TABS = [
   { id: 'campaigns', labelKey: 'dashboard.tabs.campaigns' },
   { id: 'contributions', labelKey: 'dashboard.tabs.contributions' },
+  { id: 'subscriptions', labelKey: 'dashboard.tabs.subscriptions' },
   { id: 'following', labelKey: 'dashboard.tabs.following' },
   { id: 'analytics', labelKey: 'dashboard.tabs.analytics' },
   { id: 'api-keys', labelKey: 'dashboard.tabs.apiKeys' },
@@ -259,15 +261,17 @@ export default function Dashboard() {
   const activeTab =
     tabParam === 'contributions'
       ? 'contributions'
-      : tabParam === 'following'
-        ? 'following'
-        : tabParam === 'referrals'
-          ? 'referrals'
-          : tabParam === 'analytics'
-            ? 'analytics'
-            : tabParam === 'api-keys'
-              ? 'api-keys'
-              : 'campaigns';
+      : tabParam === 'subscriptions'
+        ? 'subscriptions'
+        : tabParam === 'following'
+          ? 'following'
+          : tabParam === 'referrals'
+            ? 'referrals'
+            : tabParam === 'analytics'
+              ? 'analytics'
+              : tabParam === 'api-keys'
+                ? 'api-keys'
+                : 'campaigns';
 
   const [stats, setStats] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
@@ -490,6 +494,8 @@ export default function Dashboard() {
   function setTab(tabId) {
     if (tabId === 'contributions') {
       setSearchParams({ tab: 'contributions' });
+    } else if (tabId === 'subscriptions') {
+      setSearchParams({ tab: 'subscriptions' });
     } else if (tabId === 'following') {
       setSearchParams({ tab: 'following' });
     } else if (tabId === 'analytics') {
@@ -639,7 +645,7 @@ export default function Dashboard() {
                         : ''}
                     </div>
                   </div>
-                  <VerificationBadge status={user?.kyc_status} />
+                  <VerificationBadge status={user?.verification_status || user?.kyc_status} tier={user?.verification_tier} showTier />
                 </div>
                 {kycRequired && user?.kyc_status !== 'verified' && (
                   <div style={{ marginTop: '0.85rem' }}>
@@ -865,6 +871,12 @@ export default function Dashboard() {
         </section>
       )}
 
+      {activeTab === 'subscriptions' && (
+        <section role="tabpanel" aria-labelledby="tab-subscriptions">
+          <SubscriptionsPanel />
+        </section>
+      )}
+
       {activeTab === 'following' && (
         <section role="tabpanel" aria-labelledby="tab-following">
           <FollowedCampaigns />
@@ -873,6 +885,14 @@ export default function Dashboard() {
 
       {activeTab === 'analytics' && isCreator && (
         <section role="tabpanel" aria-labelledby="tab-analytics">
+          <div style={{ marginBottom: '1rem' }}>
+            <Link
+              to="/dashboard/analytics"
+              style={{ color: 'var(--color-accent)', fontWeight: 600, fontSize: '0.9rem' }}
+            >
+              Open Full Analytics Dashboard →
+            </Link>
+          </div>
           {/* Dashboard-wide trend */}
           <div className="campaign-card" style={{ marginBottom: '1rem', minHeight: 'auto' }}>
             <div
@@ -1050,25 +1070,33 @@ export default function Dashboard() {
                   marginBottom: '0.75rem',
                 }}
               >
-                {campaigns.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => loadCampaignAnalytics(c.id)}
-                    style={{
-                      padding: '0.3rem 0.75rem',
-                      borderRadius: 8,
-                      border: '1px solid var(--color-border)',
-                      cursor: 'pointer',
-                      fontWeight: 600,
-                      fontSize: '0.82rem',
-                      background:
-                        selectedCampaignId === c.id ? 'var(--color-accent)' : 'transparent',
-                      color: selectedCampaignId === c.id ? '#fff' : 'var(--color-text-secondary)',
-                    }}
-                  >
-                    {c.title}
-                  </button>
+                    {campaigns.map((c) => (
+                  <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => loadCampaignAnalytics(c.id)}
+                      style={{
+                        padding: '0.3rem 0.75rem',
+                        borderRadius: 8,
+                        border: '1px solid var(--color-border)',
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                        fontSize: '0.82rem',
+                        background:
+                          selectedCampaignId === c.id ? 'var(--color-accent)' : 'transparent',
+                        color: selectedCampaignId === c.id ? '#fff' : 'var(--color-text-secondary)',
+                      }}
+                    >
+                      {c.title}
+                    </button>
+                    <Link
+                      to={`/dashboard/analytics/${c.id}`}
+                      style={{ color: 'var(--color-accent)', fontSize: '0.78rem', fontWeight: 600, whiteSpace: 'nowrap' }}
+                    >
+                      Deep Dive →
+                    </Link>
+                  </div>
                 ))}
               </div>
             )}

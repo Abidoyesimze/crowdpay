@@ -35,6 +35,9 @@ const Resources = lazy(() => import('./pages/Resources'));
 const Leaderboard = lazy(() => import('./pages/Leaderboard'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 const CreatorProfile = lazy(() => import('./pages/CreatorProfile'));
+const CreatorAnalytics = lazy(() => import('./pages/CreatorAnalytics'));
+const CreatorCampaignAnalytics = lazy(() => import('./pages/CreatorCampaignAnalytics'));
+const Governance = lazy(() => import('./pages/Governance'));
 
 function PrivateRoute({ children }) {
   const { user, ready } = useAuth();
@@ -76,6 +79,9 @@ export default function App() {
                   }
                 />
                 <Route path="/campaigns/:id" element={<Campaign />} />
+                <Route path="/campaigns/:id/share" element={<CampaignShare />} />
+                {/* Short share link handed out by the referral system (#675) */}
+                <Route path="/c/:id" element={<Campaign />} />
                 <Route path="/campaigns/:id/invite/:token" element={<AcceptInvite />} />
                 <Route path="/embed/campaigns/:id" element={<CampaignEmbed />} />
                 <Route path="/widget/campaigns/:id" element={<Widget />} />
@@ -108,6 +114,30 @@ export default function App() {
                   }
                 />
                 <Route
+                  path="/dashboard/referrals"
+                  element={
+                    <PrivateRoute>
+                      <ReferralDashboard />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/dashboard/analytics"
+                  element={
+                    <PrivateRoute>
+                      <CreatorAnalytics />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
+                  path="/dashboard/analytics/:campaignId"
+                  element={
+                    <PrivateRoute>
+                      <CreatorCampaignAnalytics />
+                    </PrivateRoute>
+                  }
+                />
+                <Route
                   path="/profile"
                   element={
                     <PrivateRoute>
@@ -130,6 +160,10 @@ export default function App() {
                       <TaxReceipts />
                     </PrivateRoute>
                   }
+                />
+                <Route
+                  path="/governance"
+                  element={<Governance />}
                 />
                 <Route
                   path="/my-contributions"

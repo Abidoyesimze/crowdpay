@@ -79,6 +79,75 @@ async function createKycSession({ user }) {
   return devKycSession({ user });
 }
 
+const VERIFICATION_TIER_LIMITS = {
+  none: 0,
+  basic: 5000,
+  standard: 50000,
+  enhanced: Infinity,
+};
+
+function getTierLimit(tier) {
+  return VERIFICATION_TIER_LIMITS[tier] ?? 0;
+}
+
+function determineVerificationTier(webhookPayload = {}) {
+  const data = webhookPayload.data || webhookPayload;
+  const attrs = data.attributes || {};
+  const nested = attrs.payload?.data || webhookPayload.payload?.data || {};
+  const nestedAttrs = nested.attributes || {};
+
+  const checks = nestedAttrs.checks || attrs.checks || [];
+  const tags = nestedAttrs.tags || attrs.tags || [];
+  const verificationPackages = nestedAttrs['verification-packages'] || nestedAttrs.verification_packages || attrs['verification-packages'] || [];
+
+  const checkTypes = new Set();
+  for (const check of checks) {
+    const checkType = (check.type || check.name || check['check-type'] || '').toLowerCase();
+    if (checkType) checkTypes.add(checkType);
+  }
+
+  for (const pkg of verificationPackages) {
+    const methods = pkg.methods || pkg.checks || [];
+    for (const method of methods) {
+      const name = (method.name || method.type || method['check-type'] || '').toLowerCase();
+      if (name) checkTypes.add(name);
+    }
+  }
+
+  const tagSet = new Set(Array.isArray(tags) ? tags.map(String) : []);
+
+  const hasLiveness = checkTypes.has('liveness') ||
+    checkTypes.has('face-detection') ||
+    checkTypes.has('selfie') ||
+    checkTypes.has('liveness_check') ||
+    tagSet.has('liveness') ||
+    tagSet.has('selfie');
+
+  const hasAddress = checkTypes.has('address') ||
+    checkTypes.has('address-verification') ||
+    checkTypes.has('proof-of-address') ||
+    checkTypes.has('address-check') ||
+    tagSet.has('address');
+
+  const hasGovernmentId = checkTypes.has('government-id') ||
+    checkTypes.has('id-document') ||
+    checkTypes.has('document') ||
+    checkTypes.has('government_id') ||
+    checkTypes.has('id_check') ||
+    tagSet.has('government-id') ||
+    tagSet.has('id-document');
+
+  if (hasGovernmentId || hasLiveness || hasAddress || checkTypes.size > 0) {
+    if (hasLiveness && hasAddress && hasGovernmentId) return 'enhanced';
+    if (hasAddress && hasGovernmentId) return 'standard';
+    if (hasGovernmentId) return 'basic';
+    if (hasLiveness) return 'enhanced';
+    if (hasAddress) return 'standard';
+  }
+
+  return 'basic';
+}
+
 function extractWebhookResult(payload = {}) {
   const data = payload.data || payload;
   const attrs = data.attributes || {};
@@ -129,6 +198,7 @@ function extractWebhookResult(payload = {}) {
 
   const normalized = String(status || eventName).toLowerCase();
   let kycStatus = 'pending';
+  let verificationStatus = 'pending';
   if (
     normalized.includes('approved') ||
     normalized.includes('completed') ||
@@ -137,6 +207,7 @@ function extractWebhookResult(payload = {}) {
     normalized.includes('passed')
   ) {
     kycStatus = 'verified';
+    verificationStatus = 'approved';
   } else if (
     normalized.includes('declined') ||
     normalized.includes('failed') ||
@@ -144,9 +215,15 @@ function extractWebhookResult(payload = {}) {
     normalized.includes('expired')
   ) {
     kycStatus = 'rejected';
+    verificationStatus = 'declined';
   }
 
-  return { providerReference: reference, userId, kycStatus, reason };
+  let tier = 'none';
+  if (verificationStatus === 'approved') {
+    tier = determineVerificationTier(payload);
+  }
+
+  return { providerReference: reference, userId, kycStatus, verificationStatus, tier, reason };
 }
 
 function verifyPersonaWebhookSignature(rawBody, signatureHeader) {
@@ -192,4 +269,7 @@ module.exports = {
   extractWebhookResult,
   isKycRequiredForCampaigns,
   verifyPersonaWebhookSignature,
+  determineVerificationTier,
+  getTierLimit,
+  VERIFICATION_TIER_LIMITS,
 };

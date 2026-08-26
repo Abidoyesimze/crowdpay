@@ -29,6 +29,7 @@ pub enum DataKey {
     Escrow,
     Milestones,
     Initialized,
+    Paused,
 }
 
 // Define the interface for the Escrow contract
@@ -68,7 +69,30 @@ impl MilestonesContract {
         env.storage().instance().set(&DataKey::Initialized, &true);
     }
 
+    /// Callable by the platform only. When paused, all state-mutating
+    /// functions (submit_milestone, approve_milestone, reject_milestone)
+    /// revert with CONTRACT_PAUSED. Added to let the upgrade-migration
+    /// orchestrator (see contracts/soroban/contracts/migration) freeze this
+    /// contract while its state is copied over to a v2 contract.
+    pub fn set_paused(env: Env, paused: bool) {
+        let platform: Address = env.storage().instance().get(&DataKey::Platform).expect("Not initialized");
+        platform.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &paused);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    }
+
+    fn require_not_paused(env: &Env) {
+        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
+        if paused {
+            panic!("CONTRACT_PAUSED");
+        }
+    }
+
     pub fn submit_milestone(env: Env, index: u32, evidence_hash: BytesN<32>) {
+        Self::require_not_paused(&env);
         let creator: Address = env.storage().instance().get(&DataKey::Creator).expect("Not initialized");
         creator.require_auth();
 
@@ -91,6 +115,7 @@ impl MilestonesContract {
     }
 
     pub fn approve_milestone(env: Env, index: u32) {
+        Self::require_not_paused(&env);
         let platform: Address = env.storage().instance().get(&DataKey::Platform).expect("Not initialized");
         platform.require_auth();
 

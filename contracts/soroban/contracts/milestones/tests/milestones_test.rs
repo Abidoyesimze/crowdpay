@@ -340,6 +340,54 @@ fn test_get_all_milestones() {
 }
 
 #[test]
+fn test_set_paused_blocks_submit_and_approve() {
+    let env = Env::default();
+    let milestones = Vec::from_array(
+        &env,
+        [make_milestone(&env, b"KKKK1111111111111111111111111111", 10000u32)],
+    );
+
+    let (contract_id, _creator, platform, _escrow) =
+        setup_milestones_contract(&env, milestones, 1000);
+    let client = MilestonesContractClient::new(&env, &contract_id);
+
+    client.set_paused(&true);
+    assert!(client.is_paused());
+
+    let evidence = BytesN::from_array(&env, b"evid_hash_1234567890123456789012");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.submit_milestone(&0u32, &evidence);
+    }));
+    assert!(result.is_err());
+
+    client.set_paused(&false);
+    client.submit_milestone(&0u32, &evidence);
+
+    client.set_paused(&true);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.approve_milestone(&0u32);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_paused_rejects_non_platform() {
+    let env = Env::default();
+    let milestones = Vec::from_array(
+        &env,
+        [make_milestone(&env, b"LLLL1111111111111111111111111111", 10000u32)],
+    );
+
+    let (contract_id, _creator, _platform) = setup_no_auth(&env, milestones);
+    let client = MilestonesContractClient::new(&env, &contract_id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.set_paused(&true);
+    }));
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_resubmit_after_rejection() {
     let env = Env::default();
     let milestones = Vec::from_array(

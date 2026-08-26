@@ -30,7 +30,7 @@ const {
 } = require('../services/sorobanService');
 const { sendEmail, sendTeamMemberInvitedEmail } = require('../services/emailService');
 const { uploadCampaignCoverImage } = require('../services/storage');
-const { isKycRequiredForCampaigns } = require('../services/kycProvider');
+const { isKycRequiredForCampaigns, getTierLimit, VERIFICATION_TIER_LIMITS } = require('../services/kycProvider');
 const { listCreatorCampaigns } = require('../services/userDashboardService');
 const { getRecommendedCampaigns } = require('../services/campaignRecommendationService');
 const { publishDraftCampaign, CampaignNotPublishableError } = require('../services/campaignPublishing');
@@ -69,6 +69,12 @@ const {
   canChangeRoles,
   canAssignRole,
 } = require('../lib/campaignPermissions');
+const {
+  createReferralProgram,
+  createReferralLink,
+  getReferralProgram,
+  listCampaignReferrers,
+} = require('../services/referral');
 const { stripHtml } = require('../lib/sanitize');
 const { getSimhash, simhashSimilarity } = require('../utils/simhash');
 const { parsePagination } = require('../utils/pagination');
@@ -214,6 +220,8 @@ router.get('/featured', async (req, res) => {
            c.id, c.title, c.description, c.target_amount, c.raised_amount,
            c.asset_type, c.deadline, c.created_at, c.cover_image_url,
            u.name AS creator_name,
+           u.verification_status AS creator_verification_status,
+           u.verification_tier AS creator_verification_tier,
            (
              SELECT COUNT(DISTINCT sender_public_key)
              FROM contributions
@@ -415,6 +423,8 @@ router.get('/', getCampaignsValidation, validateRequest, asyncHandler(async (req
     SELECT c.*,
            u.name AS creator_name,
            u.kyc_status AS creator_kyc_status,
+           u.verification_status AS creator_verification_status,
+           u.verification_tier AS creator_verification_tier,
            COALESCE(cu.updates_count, 0)::int AS updates_count,
            COALESCE(con.contributor_count, 0)::int AS contributor_count
     FROM campaigns c
@@ -643,6 +653,12 @@ router.post('/:id/milestones', requireAuth, requireCampaignMember('owner'), asyn
     client.release();
   }
 }));
+router.get('/trending', asyncHandler(async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 20), 20);
+  const campaigns = await getTrendingCampaigns({ limit });
+  res.json({ campaigns });
+}));
+ 
 
 router.get('/:id/clone-data', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
   const campaignId = req.params.id;
@@ -1038,10 +1054,14 @@ router.get('/:id', asyncHandler(async (req, res) => {
   }
 
   const query = `
-    SELECT *,
-           (SELECT COUNT(DISTINCT sender_public_key)::int FROM contributions WHERE campaign_id = $1) AS contributor_count
-    FROM campaigns
-    WHERE id = $1
+    SELECT c.*,
+           (SELECT COUNT(DISTINCT sender_public_key)::int FROM contributions WHERE campaign_id = $1) AS contributor_count,
+           u.kyc_status AS creator_kyc_status,
+           u.verification_status AS creator_verification_status,
+           u.verification_tier AS creator_verification_tier
+    FROM campaigns c
+    JOIN users u ON u.id = c.creator_id
+    WHERE c.id = $1
   `;
   await refreshCampaignStatus(req.params.id);
   const { rows } = await db.query(query, [req.params.id]);
@@ -1519,7 +1539,7 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
 
   // Get creator's info
   const { rows: userRows } = await db.query(
-    'SELECT email, wallet_public_key, kyc_status FROM users WHERE id = $1',
+    'SELECT email, wallet_public_key, kyc_status, verification_status, verification_tier FROM users WHERE id = $1',
     [req.user.userId]
   );
   if (!userRows.length) return res.status(404).json({ error: 'User not found' });
@@ -1530,6 +1550,36 @@ router.post('/', requireAuth, requireRole('creator', 'admin'), createCampaignVal
       code: 'KYC_REQUIRED',
       kyc_status: userRows[0].kyc_status,
     });
+  }
+
+  // Tier-based campaign goal limit
+  if (isKycRequiredForCampaigns()) {
+    const userTier = userRows[0].verification_tier || 'none';
+    const tierLimit = getTierLimit(userTier);
+    const goalAmount = parseFloat(target_amount);
+
+    if (tierLimit === 0 && userTier === 'none') {
+      return res.status(403).json({
+        error: 'Verify your identity before creating a campaign.',
+        code: 'KYC_REQUIRED',
+        verification_tier: userTier,
+      });
+    }
+
+    if (goalAmount > tierLimit) {
+      const upgradePath = userTier === 'basic'
+        ? 'Upgrade to Standard verification (ID + address) to run campaigns up to $50,000.'
+        : userTier === 'standard'
+          ? 'Upgrade to Enhanced verification (ID + address + liveness) for unlimited campaign goals.'
+          : 'Complete identity verification to create campaigns.';
+      return res.status(403).json({
+        error: `Campaign goal of $${goalAmount.toLocaleString()} exceeds your ${userTier} tier limit of $${tierLimit.toLocaleString()}.`,
+        code: 'TIER_LIMIT_EXCEEDED',
+        tier_limit: tierLimit,
+        verification_tier: userTier,
+        upgrade_path: upgradePath,
+      });
+    }
   }
 
   const creatorPublicKey = userRows[0].wallet_public_key;
@@ -2264,6 +2314,168 @@ router.get('/:id/referrals', requireAuth, requireCampaignMember('owner'), asyncH
   res.json(rows);
 }));
 
+// ── Referral & affiliate program (#675) ──────────────────────────────────────
+
+/**
+ * @openapi
+ * /api/campaigns/{id}/referrals:
+ *   post:
+ *     tags: [Campaigns]
+ *     summary: Enable or update the campaign's referral program (creator only)
+ *     description: >
+ *       Creates the referral program for a campaign, or updates the terms of an
+ *       existing one. Updating the commission rate does not invalidate referral
+ *       links that have already been issued.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [commissionPercentage, maxReferrers]
+ *             properties:
+ *               commissionPercentage:
+ *                 type: number
+ *                 description: Percentage of each referred contribution paid to the referrer (1-20)
+ *                 example: 10
+ *               maxReferrers:
+ *                 type: integer
+ *                 description: Maximum number of referrers that may claim a link (1-100)
+ *                 example: 25
+ *     responses:
+ *       201: { description: Referral program created or updated }
+ *       400: { description: commissionPercentage or maxReferrers outside the allowed range }
+ *       403: { description: Forbidden }
+ *       404: { description: Campaign not found }
+ */
+// POST /campaigns/:id/referrals — creator enables referrals on the campaign
+router.post('/:id/referrals', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const { commissionPercentage, maxReferrers } = req.body || {};
+  try {
+    const program = await createReferralProgram(req.params.id, { commissionPercentage, maxReferrers });
+    res.status(201).json(program);
+  } catch (err) {
+    if (err.statusCode === 400) {
+      return res.status(400).json({ error: err.message, code: err.code });
+    }
+    throw err;
+  }
+}));
+
+/**
+ * @openapi
+ * /api/campaigns/{id}/referrals/program:
+ *   get:
+ *     tags: [Campaigns]
+ *     summary: Get the campaign's public referral program terms
+ *     description: >
+ *       Public endpoint used by the share page to show the commission rate and
+ *       how many of the referrer slots have already been claimed.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Program terms plus the current referrer_count }
+ *       404: { description: This campaign does not have a referral program }
+ */
+// GET /campaigns/:id/referrals/program — public program terms
+router.get('/:id/referrals/program', asyncHandler(async (req, res) => {
+  const program = await getReferralProgram(req.params.id);
+  if (!program) return res.status(404).json({ error: 'This campaign does not have a referral program' });
+  const { rows } = await db.query(
+    'SELECT COUNT(*)::int AS total FROM referral_links WHERE campaign_id = $1',
+    [req.params.id]
+  );
+  res.json({ ...program, referrer_count: rows[0]?.total || 0 });
+}));
+
+/**
+ * @openapi
+ * /api/campaigns/{id}/referrals/links:
+ *   post:
+ *     tags: [Campaigns]
+ *     summary: Claim a trackable referral link for the authenticated user
+ *     description: >
+ *       Issues a unique 8-character referral code for the caller. The call is
+ *       idempotent: a user who already holds a link for this campaign gets the
+ *       same code back with a 200 instead of a 201. Contributions made through
+ *       the returned shareUrl are attributed on-chain via the Stellar
+ *       transaction memo (`ref:<code>`).
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: The caller already held a link; the existing code is returned
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 code: { type: string, example: "a1b2c3d4" }
+ *                 shareUrl: { type: string, example: "https://crowdpay.com/c/<campaignId>?ref=a1b2c3d4" }
+ *       201: { description: A new referral link was issued }
+ *       404: { description: This campaign does not have a referral program }
+ *       409: { description: REFERRER_LIMIT_REACHED - the maxReferrers cap is full }
+ */
+// POST /campaigns/:id/referrals/links — any registered user claims a referrer link
+router.post('/:id/referrals/links', requireAuth, asyncHandler(async (req, res) => {
+  try {
+    const { code, shareUrl, created } = await createReferralLink({
+      campaignId: req.params.id,
+      userId: req.user.userId,
+    });
+    res.status(created ? 201 : 200).json({ code, shareUrl });
+  } catch (err) {
+    if (err.statusCode === 409 || err.statusCode === 404) {
+      return res.status(err.statusCode).json({ error: err.message, code: err.code });
+    }
+    throw err;
+  }
+}));
+
+/**
+ * @openapi
+ * /api/campaigns/{id}/referrals/commissions:
+ *   get:
+ *     tags: [Campaigns]
+ *     summary: Referrer breakdown with commission owed (creator only)
+ *     description: >
+ *       Powers the campaign analytics Referrals tab: every referrer with their
+ *       referred contribution count, total referred amount, and the commission
+ *       still owed to them at the next withdrawal.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Program terms and the per-referrer commission breakdown }
+ *       403: { description: Forbidden }
+ *       404: { description: This campaign does not have a referral program }
+ */
+// GET /campaigns/:id/referrals/commissions — creator-only referrer breakdown
+router.get('/:id/referrals/commissions', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
+  const data = await listCampaignReferrers(req.params.id);
+  if (!data.program) return res.status(404).json({ error: 'This campaign does not have a referral program' });
+  res.json(data);
+}));
+
 const isTestEnv = process.env.NODE_ENV === 'test';
 const shareLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -2378,5 +2590,9 @@ router.delete('/:id/stretch-goals/:goalId', requireAuth, requireCampaignMember('
   if (!rows.length) return res.status(404).json({ error: 'Stretch goal not found' });
   res.status(204).end();
 }));
+
+// Soroban treasury endpoints (#687) live in their own router to keep this file
+// from growing further; they are mounted under /api/campaigns/:id/treasury.
+router.use('/:id/treasury', require('./treasury'));
 
 module.exports = router;

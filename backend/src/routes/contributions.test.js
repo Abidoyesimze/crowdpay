@@ -85,6 +85,7 @@ function buildApp({ queryImpl, stellarImpl, stellarTxImpl, connectImpl, sorobanI
   const contributionServiceStub = {
     SLIPPAGE_BPS: 500,
     buildContributionMemo: () => 'cp-c-1',
+    buildAttributionMemo: (_campaignId, referralCode) => (referralCode ? `ref:${referralCode}` : 'cp-c-1'),
     buildContributionIntent: async ({ campaign, amount, sendAsset, contributorPublicKey }) => {
       if (sendAsset === campaign.asset_type) {
         return {
@@ -382,6 +383,33 @@ test('POST /api/contributions uses direct payment for same USDC asset', async ()
   assert.equal(submitted.length, 1);
 });
 
+test('POST /api/contributions is blocked while the campaign contract is being migrated', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{
+            id: '11111111-1111-1111-1111-111111111111',
+            status: 'active',
+            asset_type: 'USDC',
+            wallet_public_key: VALID_G,
+            migration_in_progress: true,
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions')
+    .set('Authorization', 'Bearer token')
+    .send({ campaign_id: '11111111-1111-1111-1111-111111111111', amount: '5.0000000', send_asset: 'USDC' });
+
+  assert.equal(response.status, 503);
+  assert.equal(response.body.code, 'CAMPAIGN_MIGRATION_IN_PROGRESS');
+});
+
 test('POST /api/contributions uses path payment for conversion', async () => {
   let pathPayload = null;
   const app = buildApp({
@@ -550,6 +578,55 @@ test('POST /api/contributions returns 502 when Stellar submit fails and skips au
 
   assert.equal(response.status, 502);
   assert.equal(inserted, false);
+});
+
+test('POST /api/contributions returns 409 CAMPAIGN_DISPUTED for a disputed campaign', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('SELECT status FROM campaigns')) {
+        return { rows: [{ status: 'disputed' }] };
+      }
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{ id: '11111111-1111-1111-1111-111111111111', status: 'disputed', asset_type: 'XLM', wallet_public_key: VALID_G }],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions')
+    .set('Authorization', 'Bearer token')
+    .send({ campaign_id: '11111111-1111-1111-1111-111111111111', amount: '5.0000000', send_asset: 'XLM' });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, 'CAMPAIGN_DISPUTED');
+});
+
+test('POST /api/contributions/prepare returns 409 CAMPAIGN_DISPUTED for a disputed campaign', async () => {
+  const sender = Keypair.random();
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('SELECT status FROM campaigns')) {
+        return { rows: [{ status: 'disputed' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions/prepare')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: '11111111-1111-1111-1111-111111111111',
+      amount: '5.0000000',
+      send_asset: 'XLM',
+      sender_public_key: sender.publicKey(),
+    });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, 'CAMPAIGN_DISPUTED');
 });
 
 test('POST /api/contributions/prepare returns unsigned XDR and prepare token for Freighter', async () => {

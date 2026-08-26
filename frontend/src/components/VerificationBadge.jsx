@@ -1,13 +1,24 @@
-export default function VerificationBadge({ status, compact = false }) {
-  if (status === 'verified') {
-    return <span style={compact ? styles.verifiedCompact : styles.verified}>✓ Verified</span>;
+const TIER_LABELS = {
+  none: 'Unverified',
+  basic: 'Basic',
+  standard: 'Standard',
+  enhanced: 'Enhanced',
+};
+
+export default function VerificationBadge({ status, tier, compact = false, showTier = false }) {
+  const effectiveTier = tier || 'none';
+  const tierLabel = TIER_LABELS[effectiveTier] || 'Unverified';
+
+  if (status === 'verified' || status === 'approved') {
+    const label = showTier ? `Verified · ${tierLabel}` : 'Verified';
+    return <span style={compact ? styles.verifiedCompact : styles.verified}>✓ {label}</span>;
   }
   if (status === 'pending') {
     return (
       <span style={compact ? styles.pendingCompact : styles.pending}>Pending verification</span>
     );
   }
-  if (status === 'rejected') {
+  if (status === 'rejected' || status === 'declined') {
     return (
       <span style={compact ? styles.rejectedCompact : styles.rejected}>Verification rejected</span>
     );

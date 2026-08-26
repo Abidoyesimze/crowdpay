@@ -100,6 +100,7 @@ export default function ContributeModal({
   onSuccess,
   guestFreighterMode = false,
   tiers = [],
+  referralCode = null,
 }) {
   const { user, token, updateUser } = useAuth();
   const [amount, setAmount] = useState('');
@@ -377,6 +378,9 @@ export default function ContributeModal({
     return () => modal.removeEventListener('keydown', trapTab);
   }, [phase]);
 
+  // Attribution travels as a query parameter so it lands in the Stellar memo (#675)
+  const referralQuery = referralCode ? { query: { ref: referralCode } } : {};
+
   async function submitWithCustodial() {
     setLoadingLabel('Submitting with CrowdPay wallet…');
     const device_fingerprint = await getDeviceFingerprint();
@@ -389,7 +393,7 @@ export default function ContributeModal({
         device_fingerprint: device_fingerprint || undefined,
         idempotency_key: activeSubmissionKeyRef.current,
       },
-      token
+      referralQuery
     );
   }
 
@@ -432,7 +436,7 @@ export default function ContributeModal({
         device_fingerprint: device_fingerprint || undefined,
         idempotency_key: activeSubmissionKeyRef.current,
       },
-      token
+      referralQuery
     );
 
     setLoadingLabel('Checking Freighter network…');
@@ -509,13 +513,16 @@ export default function ContributeModal({
 
     setAnchorSession(session);
     setPhase('anchor');
-    return api.contribute({
-      campaign_id: campaign.id,
-      amount: destAmount,
-      send_asset: effectiveSendAsset,
-      display_name: displayName || undefined,
-      idempotency_key: activeSubmissionKeyRef.current,
-    });
+    return api.contribute(
+      {
+        campaign_id: campaign.id,
+        amount: destAmount,
+        send_asset: effectiveSendAsset,
+        display_name: displayName || undefined,
+        idempotency_key: activeSubmissionKeyRef.current,
+      },
+      referralQuery
+    );
   }
 
   async function handleSubmit(e) {

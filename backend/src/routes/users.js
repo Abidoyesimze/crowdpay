@@ -14,7 +14,8 @@ const asyncHandler = require('../utils/asyncHandler');
 
 router.get('/me', requireAuth, asyncHandler(async (req, res) => {
   const { rows } = await db.query(
-    `SELECT id, email, name, wallet_public_key, wallet_type, role, kyc_status, kyc_completed_at, wallet_funded_at, wallet_funding_failed_at, created_at
+    `SELECT id, email, name, wallet_public_key, wallet_type, role, kyc_status, kyc_completed_at, wallet_funded_at, wallet_funding_failed_at, created_at,
+            verification_status, verification_tier, persona_inquiry_id
      FROM users
      WHERE id = $1`,
     [req.user.userId]
