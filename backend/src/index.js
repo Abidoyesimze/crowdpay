@@ -41,6 +41,7 @@ const { upsertRecommendationsForUser } = require("./services/campaignRecommendat
 const { flushQuietHours } = require("./services/notifications");
 const { sendAlert } = require("./services/alerting");
 const ff = require("./services/featureFlags");
+
 const {
   assertNoLegacyPlaintextUserWalletSecrets,
 } = require("./services/walletSecrets");
@@ -113,6 +114,7 @@ app.use(
 );
 app.use(requestIdMiddleware);
 app.use(requestLogger);
+
 app.use(normalizeErrorResponse);
 
 const isTest = process.env.NODE_ENV === "test";
@@ -297,6 +299,7 @@ app.use("/api/contributions", require("./routes/thankYou"));
 app.use("/api", require("./routes/announcement"));
 app.use("/api/creator/analytics", require("./routes/creatorAnalytics"));
 app.use("/api/governance", require("./routes/governance"));
+app.use("/api/embed", require("./routes/embed"));
 
 app.get("/health", async (_, res) => {
   try {
@@ -533,7 +536,16 @@ function startContractDeploymentRetryCron() {
   });
   logger.info("Contract deployment retry cron scheduled (every 10 minutes)");
 }
-
+function startTrendingCron() {
+  const cron = require("node-cron");
+  const { recomputeTrendingScores } = require("./services/trendingService");
+  cron.schedule("*/15 * * * *", () => {
+    recomputeTrendingScores().catch((err) => {
+      logger.error("Trending recompute cron failed", { error: err.message });
+    });
+  });
+  logger.info("Trending recompute cron scheduled (every 15 minutes)");
+}
 function startBenchmarkRefreshCron() {
   const cron = require("node-cron");
   cron.schedule("0 3 * * *", () => {
@@ -568,6 +580,7 @@ async function bootstrap() {
     startSubscriptionClaimWorker();
     startBenchmarkRefreshCron();
     startFeeCacheRefreshCron();
+    startTrendingCron();
   });
 }
 

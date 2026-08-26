@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<!--
+  frontend/public/embed/discover-widget.html
+  Served statically (e.g. https://cdn.crowdpay.com/embed/discover-widget.html).
+  Loaded inside the iframe created by embed/discover-widget.js.
+  Reads embedToken/topic/asset/limit from its own query string, calls
+  GET /api/embed/discover, and renders 1-5 campaign cards.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CrowdPay campaigns</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: transparent;
+  }
+  .cp-widget { display: flex; flex-direction: column; gap: 10px; padding: 4px; }
+  .cp-card {
+    display: block;
+    text-decoration: none;
+    color: inherit;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 12px;
+    transition: box-shadow 0.15s ease;
+  }
+  .cp-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+  .cp-title { font-size: 14px; font-weight: 600; margin: 0 0 4px; color: #111827; }
+  .cp-desc { font-size: 12px; color: #6b7280; margin: 0 0 8px; line-height: 1.4; }
+  .cp-bar-track { height: 6px; border-radius: 3px; background: #f3f4f6; overflow: hidden; }
+  .cp-bar-fill { height: 100%; background: #4f46e5; }
+  .cp-meta { display: flex; justify-content: space-between; font-size: 11px; color: #6b7280; margin-top: 6px; }
+  .cp-asset { display: inline-block; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: #eef2ff; color: #4338ca; }
+  .cp-empty, .cp-error { font-size: 12px; color: #9ca3af; padding: 8px; }
+  .cp-footer { font-size: 10px; color: #9ca3af; text-align: right; margin-top: 2px; }
+  .cp-footer a { color: inherit; }
+</style>
+</head>
+<body>
+  <div class="cp-widget" id="cp-widget">
+    <div class="cp-empty">Loading campaigns…</div>
+  </div>
+
+  <script>
+  (function () {
+    var API_BASE = 'https://api.crowdpay.com';
+    var params = new URLSearchParams(window.location.search);
+    var embedToken = params.get('embedToken');
+    var topic = params.get('topic') || '';
+    var asset = params.get('asset') || '';
+    var limit = params.get('limit') || '3';
+
+    var root = document.getElementById('cp-widget');
+
+    function reportSize() {
+      var height = document.body.scrollHeight;
+      window.parent.postMessage({ type: 'CROWDPAY_WIDGET_READY', height: height }, '*');
+    }
+
+    function renderCard(c) {
+      var a = document.createElement('a');
+      a.className = 'cp-card';
+      a.href = c.shareUrl;
+      a.target = '_top';
+      a.rel = 'noopener noreferrer';
+      a.addEventListener('click', function () {
+        window.parent.postMessage({ type: 'CROWDPAY_CAMPAIGN_CLICKED', campaignId: c.id }, '*');
+      });
+
+      var pct = Math.max(0, Math.min(100, c.percentFunded || 0));
+      a.innerHTML =
+        '<div class="cp-title">' + escapeHtml(c.title) + '</div>' +
+        '<div class="cp-desc">' + escapeHtml(c.description_truncated || '') + '</div>' +
+        '<div class="cp-bar-track"><div class="cp-bar-fill" style="width:' + pct + '%"></div></div>' +
+        '<div class="cp-meta">' +
+          '<span class="cp-asset">' + escapeHtml(c.asset || '') + '</span>' +
+          '<span>' + pct + '% funded' + (c.daysRemaining != null ? ' · ' + c.daysRemaining + 'd left' : '') + '</span>' +
+        '</div>';
+      return a;
+    }
+
+    function escapeHtml(str) {
+      var div = document.createElement('div');
+      div.textContent = str == null ? '' : String(str);
+      return div.innerHTML;
+    }
+
+    function render(campaigns) {
+      root.innerHTML = '';
+      if (!campaigns.length) {
+        root.innerHTML = '<div class="cp-empty">No campaigns found.</div>';
+      } else {
+        campaigns.forEach(function (c) { root.appendChild(renderCard(c)); });
+      }
+      var footer = document.createElement('div');
+      footer.className = 'cp-footer';
+      footer.innerHTML = 'Powered by <a href="https://crowdpay.com" target="_top">CrowdPay</a>';
+      root.appendChild(footer);
+      reportSize();
+    }
+
+    function renderError(message) {
+      root.innerHTML = '<div class="cp-error">' + escapeHtml(message) + '</div>';
+      reportSize();
+    }
+
+    if (!embedToken) {
+      renderError('Missing embed token.');
+      return;
+    }
+
+    var qs = [
+      'embedToken=' + encodeURIComponent(embedToken),
+      topic && 'topic=' + encodeURIComponent(topic),
+      asset && 'asset=' + encodeURIComponent(asset),
+      'limit=' + encodeURIComponent(limit),
+    ].filter(Boolean).join('&');
+
+    fetch(API_BASE + '/api/embed/discover?' + qs)
+      .then(function (res) {
+        if (!res.ok) throw new Error('Request failed (' + res.status + ')');
+        return res.json();
+      })
+      .then(function (data) { render(data.campaigns || []); })
+      .catch(function (err) { renderError(err.message || 'Unable to load campaigns.'); });
+  })();
+  </script>
+</body>
+</html>

@@ -651,6 +651,12 @@ router.post('/:id/milestones', requireAuth, requireCampaignMember('owner'), asyn
     client.release();
   }
 }));
+router.get('/trending', asyncHandler(async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 20), 20);
+  const campaigns = await getTrendingCampaigns({ limit });
+  res.json({ campaigns });
+}));
+ 
 
 router.get('/:id/clone-data', requireAuth, requireCampaignMember('owner'), asyncHandler(async (req, res) => {
   const campaignId = req.params.id;
