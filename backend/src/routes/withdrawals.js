@@ -13,6 +13,7 @@ const {
   isXdrExpired,
   PLATFORM_PUBLIC_KEY,
 } = require('../services/stellarService');
+const { calculateCreatorShare } = require('../services/feeRegistry');
 const {
   insertWithdrawalPendingSignatures,
   finalizeWithdrawalSubmitted,
@@ -210,35 +211,22 @@ router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyn
     });
   }
 
-  // Referral commissions are settled out of the campaign balance in the same
-  // transaction as the creator payout (#675).
-  const { commissions, totalCommission } = await calculateCommissions(campaign_id);
-  const payableCommissions = commissions.filter(
-    (commission) => commission.destination_public_key && parseFloat(commission.commission_owed) > 0
+  // Calculate collected platform fees for this campaign
+  const { rows: feeRows } = await db.query(
+    `SELECT COALESCE(SUM(platform_fee_amount), 0) as total_fees
+     FROM contributions
+     WHERE campaign_id = $1 AND refunded = FALSE`,
+    [campaign_id]
   );
-  const commissionTotal = payableCommissions.reduce(
-    (sum, commission) => sum + parseFloat(commission.commission_owed),
-    0
-  );
-  const creatorAmount = (parseFloat(amount) - commissionTotal).toFixed(7);
-
-  if (parseFloat(creatorAmount) <= 0) {
-    return res.status(422).json({
-      error: `Referral commissions of ${totalCommission} ${campaign.asset_type} exceed the requested withdrawal amount. Withdraw a larger amount.`,
-      code: 'COMMISSIONS_EXCEED_WITHDRAWAL',
-      total_commission: totalCommission,
-    });
-  }
+  const collectedFees = Number(feeRows[0].total_fees) || 0;
 
   const xdr = await buildWithdrawalTransaction({
     campaignWalletPublicKey: campaign.wallet_public_key,
     destinationPublicKey: destination_key,
     amount: creatorAmount,
     asset: campaign.asset_type,
-    commissions: payableCommissions.map((commission) => ({
-      destinationPublicKey: commission.destination_public_key,
-      amount: commission.commission_owed,
-    })),
+    collectedFees,
+    creatorPublicKey,
   });
 
   const client = await db.connect();
@@ -553,18 +541,56 @@ const platformApproveHandler = async (req, res) => {
     );
     updatedWithdrawalRow = updated[0];
 
-    // Record the commissions now settled on-chain so a later withdrawal for the
-    // same campaign does not pay the same referrers twice (#675).
-    const { rows: withdrawalTxRows } = await finalizeClient.query(
-      `SELECT metadata FROM stellar_transactions
-       WHERE withdrawal_request_id = $1 AND kind = 'withdrawal'
-       LIMIT 1`,
-      [req.params.id]
+    // Calculate and process creator revenue share
+    const { rows: feeRows } = await finalizeClient.query(
+      `SELECT COALESCE(SUM(platform_fee_amount), 0) as total_fees
+       FROM contributions
+       WHERE campaign_id = $1 AND refunded = FALSE`,
+      [updatedWithdrawalRow.campaign_id]
     );
-    await settleCommissions(
-      finalizeClient,
-      withdrawalTxRows[0]?.metadata?.referral_commissions || []
-    );
+    const collectedFees = Number(feeRows[0].total_fees) || 0;
+
+    if (collectedFees > 0) {
+      const creatorShare = await calculateCreatorShare(collectedFees);
+      
+      if (creatorShare > 0) {
+        // Get creator's wallet public key
+        const { rows: creatorRows } = await finalizeClient.query(
+          `SELECT u.wallet_public_key 
+           FROM users u
+           JOIN campaigns c ON c.creator_id = u.id
+           WHERE c.id = $1`,
+          [updatedWithdrawalRow.campaign_id]
+        );
+        
+        if (creatorRows.length > 0) {
+          const creatorPublicKey = creatorRows[0].wallet_public_key;
+          
+          // In production, this would initiate a separate transaction from the platform fee wallet
+          // to the creator's wallet. For now, we log it for audit purposes.
+          logger.info('Creator revenue share calculated for withdrawal', {
+            withdrawal_id: req.params.id,
+            campaign_id: updatedWithdrawalRow.campaign_id,
+            collected_fees: collectedFees,
+            creator_share: creatorShare,
+            creator_public_key: creatorPublicKey,
+          });
+          
+          // Store creator share in withdrawal metadata for audit
+          await logWithdrawalEvent(finalizeClient, {
+            withdrawalRequestId: req.params.id,
+            actorUserId: req.user.userId,
+            action: 'creator_share_calculated',
+            note: `Creator revenue share: ${creatorShare} (${(creatorShare / collectedFees * 100).toFixed(2)}% of collected fees)`,
+            metadata: {
+              collected_fees: collectedFees,
+              creator_share: creatorShare,
+              creator_public_key: creatorPublicKey,
+            },
+          });
+        }
+      }
+    }
 
     await finalizeWithdrawalSubmitted(finalizeClient, {
       withdrawalRequestId: req.params.id,
