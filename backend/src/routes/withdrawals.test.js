@@ -276,19 +276,64 @@ test('POST /api/withdrawals/:id/approve/platform denies non-platform user when a
   assert.equal(response.status, 403);
 });
 
+test('POST /api/withdrawals/:id/approve/platform denies demoted user who is no longer admin', async () => {
+  const { app, cleanup } = buildApp({
+    userId: 'platform-1',
+    role: 'contributor',
+    platformApproverUserId: 'platform-1',
+    queryImpl: async (text, params) => {
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'contributor', is_admin: false }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/withdrawals/w-1/approve/platform')
+    .set('Authorization', 'Bearer token')
+    .send({});
+
+  cleanup();
+  assert.equal(response.status, 403);
+  assert.match(response.body.error, /no longer has platform authorization/);
+});
+
+test('POST /api/withdrawals/:id/approve/platform denies when PLATFORM_APPROVER_USER_ID is not configured', async () => {
+  const { app, cleanup } = buildApp({
+    userId: 'platform-1',
+    role: 'admin',
+    platformApproverUserId: false,
+    queryImpl: async () => ({ rows: [] }),
+  });
+
+  const response = await request(app)
+    .post('/api/withdrawals/w-1/approve/platform')
+    .set('Authorization', 'Bearer token')
+    .send({});
+
+  cleanup();
+  assert.equal(response.status, 403);
+});
+
 test('POST /api/withdrawals/:id/approve/platform denies before creator approval', async () => {
   const { app, cleanup } = buildApp({
     role: 'admin',
-    queryImpl: async () => ({
-      rows: [{
-        id: 'w-1',
-        status: 'pending',
-        creator_signed: false,
-        platform_signed: false,
-        unsigned_xdr: 'xdr-base',
-        campaign_status: 'active',
-      }],
-    }),
+    queryImpl: async (text) => {
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
+      return {
+        rows: [{
+          id: 'w-1',
+          status: 'pending',
+          creator_signed: false,
+          platform_signed: false,
+          unsigned_xdr: 'xdr-base',
+          campaign_status: 'active',
+        }],
+      };
+    },
   });
 
   const response = await request(app)
@@ -349,16 +394,21 @@ test('POST /api/withdrawals/:id/approve/creator signs withdrawal request', async
 test('POST /api/withdrawals/:id/approve/platform denies insufficient signatures', async () => {
   const { app, cleanup } = buildApp({
     role: 'admin',
-    queryImpl: async () => ({
-      rows: [{
-        id: 'w-1',
-        status: 'pending',
-        creator_signed: true,
-        platform_signed: false,
-        unsigned_xdr: 'xdr-base',
-        campaign_status: 'active',
-      }],
-    }),
+    queryImpl: async (text) => {
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
+      return {
+        rows: [{
+          id: 'w-1',
+          status: 'pending',
+          creator_signed: true,
+          platform_signed: false,
+          unsigned_xdr: 'xdr-base',
+          campaign_status: 'active',
+        }],
+      };
+    },
     stellarImpl: {
       signatureCountFromXdr: () => 1,
     },
@@ -380,6 +430,9 @@ test('POST /api/withdrawals/:id/approve/platform submits with dual signatures', 
     queryImpl: async (text) => {
       calls.push(text);
       if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
       if (text.includes('SELECT wr.*, c.status')) {
         return {
           rows: [{
@@ -424,6 +477,9 @@ test('POST /api/withdrawals/:id/approve/platform rejects duplicate approval afte
     role: 'admin',
     queryImpl: async (text) => {
       if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
       if (text.includes('SELECT wr.*, c.status')) {
         return {
           rows: [{
@@ -528,8 +584,11 @@ test('POST /api/withdrawals/:id/reject marks denied after creator signed', async
   const { app, cleanup } = buildApp({
     userId: 'platform-user',
     role: 'admin',
-    queryImpl: async (text) => {
+    queryImpl: async (text, params) => {
       if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
       if (text.includes('SELECT * FROM withdrawal_requests WHERE id')) {
         return {
           rows: [{
@@ -563,6 +622,9 @@ test('POST /api/withdrawals/:id/approve/platform logs failure when Stellar rejec
     role: 'admin',
     queryImpl: async (text) => {
       if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
       if (text.includes('SELECT wr.*, c.status')) {
         return {
           rows: [{
@@ -605,6 +667,9 @@ test('POST /api/withdrawals/:id/approve/platform returns 410 when XDR time bound
   const { app, cleanup } = buildApp({
     role: 'admin',
     queryImpl: async (text) => {
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
       if (text.includes('SELECT wr.*, c.status')) {
         return {
           rows: [{
@@ -749,6 +814,9 @@ test('POST /api/withdrawals/:id/approve/platform settles the commissions it subm
     },
     queryImpl: async (text) => {
       if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
       if (text.includes('FROM withdrawal_requests wr')) {
         return {
           rows: [{
