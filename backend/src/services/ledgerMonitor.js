@@ -167,13 +167,14 @@ async function replayMissedPayments(campaignId, walletPublicKey) {
 }
 
 /**
- * Process one Horizon payment record and always advance stored cursor when possible.
+ * Process one Horizon payment record.
+ * The cursor is only advanced after successful processing.
+ * Failed records are persisted to failed_payment_records for retry on restart.
  */
 async function onPaymentRecord(campaignId, walletPublicKey, record) {
   const token = extractPagingToken(record);
   try {
     await handlePayment(campaignId, walletPublicKey, record);
-  } finally {
     if (token) {
       try {
         await saveCursor(campaignId, walletPublicKey, token);
@@ -184,6 +185,32 @@ async function onPaymentRecord(campaignId, walletPublicKey, record) {
           error: e.message,
         });
       }
+    }
+  } catch (err) {
+    logger.error("Payment processing failed; cursor not advanced", {
+      wallet_public_key: walletPublicKey,
+      campaign_id: campaignId,
+      tx_hash: record.transaction_hash,
+      error: err.message,
+    });
+    try {
+      await db.query(
+        `INSERT INTO failed_payment_records
+           (campaign_id, wallet_public_key, payment_record, error_message)
+         VALUES ($1, $2, $3::jsonb, $4)
+         ON CONFLICT (tx_hash, campaign_id) DO UPDATE
+         SET error_message = EXCLUDED.error_message,
+             retry_count = failed_payment_records.retry_count + 1,
+             updated_at = NOW()`,
+        [campaignId, walletPublicKey, JSON.stringify(record), err.message]
+      );
+    } catch (insertErr) {
+      logger.error("Failed to persist failed payment record", {
+        wallet_public_key: walletPublicKey,
+        campaign_id: campaignId,
+        tx_hash: record.transaction_hash,
+        error: insertErr.message,
+      });
     }
   }
 }
