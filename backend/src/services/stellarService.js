@@ -40,6 +40,7 @@ const { withDecryptedWalletSecret } = require('./walletSecrets');
 const { getPlatformFee } = require('./feeRegistry');
 
 const PLATFORM_KEYPAIR = Keypair.fromSecret(process.env.PLATFORM_SECRET_KEY);
+const ARBITRATOR_KEYPAIR = Keypair.fromSecret(process.env.ARBITRATOR_SECRET_KEY);
 
 async function calcFee(amount) {
   const bps = await getPlatformFee();
@@ -237,6 +238,118 @@ async function createCampaignWallet(creatorPublicKey, campaignKeypair) {
     publicKey: campaignKeypair.publicKey(),
     secret: campaignKeypair.secret(),
   };
+}
+
+async function loadDecryptedCreatorSecret(creatorId) {
+  const { rows } = await db.query(
+    'SELECT id, wallet_public_key, wallet_secret_encrypted FROM users WHERE id = $1',
+    [creatorId]
+  );
+  const userRow = rows[0];
+  if (!userRow || !userRow.wallet_secret_encrypted) {
+    throw new Error('Creator wallet secret is unavailable');
+  }
+  let creatorSecret = null;
+  await withDecryptedWalletSecret(
+    userRow.wallet_secret_encrypted,
+    { userId: userRow.id, walletPublicKey: userRow.wallet_public_key },
+    async (secret) => {
+      creatorSecret = secret;
+    }
+  );
+  return creatorSecret;
+}
+
+/**
+ * Dispute escrow freeze: adds the platform arbitrator as a third signer
+ * (weight 1) and raises the medium/high thresholds from 2 to 3, so that any
+ * further movement of funds requires creator + platform + arbitrator
+ * agreement. This is a high-threshold SetOptions op, so it needs signatures
+ * meeting the *current* (pre-freeze) high threshold of 2 — creator and
+ * platform. Both secrets are held custodially, so this is built, signed and
+ * submitted in one shot rather than routed through the async
+ * creator-approval flow used for withdrawals.
+ */
+async function freezeCampaignEscrow({ campaignWalletPublicKey, creatorId }) {
+  const campaignAccount = await server.loadAccount(campaignWalletPublicKey);
+  const creatorSecret = await loadDecryptedCreatorSecret(creatorId);
+
+  const tx = new TransactionBuilder(campaignAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(
+      Operation.setOptions({
+        signer: { ed25519PublicKey: ARBITRATOR_KEYPAIR.publicKey(), weight: 1 },
+      })
+    )
+    .addOperation(
+      Operation.setOptions({
+        medThreshold: 3,
+        highThreshold: 3,
+      })
+    )
+    .setTimeout(TX_TIMEOUT_WITHDRAWAL_S)
+    .build();
+
+  tx.sign(Keypair.fromSecret(creatorSecret));
+  tx.sign(PLATFORM_KEYPAIR);
+
+  const result = await server.submitTransaction(tx);
+  return { hash: result.hash };
+}
+
+/**
+ * Reverses freezeCampaignEscrow: removes the arbitrator signer and restores
+ * thresholds to 2. The account currently requires all three signers (weight
+ * 3 threshold) to authorize this, so creator + platform + arbitrator all
+ * sign here.
+ */
+async function releaseEscrowFreeze({ campaignWalletPublicKey, creatorId }) {
+  const campaignAccount = await server.loadAccount(campaignWalletPublicKey);
+  const creatorSecret = await loadDecryptedCreatorSecret(creatorId);
+
+  const tx = new TransactionBuilder(campaignAccount, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(
+      Operation.setOptions({
+        signer: { ed25519PublicKey: ARBITRATOR_KEYPAIR.publicKey(), weight: 0 },
+      })
+    )
+    .addOperation(
+      Operation.setOptions({
+        medThreshold: 2,
+        highThreshold: 2,
+      })
+    )
+    .setTimeout(TX_TIMEOUT_WITHDRAWAL_S)
+    .build();
+
+  tx.sign(Keypair.fromSecret(creatorSecret));
+  tx.sign(PLATFORM_KEYPAIR);
+  tx.sign(ARBITRATOR_KEYPAIR);
+
+  const result = await server.submitTransaction(tx);
+  return { hash: result.hash };
+}
+
+/**
+ * Submits a batch refund transaction while a campaign is under an active
+ * dispute freeze (3-of-3 threshold): creator + platform + arbitrator sign.
+ */
+async function submitDisputeRefund({ campaignWalletPublicKey, creatorId, refunds }) {
+  const unsignedXdr = await buildBatchRefundTransaction({ campaignWalletPublicKey, refunds });
+  const creatorSecret = await loadDecryptedCreatorSecret(creatorId);
+
+  const tx = TransactionBuilder.fromXDR(unsignedXdr, networkPassphrase);
+  tx.sign(Keypair.fromSecret(creatorSecret));
+  tx.sign(PLATFORM_KEYPAIR);
+  tx.sign(ARBITRATOR_KEYPAIR);
+
+  const result = await server.submitTransaction(tx);
+  return { hash: result.hash, xdr: tx.toXDR() };
 }
 
 /**
@@ -1005,4 +1118,10 @@ module.exports = {
   getCampaignBalance,
   friendbotFund,
   PLATFORM_PUBLIC_KEY: PLATFORM_KEYPAIR.publicKey(),
+
+  freezeCampaignEscrow,
+  releaseEscrowFreeze,
+  submitDisputeRefund,
+  buildBatchRefundTransaction,
+  ARBITRATOR_PUBLIC_KEY: ARBITRATOR_KEYPAIR.publicKey(),
 };

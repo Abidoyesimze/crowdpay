@@ -140,6 +140,9 @@ async function request(method, path, body, options = {}) {
       err.code = errorBody.code;
       err.fields = errorBody.fields;
     }
+    // Some routes return { error: 'message', code: '...' } (flat) instead of
+    // { error: { message, code } } (nested) — fall back to the top-level code.
+    err.code = err.code || data.code;
 
     throw err;
   }
@@ -200,6 +203,9 @@ async function uploadFormData(path, formData) {
       err.code = errorBody.code;
       err.fields = errorBody.fields;
     }
+    // Some routes return { error: 'message', code: '...' } (flat) instead of
+    // { error: { message, code } } (nested) — fall back to the top-level code.
+    err.code = err.code || data.code;
 
     throw err;
   }
@@ -547,8 +553,11 @@ export const api = {
 
   raiseDispute: (campaignId, body) => request('POST', `/campaigns/${campaignId}/disputes`, body),
   getCampaignDisputes: (campaignId) => request('GET', `/campaigns/${campaignId}/disputes`),
+  getCampaignDispute: (campaignId) => request('GET', `/campaigns/${campaignId}/dispute`),
   updateDispute: (id, body) => request('PATCH', `/disputes/${id}`, body),
   getDisputeEvents: (id) => request('GET', `/disputes/${id}/events`),
+  submitDisputeEvidence: (id, body) => request('POST', `/disputes/${id}/evidence`, body),
+  decideDispute: (id, body) => request('POST', `/admin/disputes/${id}/decide`, body),
 
   getAdminStats: () => request('GET', '/admin/stats'),
   getAdminHealth: () => request('GET', '/admin/health'),

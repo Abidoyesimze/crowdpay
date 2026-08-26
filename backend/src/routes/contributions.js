@@ -36,6 +36,7 @@ const {
 const { buildTaxReceiptPdf } = require('../services/taxReceiptPdf');
 const { triggerRefund } = require('../services/sorobanService');
 const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
+const { ERROR_CODES } = require('../services/dispute');
 const { assertUserKycVerified } = require('../services/kycService');
 const asyncHandler = require('../utils/asyncHandler');
 const { getReferralCodeFromRequest } = require('../services/referralService');
@@ -92,6 +93,11 @@ function validateFreighterPublicKey(publicKey) {
   } catch (_err) {
     return false;
   }
+}
+
+async function campaignIsDisputed(campaignId) {
+  const { rows } = await db.query('SELECT status FROM campaigns WHERE id = $1', [campaignId]);
+  return rows[0]?.status === 'disputed';
 }
 
 async function loadActiveCampaign(campaignId) {
@@ -404,6 +410,12 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
     });
   }
 
+  if (await campaignIsDisputed(campaign_id)) {
+    return res.status(409).json({
+      error: 'This campaign has an open dispute and cannot accept new contributions',
+      code: ERROR_CODES.CAMPAIGN_DISPUTED,
+    });
+  }
   const campaign = await loadActiveCampaign(campaign_id);
   if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 
@@ -614,6 +626,12 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
 
   const { campaign_id, amount, send_asset, display_name, tier_id } = req.body;
 
+  if (await campaignIsDisputed(campaign_id)) {
+    return res.status(409).json({
+      error: 'This campaign has an open dispute and cannot accept new contributions',
+      code: ERROR_CODES.CAMPAIGN_DISPUTED,
+    });
+  }
   const campaign = await loadActiveCampaign(campaign_id);
   if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
 

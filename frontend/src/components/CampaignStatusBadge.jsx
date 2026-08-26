@@ -26,6 +26,11 @@ const LABELS = {
     bg: 'var(--color-warning-bg, #fffbeb)',
     color: 'var(--color-warning-text, #92400e)',
   },
+  disputed: {
+    key: 'campaignStatus.disputed',
+    bg: 'var(--color-error-bg)',
+    color: 'var(--color-error-text)',
+  },
 };
 
 export default function CampaignStatusBadge({ status }) {

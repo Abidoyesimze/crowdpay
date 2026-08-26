@@ -475,8 +475,8 @@ function DisputeManagement() {
     setResolveOpen(false);
   }
 
-  async function handleResolve({ status, resolution_note }) {
-    const updated = await api.updateDispute(selected.id, { status, resolution_note });
+  async function handleResolve({ decision, reason }) {
+    const updated = await api.decideDispute(selected.id, { decision, reason });
     setDisputes((prev) =>
       prev
         .map((d) => (d.id === updated.id ? { ...d, ...updated } : d))
@@ -513,6 +513,7 @@ function DisputeManagement() {
                 <th style={{ padding: '0.5rem' }}>Campaign</th>
                 <th style={{ padding: '0.5rem' }}>Parties</th>
                 <th style={{ padding: '0.5rem' }}>Amount</th>
+                <th style={{ padding: '0.5rem' }}>Evidence</th>
                 <th style={{ padding: '0.5rem' }}>Status</th>
                 <th style={{ padding: '0.5rem' }} />
               </tr>
@@ -527,6 +528,7 @@ function DisputeManagement() {
                   <td style={{ padding: '0.5rem' }}>
                     {Number(d.amount_in_dispute || 0).toLocaleString()} {d.asset_type}
                   </td>
+                  <td style={{ padding: '0.5rem' }}>{d.evidence_count || 0}</td>
                   <td style={{ padding: '0.5rem' }}>
                     <span style={badgeStyle}>{d.status}</span>
                   </td>
@@ -572,6 +574,32 @@ function DisputeManagement() {
                 <a href={detail.dispute.evidence_url} target="_blank" rel="noopener noreferrer">
                   {detail.dispute.evidence_url}
                 </a>
+              </div>
+            )}
+
+            {detail.evidence && detail.evidence.length > 0 && (
+              <div>
+                <strong>Submitted evidence ({detail.evidence.length})</strong>
+                <div style={{ ...cardStyle, marginTop: '0.5rem', display: 'grid', gap: '0.6rem' }}>
+                  {detail.evidence.map((ev) => (
+                    <div key={ev.id} style={{ borderBottom: '1px solid var(--color-border-light)', paddingBottom: '0.5rem' }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.8rem', textTransform: 'capitalize' }}>
+                        {ev.submitted_by_name || 'Unknown'} ({ev.role})
+                      </div>
+                      <div>{ev.text}</div>
+                      {(ev.attachment_urls || []).map((url) => (
+                        <div key={url}>
+                          <a href={url} target="_blank" rel="noopener noreferrer" style={{ wordBreak: 'break-all' }}>
+                            {url}
+                          </a>
+                        </div>
+                      ))}
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-hint)' }}>
+                        <RelativeTime date={ev.submitted_at} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 

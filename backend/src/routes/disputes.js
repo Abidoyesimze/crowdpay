@@ -11,6 +11,8 @@ const logger = require('../config/logger');
 const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { parsePagination } = require('../utils/pagination');
 const asyncHandler = require('../utils/asyncHandler');
+const stellarService = require('../services/stellarService');
+const { ERROR_CODES, allocateProportionalRefunds } = require('../services/dispute');
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -49,7 +51,7 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
   }
 
   const { rows: campaigns } = await db.query(
-    'SELECT id, creator_id, title FROM campaigns WHERE id = $1',
+    'SELECT id, creator_id, title, wallet_public_key FROM campaigns WHERE id = $1',
     [req.params.id]
   );
   if (!campaigns.length) return res.status(404).json({ error: 'Campaign not found' });
@@ -64,7 +66,10 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
     [campaign.id, req.user.userId]
   );
   if (!contributions.length) {
-    return res.status(403).json({ error: 'Only contributors who have backed this campaign can raise a dispute' });
+    return res.status(403).json({
+      error: 'Only contributors who have backed this campaign can raise a dispute',
+      code: ERROR_CODES.NOT_A_CONTRIBUTOR,
+    });
   }
 
   const client = await db.connect();
@@ -94,7 +99,34 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
       [dispute.id, campaign.id]
     );
 
+    // Block new contributions immediately (see routes/contributions.js CAMPAIGN_DISPUTED check)
+    await client.query(
+      `UPDATE campaigns SET status = 'disputed' WHERE id = $1`,
+      [campaign.id]
+    );
+
     await client.query('COMMIT');
+
+    // On-chain escrow freeze: adds the platform arbitrator as a third signer
+    // and raises the threshold to 3. This is best-effort here — the app
+    // already blocks new contributions and holds pending withdrawals above,
+    // so a transient Horizon failure doesn't leave funds movable; the freeze
+    // is retried by re-fetching the dispute if arbitrator_signer_added stays
+    // false.
+    let frozenAt = null;
+    try {
+      await stellarService.freezeCampaignEscrow({
+        campaignWalletPublicKey: campaign.wallet_public_key,
+        creatorId: campaign.creator_id,
+      });
+      frozenAt = new Date().toISOString();
+      await db.query(
+        `UPDATE disputes SET frozen_at = $2, arbitrator_signer_added = TRUE WHERE id = $1`,
+        [dispute.id, frozenAt]
+      );
+    } catch (err) {
+      logger.error('Escrow freeze failed', { dispute_id: dispute.id, error: err.message });
+    }
 
     // Notify creator
     const { rows: creatorRows } = await db.query(
@@ -146,7 +178,7 @@ router.post('/campaigns/:id/disputes', requireAuth, async (req, res) => {
       );
     });
 
-    res.status(201).json(dispute);
+    res.status(201).json({ ...dispute, disputeId: dispute.id, frozenAt });
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '23505') {
@@ -179,6 +211,77 @@ router.get('/campaigns/:id/disputes', requireAuth, requireRole('admin'), asyncHa
     [req.params.id, limit, offset]
   );
   res.json({ data: rows, total, limit, offset });
+}));
+
+// GET /campaigns/:id/dispute — the campaign's current active dispute, scoped
+// to the disputing contributor or the campaign creator (not admin-only, so
+// the frontend can locate the dispute to render the evidence form).
+router.get('/campaigns/:id/dispute', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT d.*, c.creator_id
+     FROM disputes d
+     JOIN campaigns c ON c.id = d.campaign_id
+     WHERE d.campaign_id = $1 AND d.status IN ('open', 'under_review')
+     ORDER BY d.created_at DESC
+     LIMIT 1`,
+    [req.params.id]
+  );
+  if (!rows.length) return res.json({ dispute: null });
+
+  const dispute = rows[0];
+  if (req.user.userId !== dispute.raised_by && req.user.userId !== dispute.creator_id) {
+    return res.json({ dispute: null });
+  }
+  res.json({ dispute });
+}));
+
+// POST /disputes/:id/evidence — either party (creator or contributor) submits evidence
+router.post('/disputes/:id/evidence', requireAuth, asyncHandler(async (req, res) => {
+  const { text, attachmentUrls } = req.body;
+
+  if (!text || !text.trim()) {
+    return res.status(422).json({ error: 'text is required' });
+  }
+  const urls = Array.isArray(attachmentUrls) ? attachmentUrls : [];
+  for (const url of urls) {
+    if (!isValidEvidenceUrl(url)) {
+      return res.status(422).json({ error: `attachmentUrls contains an invalid URL: ${url}` });
+    }
+  }
+
+  const { rows: disputes } = await db.query(
+    `SELECT d.*, c.creator_id
+     FROM disputes d JOIN campaigns c ON c.id = d.campaign_id
+     WHERE d.id = $1`,
+    [req.params.id]
+  );
+  if (!disputes.length) return res.status(404).json({ error: 'Dispute not found' });
+  const dispute = disputes[0];
+
+  let role;
+  if (req.user.userId === dispute.raised_by) {
+    role = 'contributor';
+  } else if (req.user.userId === dispute.creator_id) {
+    role = 'creator';
+  } else {
+    return res.status(403).json({ error: 'Only the disputing contributor or the campaign creator can submit evidence' });
+  }
+
+  const { rows } = await db.query(
+    `INSERT INTO dispute_evidence (dispute_id, submitted_by, role, text, attachment_urls)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING *`,
+    [dispute.id, req.user.userId, role, text.trim(), JSON.stringify(urls)]
+  );
+
+  await logDisputeEvent(db, {
+    disputeId: dispute.id,
+    actorId: req.user.userId,
+    action: 'evidence_submitted',
+    note: role,
+  }).catch((err) => logger.error('Dispute evidence log failed', { error: err.message }));
+
+  res.status(201).json(rows[0]);
 }));
 
 // PATCH /disputes/:id — admin updates status + resolution note
@@ -356,6 +459,188 @@ router.patch('/disputes/:id', requireAuth, requireRole('admin'), async (req, res
     client.release();
   }
 });
+
+// POST /admin/disputes/:id/decide — platform arbitrator decides the dispute outcome
+router.post('/admin/disputes/:id/decide', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {
+  const { decision, reason } = req.body;
+
+  const VALID_DECISIONS = ['release_to_creator', 'refund_contributors'];
+  if (!VALID_DECISIONS.includes(decision)) {
+    return res.status(422).json({ error: `decision must be one of: ${VALID_DECISIONS.join(', ')}` });
+  }
+
+  const { rows: disputes } = await db.query(
+    `SELECT d.*, c.creator_id, c.wallet_public_key, c.title AS campaign_title
+     FROM disputes d JOIN campaigns c ON c.id = d.campaign_id
+     WHERE d.id = $1`,
+    [req.params.id]
+  );
+  if (!disputes.length) return res.status(404).json({ error: 'Dispute not found' });
+  const dispute = disputes[0];
+  if (['resolved', 'resolved_creator', 'resolved_contributor', 'closed'].includes(dispute.status)) {
+    return res.status(409).json({ error: 'Dispute is already resolved' });
+  }
+
+  let refunds = [];
+  let assetCode = null;
+  try {
+    if (decision === 'release_to_creator') {
+      await stellarService.releaseEscrowFreeze({
+        campaignWalletPublicKey: dispute.wallet_public_key,
+        creatorId: dispute.creator_id,
+      });
+    } else {
+      const { rows: contributorRows } = await db.query(
+        `SELECT u.id AS contributor_id, u.wallet_public_key, SUM(c.amount) AS contributed
+         FROM contributions c
+         JOIN users u ON u.wallet_public_key = c.sender_public_key
+         WHERE c.campaign_id = $1 AND c.refunded = FALSE
+         GROUP BY u.id, u.wallet_public_key`,
+        [dispute.campaign_id]
+      );
+
+      const balances = await stellarService.getCampaignBalance(dispute.wallet_public_key);
+      assetCode = Object.keys(balances).find((code) => parseFloat(balances[code]) > 0) || 'XLM';
+      const balance = balances[assetCode] || '0';
+
+      refunds = allocateProportionalRefunds(
+        contributorRows.map((r) => ({
+          contributorId: r.contributor_id,
+          walletPublicKey: r.wallet_public_key,
+          contributed: r.contributed,
+        })),
+        balance
+      );
+
+      if (refunds.length) {
+        const { hash, xdr } = await stellarService.submitDisputeRefund({
+          campaignWalletPublicKey: dispute.wallet_public_key,
+          creatorId: dispute.creator_id,
+          refunds: refunds.map((r) => ({
+            destinationPublicKey: r.walletPublicKey,
+            amount: r.amount,
+            asset: assetCode,
+          })),
+        });
+        refunds = refunds.map((r) => ({ ...r, txHash: hash, xdr }));
+      }
+    }
+  } catch (err) {
+    logger.error('Dispute decision escrow action failed', { dispute_id: dispute.id, decision, error: err.message });
+    return res.status(503).json({ error: 'Could not execute the decision on-chain; try again shortly' });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: updated } = await client.query(
+      `UPDATE disputes
+       SET status = 'resolved', decision = $1, resolution_note = $2, resolved_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+      [decision, reason || null, dispute.id]
+    );
+
+    await logDisputeEvent(client, {
+      disputeId: dispute.id,
+      actorId: req.user.userId,
+      action: `decision_${decision}`,
+      note: reason || null,
+    });
+
+    let unfrozenWithdrawals = [];
+    if (decision === 'release_to_creator') {
+      await client.query(
+        `UPDATE campaigns SET status = 'active' WHERE id = $1 AND status = 'disputed'`,
+        [dispute.campaign_id]
+      );
+      const { rows } = await client.query(
+        `UPDATE withdrawal_requests
+         SET status = 'pending', dispute_id = NULL
+         WHERE campaign_id = $1 AND status = 'on_hold' AND dispute_id = $2
+         RETURNING *`,
+        [dispute.campaign_id, dispute.id]
+      );
+      unfrozenWithdrawals = rows;
+    } else {
+      await client.query(`UPDATE campaigns SET status = 'refunded' WHERE id = $1`, [dispute.campaign_id]);
+      for (const refund of refunds) {
+        await client.query(
+          `INSERT INTO withdrawal_requests
+             (campaign_id, requested_by, amount, destination_key, unsigned_xdr,
+              creator_signed, platform_signed, status, tx_hash, is_refund, dispute_id)
+           VALUES ($1, $2, $3, $4, $5, TRUE, TRUE, 'submitted', $6, TRUE, $7)`,
+          [dispute.campaign_id, req.user.userId, refund.amount, refund.walletPublicKey, refund.xdr, refund.txHash, dispute.id]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
+
+    for (const withdrawal of unfrozenWithdrawals) {
+      setImmediate(() =>
+        emitWebhookEventForUser(dispute.creator_id, WEBHOOK_EVENTS.WITHDRAWAL_UPDATED, { withdrawal }).catch((err) =>
+          logger.error('Withdrawal updated webhook emit failed', { error: err.message })
+        )
+      );
+    }
+
+    if (decision === 'release_to_creator') {
+      const { rows: creatorRows } = await db.query('SELECT email, name FROM users WHERE id = $1', [dispute.creator_id]);
+      if (creatorRows.length) {
+        sendDisputeResolvedCreatorEmail({
+          to: creatorRows[0].email,
+          disputeId: dispute.id,
+          outcome: 'resolved in your favor — the dispute is closed',
+          creatorName: creatorRows[0].name,
+          campaignTitle: dispute.campaign_title,
+          resolutionNote: reason,
+          campaignUrl: `${frontendBaseUrl()}/campaigns/${dispute.campaign_id}`,
+        }).catch((err) => logger.error('Dispute resolved creator email failed', { error: err.message }));
+      }
+    } else if (refunds.length) {
+      const { rows: contributorUsers } = await db.query(
+        'SELECT id, email, name FROM users WHERE id = ANY($1::uuid[])',
+        [refunds.map((r) => r.contributorId)]
+      );
+      for (const user of contributorUsers) {
+        sendDisputeResolvedContributorEmail({
+          to: user.email,
+          disputeId: dispute.id,
+          outcome: 'resolved in your favor — a refund has been issued',
+          contributorName: user.name,
+          campaignTitle: dispute.campaign_title,
+          resolutionNote: reason,
+          campaignUrl: `${frontendBaseUrl()}/campaigns/${dispute.campaign_id}`,
+        }).catch((err) => logger.error('Dispute resolved contributor email failed', { error: err.message }));
+      }
+    }
+
+    setImmediate(() => {
+      const payload = { dispute: updated[0], campaign_id: dispute.campaign_id };
+      emitWebhookEventForUser(dispute.creator_id, WEBHOOK_EVENTS.DISPUTE_RESOLVED, payload).catch((err) =>
+        logger.error('Dispute resolved webhook emit failed', { error: err.message })
+      );
+      emitWebhookEventForCampaign(dispute.campaign_id, WEBHOOK_EVENTS.DISPUTE_RESOLVED, payload).catch((err) =>
+        logger.error('Dispute resolved webhook emit failed', { error: err.message })
+      );
+    });
+
+    res.json({
+      ...updated[0],
+      refunds: decision === 'refund_contributors'
+        ? refunds.map((r) => ({ contributorId: r.contributorId, walletPublicKey: r.walletPublicKey, amount: r.amount, asset: assetCode }))
+        : undefined,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    logger.error('Dispute decision recording failed', { dispute_id: dispute.id, error: err.message });
+    res.status(500).json({ error: 'Could not record dispute decision' });
+  } finally {
+    client.release();
+  }
+}));
 
 // GET /disputes/:id/events — audit log (admin only)
 router.get('/disputes/:id/events', requireAuth, requireRole('admin'), asyncHandler(async (req, res) => {

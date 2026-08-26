@@ -542,6 +542,55 @@ test('POST /api/contributions returns 502 when Stellar submit fails and skips au
   assert.equal(inserted, false);
 });
 
+test('POST /api/contributions returns 409 CAMPAIGN_DISPUTED for a disputed campaign', async () => {
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('SELECT status FROM campaigns')) {
+        return { rows: [{ status: 'disputed' }] };
+      }
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{ id: '11111111-1111-1111-1111-111111111111', status: 'disputed', asset_type: 'XLM', wallet_public_key: VALID_G }],
+        };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions')
+    .set('Authorization', 'Bearer token')
+    .send({ campaign_id: '11111111-1111-1111-1111-111111111111', amount: '5.0000000', send_asset: 'XLM' });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, 'CAMPAIGN_DISPUTED');
+});
+
+test('POST /api/contributions/prepare returns 409 CAMPAIGN_DISPUTED for a disputed campaign', async () => {
+  const sender = Keypair.random();
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('SELECT status FROM campaigns')) {
+        return { rows: [{ status: 'disputed' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions/prepare')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: '11111111-1111-1111-1111-111111111111',
+      amount: '5.0000000',
+      send_asset: 'XLM',
+      sender_public_key: sender.publicKey(),
+    });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, 'CAMPAIGN_DISPUTED');
+});
+
 test('POST /api/contributions/prepare returns unsigned XDR and prepare token for Freighter', async () => {
   const sender = Keypair.random();
   let preparedPayload = null;

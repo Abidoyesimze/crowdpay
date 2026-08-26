@@ -416,7 +416,8 @@
     "evidence": "URL des preuves (facultatif)",
     "submit": "Envoyer le litige",
     "submitting": "Envoi...",
-    "error": "Impossible d'envoyer le litige"
+    "error": "Impossible d'envoyer le litige",
+    "notAContributor": "Seuls les contributeurs ayant soutenu cette campagne peuvent déposer un litige"
   },
   "kyc": {
     "title": "Vérifiez votre identité pour créer des campagnes",
@@ -430,7 +431,8 @@
     "goalReached": "Objectif atteint",
     "campaignEnded": "Campagne terminée",
     "campaignClosed": "Campagne fermée",
-    "draft": "Brouillon"
+    "draft": "Brouillon",
+    "disputed": "Litige en cours"
   },
   "dashboard": {
     "title": "Tableau de bord",

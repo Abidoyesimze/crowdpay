@@ -416,7 +416,8 @@
     "evidence": "Evidence URL (optional)",
     "submit": "Submit dispute",
     "submitting": "Submitting...",
-    "error": "Could not submit dispute"
+    "error": "Could not submit dispute",
+    "notAContributor": "Only contributors who have backed this campaign can raise a dispute"
   },
   "kyc": {
     "title": "Verify your identity to create campaigns",
@@ -430,7 +431,8 @@
     "goalReached": "Goal reached",
     "campaignEnded": "Campaign ended",
     "campaignClosed": "Campaign closed",
-    "draft": "Draft"
+    "draft": "Draft",
+    "disputed": "Dispute in progress"
   },
   "dashboard": {
     "title": "Dashboard",

@@ -34,7 +34,11 @@ export default function DisputeModal({ campaign, onClose, onSubmitted }) {
       onSubmitted?.();
       onClose();
     } catch (err) {
-      setError(err.message || t('dispute.error'));
+      if (err.code === 'NOT_A_CONTRIBUTOR') {
+        setError(t('dispute.notAContributor'));
+      } else {
+        setError(err.message || t('dispute.error'));
+      }
     } finally {
       setBusy(false);
     }
