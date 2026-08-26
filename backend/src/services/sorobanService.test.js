@@ -404,7 +404,7 @@ describe('sorobanService real implementation tests', () => {
       assert.equal(res, null);
     });
 
-    test('depositToEscrow invokes contract with deposit method', async () => {
+    test('depositToEscrow invokes contract with deposit method and returns the tx hash', async () => {
       const service = buildService({
         submitTransaction: async () => ({ status: 'SUCCESS' }),
       });
@@ -416,7 +416,65 @@ describe('sorobanService real implementation tests', () => {
         signerSecret: TEST_SECRET,
       });
 
-      assert.equal(res, null);
+      assert.equal(res.returnValue, null);
+      assert.equal(typeof res.txHash, 'string');
+      assert.equal(res.txHash.length, 64);
+    });
+
+    test('depositToEscrow surfaces a distinct tx hash per call (derived from the signed envelope)', async () => {
+      const service = buildService({
+        loadAccount: async (pk) => new Account(pk || TEST_PUBLIC, '1'),
+        submitTransaction: async () => ({ status: 'SUCCESS' }),
+      });
+
+      const res1 = await service.depositToEscrow({
+        contractId: TEST_CONTRACT_ID,
+        fromAddress: TEST_PUBLIC,
+        amount: 1000,
+        signerSecret: TEST_SECRET,
+      });
+      const res2 = await service.depositToEscrow({
+        contractId: TEST_CONTRACT_ID,
+        fromAddress: TEST_PUBLIC,
+        amount: 2000,
+        signerSecret: TEST_SECRET,
+      });
+
+      assert.notEqual(res1.txHash, res2.txHash);
+    });
+
+    test('buildUnsignedEscrowDeposit returns unsigned prepared XDR without a signerSecret', async () => {
+      const service = buildService();
+
+      const xdrString = await service.buildUnsignedEscrowDeposit({
+        contractId: TEST_CONTRACT_ID,
+        fromAddress: TEST_PUBLIC,
+        amount: 1000,
+      });
+
+      assert.equal(typeof xdrString, 'string');
+      assert.ok(xdrString.length > 0);
+    });
+
+    test('isContractDepositEligible requires SOROBAN_ENABLED=true and an escrow_contract_id', () => {
+      const service = buildService();
+      const prevEnabled = process.env.SOROBAN_ENABLED;
+
+      process.env.SOROBAN_ENABLED = 'true';
+      assert.equal(
+        service.isContractDepositEligible({ escrow_contract_id: TEST_CONTRACT_ID }),
+        true,
+      );
+      assert.equal(service.isContractDepositEligible({ escrow_contract_id: null }), false);
+
+      process.env.SOROBAN_ENABLED = 'false';
+      assert.equal(
+        service.isContractDepositEligible({ escrow_contract_id: TEST_CONTRACT_ID }),
+        false,
+      );
+
+      if (prevEnabled === undefined) delete process.env.SOROBAN_ENABLED;
+      else process.env.SOROBAN_ENABLED = prevEnabled;
     });
 
     test('requestRefund & refund invoke contract with refund method', async () => {

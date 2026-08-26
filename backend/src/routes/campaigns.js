@@ -1,10 +1,12 @@
 const router = require('express').Router();
 const multer = require('multer');
+const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = rateLimit;
 const Sentry = require('@sentry/node');
 const db = require('../config/database');
 const logger = require('../config/logger');
 const { MILESTONE_LIMIT } = require('../config/constants');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, optionalAuth } = require('../middleware/auth');
 const {
   createCampaignWallet,
   getCampaignBalance,
@@ -2262,13 +2264,52 @@ router.get('/:id/referrals', requireAuth, requireCampaignMember('owner'), asyncH
   res.json(rows);
 }));
 
-// POST /campaigns/:id/share — increment share_count
-router.post('/:id/share', asyncHandler(async (req, res) => {
+const isTestEnv = process.env.NODE_ENV === 'test';
+const shareLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: isTestEnv ? 100000 : 20,
+  message: { error: 'Too many requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.userId || ipKeyGenerator(req.ip),
+  skip: () => isTestEnv,
+});
+
+const SHARE_DEDUP_WINDOW = '1 hour';
+
+// POST /campaigns/:id/share — increment share_count, deduped per actor within
+// a rolling window and rate-limited (issue #704). Stays anonymous-friendly
+// (no requireAuth) since social shares come from logged-out visitors too;
+// optionalAuth lets us dedup by user id when one is available, which is more
+// robust than IP alone (e.g. many users behind the same NAT/office IP).
+router.post('/:id/share', shareLimiter, optionalAuth, asyncHandler(async (req, res) => {
+  const { rows: campaignRows } = await db.query('SELECT id, share_count FROM campaigns WHERE id = $1', [req.params.id]);
+  if (!campaignRows.length) return res.status(404).json({ error: 'Campaign not found' });
+
+  const actorHash = crypto
+    .createHash('sha256')
+    .update(req.user?.userId ? `user:${req.user.userId}` : `ip:${req.ip}`)
+    .digest('hex');
+
+  const { rows: dedupRows } = await db.query(
+    `INSERT INTO campaign_share_dedup (campaign_id, actor_hash, last_shared_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (campaign_id, actor_hash) DO UPDATE
+       SET last_shared_at = NOW()
+       WHERE campaign_share_dedup.last_shared_at < NOW() - INTERVAL '${SHARE_DEDUP_WINDOW}'
+     RETURNING campaign_id`,
+    [req.params.id, actorHash]
+  );
+
+  if (!dedupRows.length) {
+    // Duplicate share from this actor within the window — don't recount it.
+    return res.json({ share_count: campaignRows[0].share_count });
+  }
+
   const { rows } = await db.query(
     'UPDATE campaigns SET share_count = share_count + 1 WHERE id = $1 RETURNING share_count',
     [req.params.id]
   );
-  if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
   res.json({ share_count: rows[0].share_count });
 }));
 

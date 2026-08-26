@@ -41,7 +41,7 @@ function buildUnsignedPaymentXdr({ senderPublicKey, destinationPublicKey, amount
     .toXDR();
 }
 
-function buildApp({ queryImpl, stellarImpl, stellarTxImpl, connectImpl }) {
+function buildApp({ queryImpl, stellarImpl, stellarTxImpl, connectImpl, sorobanImpl, ledgerMonitorImpl }) {
   const stellarStub = {
     buildUnsignedContributionPayment: async () => 'unsigned-xdr',
     buildUnsignedContributionPathPayment: async () => 'unsigned-xdr',
@@ -68,6 +68,18 @@ function buildApp({ queryImpl, stellarImpl, stellarTxImpl, connectImpl }) {
   const stellarTxStub = {
     insertContributionSubmitted: async () => 'stellar-row-id',
     ...stellarTxImpl,
+  };
+
+  const sorobanStub = {
+    triggerRefund: async () => null,
+    isContractDepositEligible: () => false,
+    buildUnsignedEscrowDeposit: async () => 'soroban-unsigned-xdr',
+    ...sorobanImpl,
+  };
+
+  const ledgerMonitorStub = {
+    recordConfirmedContribution: async () => {},
+    ...ledgerMonitorImpl,
   };
 
   const contributionServiceStub = {
@@ -212,9 +224,8 @@ function buildApp({ queryImpl, stellarImpl, stellarTxImpl, connectImpl }) {
       withDecryptedWalletSecret: async (_ciphertext, _context, fn) => fn('SDECRYPTED'),
     },
     '../services/contributionService': contributionServiceStub,
-    '../services/sorobanService': {
-      triggerRefund: async () => null,
-    },
+    '../services/sorobanService': sorobanStub,
+    '../services/ledgerMonitor': ledgerMonitorStub,
     '../services/kycService': {
       assertUserKycVerified: async () => {},
     },
@@ -551,6 +562,12 @@ test('POST /api/contributions/prepare returns unsigned XDR and prepare token for
           rows: [{ id: '11111111-1111-1111-1111-111111111111', status: 'active', asset_type: 'XLM', wallet_public_key: VALID_G }],
         };
       }
+      if (text.includes('INSERT INTO stellar_transactions') && text.includes('RETURNING id')) {
+        return { rows: [{ id: 'reservation-1' }] };
+      }
+      if (text.includes('FROM contributions') || text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: '0' }] };
+      }
       return { rows: [] };
     },
     stellarImpl: {
@@ -596,7 +613,10 @@ test('POST /api/contributions/submit-signed accepts Freighter-signed XDR that ma
   });
 
   const app = buildApp({
-    queryImpl: async (text) => {
+    queryImpl: async (text, params) => {
+      if (text.includes('SELECT status, max_contribution, max_per_user, asset_type FROM campaigns')) {
+        return { rows: [{ status: 'active', max_contribution: null, max_per_user: null, asset_type: 'XLM' }] };
+      }
       if (text.includes('FROM campaigns')) {
         return {
           rows: [{
@@ -607,6 +627,19 @@ test('POST /api/contributions/submit-signed accepts Freighter-signed XDR that ma
           }],
         };
       }
+      if (text.includes('SELECT id, status, amount, expires_at FROM stellar_transactions')) {
+        return { rows: [{ id: 'reservation-1', status: 'reserved', amount: '5.0000000', expires_at: null }] };
+      }
+      if (text.includes('INSERT INTO stellar_transactions') && text.includes('RETURNING id')) {
+        return { rows: [{ id: 'reservation-1' }] };
+      }
+      if (text.includes('UPDATE stellar_transactions') && text.includes('RETURNING id')) {
+        insertedRow = { unsignedXdr: params[1], signedXdr: params[2] };
+        return { rows: [{ id: 'stellar-freighter-row' }] };
+      }
+      if (text.includes('FROM contributions') || text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: '0' }] };
+      }
       return { rows: [] };
     },
     stellarImpl: {
@@ -614,12 +647,6 @@ test('POST /api/contributions/submit-signed accepts Freighter-signed XDR that ma
       submitPreparedTransaction: async (xdr) => {
         submittedXdr = xdr;
         return 'tx-freighter';
-      },
-    },
-    stellarTxImpl: {
-      insertContributionSubmitted: async (_client, row) => {
-        insertedRow = row;
-        return 'stellar-freighter-row';
       },
     },
   });
@@ -682,6 +709,12 @@ test('POST /api/contributions/submit-signed rejects a signed XDR that does not m
           }],
         };
       }
+      if (text.includes('INSERT INTO stellar_transactions') && text.includes('RETURNING id')) {
+        return { rows: [{ id: 'reservation-1' }] };
+      }
+      if (text.includes('FROM contributions') || text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: '0' }] };
+      }
       return { rows: [] };
     },
     stellarImpl: {
@@ -717,6 +750,388 @@ test('POST /api/contributions/submit-signed rejects a signed XDR that does not m
 
   assert.equal(response.status, 422);
   assert.match(response.body.error, /does not match/i);
+});
+
+test('POST /api/contributions/prepare enforces max_per_user atomically', async () => {
+  const sender = Keypair.random();
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{
+            id: '11111111-1111-1111-1111-111111111111',
+            status: 'active',
+            asset_type: 'XLM',
+            wallet_public_key: VALID_G,
+            max_per_user: '10.0000000',
+          }],
+        };
+      }
+      if (text.includes('FROM contributions')) {
+        return { rows: [{ total: '8.0000000' }] };
+      }
+      if (text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: '0' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions/prepare')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: '11111111-1111-1111-1111-111111111111',
+      amount: '5.0000000',
+      send_asset: 'XLM',
+      sender_public_key: sender.publicKey(),
+    });
+
+  assert.equal(response.status, 400);
+  assert.match(response.body.error, /per-contributor limit/i);
+});
+
+test('POST /api/contributions/prepare counts an existing in-flight reservation toward the cap', async () => {
+  const sender = Keypair.random();
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{
+            id: '11111111-1111-1111-1111-111111111111',
+            status: 'active',
+            asset_type: 'XLM',
+            wallet_public_key: VALID_G,
+            max_per_user: '10.0000000',
+          }],
+        };
+      }
+      if (text.includes('FROM contributions')) {
+        return { rows: [{ total: '0' }] };
+      }
+      // Simulates another not-yet-indexed /prepare reservation from the same sender.
+      if (text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: '7.0000000' }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions/prepare')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: '11111111-1111-1111-1111-111111111111',
+      amount: '5.0000000',
+      send_asset: 'XLM',
+      sender_public_key: sender.publicKey(),
+    });
+
+  assert.equal(response.status, 400);
+  assert.match(response.body.error, /per-contributor limit/i);
+});
+
+test('POST /api/contributions/prepare serializes concurrent requests from the same sender so only one fits under the cap', async () => {
+  // Simulates real Postgres pg_advisory_xact_lock serialization: concurrent
+  // /prepare calls for the same (campaign, sender) queue on the lock, and
+  // each sees the other's committed reservation before deciding.
+  const sender = Keypair.random();
+  let reservedTotal = 0;
+  const lockQueue = new Map();
+  let currentRelease = null;
+
+  function acquireLock(key) {
+    const tail = lockQueue.get(key) || Promise.resolve();
+    let release;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    lockQueue.set(key, tail.then(() => held));
+    return tail.then(() => release);
+  }
+
+  const app = buildApp({
+    queryImpl: async (text, params) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{
+            id: '11111111-1111-1111-1111-111111111111',
+            status: 'active',
+            asset_type: 'XLM',
+            wallet_public_key: VALID_G,
+            max_per_user: '10.0000000',
+          }],
+        };
+      }
+      if (text.includes('pg_advisory_xact_lock')) {
+        currentRelease = await acquireLock('camp-1:' + sender.publicKey());
+        return { rows: [] };
+      }
+      if (text.includes('FROM contributions')) {
+        return { rows: [{ total: '0' }] };
+      }
+      if (text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: String(reservedTotal) }] };
+      }
+      if (text.includes('INSERT INTO stellar_transactions') && text.includes('RETURNING id')) {
+        reservedTotal += parseFloat(params[3]);
+        return { rows: [{ id: 'reservation-x' }] };
+      }
+      if (text === 'COMMIT' || text === 'ROLLBACK') {
+        currentRelease?.();
+        currentRelease = null;
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const send = (amount) =>
+    request(app)
+      .post('/api/contributions/prepare')
+      .set('Authorization', 'Bearer token')
+      .send({
+        campaign_id: '11111111-1111-1111-1111-111111111111',
+        amount,
+        send_asset: 'XLM',
+        sender_public_key: sender.publicKey(),
+      });
+
+  const [r1, r2] = await Promise.all([send('6.0000000'), send('6.0000000')]);
+
+  const statuses = [r1.status, r2.status].sort();
+  assert.deepEqual(statuses, [200, 400]);
+  assert.equal(reservedTotal, 6); // only the winning reservation was ever inserted
+});
+
+test('POST /api/contributions/submit-signed rejects a reservation that is no longer reserved (expired or already used)', async () => {
+  const sender = Keypair.random();
+  const destination = Keypair.random();
+  const unsignedXdr = buildUnsignedPaymentXdr({
+    senderPublicKey: sender.publicKey(),
+    destinationPublicKey: destination.publicKey(),
+    amount: '5.0000000',
+  });
+
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{
+            id: '11111111-1111-1111-1111-111111111111',
+            status: 'active',
+            asset_type: 'XLM',
+            wallet_public_key: destination.publicKey(),
+          }],
+        };
+      }
+      if (text.includes('SELECT id, status, amount, expires_at FROM stellar_transactions')) {
+        // The reservation already expired since /prepare ran.
+        return { rows: [{ id: 'reservation-1', status: 'reserved', amount: '5.0000000', expires_at: '2000-01-01T00:00:00.000Z' }] };
+      }
+      if (text.includes('INSERT INTO stellar_transactions') && text.includes('RETURNING id')) {
+        return { rows: [{ id: 'reservation-1' }] };
+      }
+      if (text.includes('FROM contributions') || text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: '0' }] };
+      }
+      return { rows: [] };
+    },
+    stellarImpl: {
+      buildUnsignedContributionPayment: async () => unsignedXdr,
+      submitPreparedTransaction: async () => {
+        throw new Error('should not submit an expired reservation');
+      },
+    },
+  });
+
+  const prepare = await request(app)
+    .post('/api/contributions/prepare')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: '11111111-1111-1111-1111-111111111111',
+      amount: '5.0000000',
+      send_asset: 'XLM',
+      sender_public_key: sender.publicKey(),
+    });
+  assert.equal(prepare.status, 200);
+
+  const tx = TransactionBuilder.fromXDR(prepare.body.unsigned_xdr, TESTNET_PASSPHRASE);
+  tx.sign(sender);
+
+  const response = await request(app)
+    .post('/api/contributions/submit-signed')
+    .set('Authorization', 'Bearer token')
+    .send({ prepare_token: prepare.body.prepare_token, signed_xdr: tx.toXDR() });
+
+  assert.equal(response.status, 410);
+});
+
+test('POST /api/contributions/prepare builds a Soroban deposit for a contract-mode, same-asset campaign', async () => {
+  const sender = Keypair.random();
+  let depositArgs = null;
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{
+            id: '11111111-1111-1111-1111-111111111111',
+            status: 'active',
+            asset_type: 'USDC',
+            wallet_public_key: VALID_G,
+            escrow_contract_id: 'CESCROWCONTRACT',
+          }],
+        };
+      }
+      if (text.includes('INSERT INTO stellar_transactions') && text.includes('RETURNING id')) {
+        return { rows: [{ id: 'reservation-1' }] };
+      }
+      if (text.includes('FROM contributions') || text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: '0' }] };
+      }
+      return { rows: [] };
+    },
+    sorobanImpl: {
+      isContractDepositEligible: (campaign) => Boolean(campaign?.escrow_contract_id),
+      buildUnsignedEscrowDeposit: async (args) => {
+        depositArgs = args;
+        return 'soroban-unsigned-xdr';
+      },
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions/prepare')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: '11111111-1111-1111-1111-111111111111',
+      amount: '10.0000000',
+      send_asset: 'USDC',
+      sender_public_key: sender.publicKey(),
+    });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.unsigned_xdr, 'soroban-unsigned-xdr');
+  assert.equal(depositArgs.contractId, 'CESCROWCONTRACT');
+  assert.equal(depositArgs.fromAddress, sender.publicKey());
+  assert.equal(depositArgs.amount, 100_000_000);
+});
+
+test('POST /api/contributions/prepare rejects a cross-asset contribution to a contract-mode campaign', async () => {
+  const sender = Keypair.random();
+  const app = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{
+            id: '11111111-1111-1111-1111-111111111111',
+            status: 'active',
+            asset_type: 'USDC',
+            wallet_public_key: VALID_G,
+            escrow_contract_id: 'CESCROWCONTRACT',
+          }],
+        };
+      }
+      return { rows: [] };
+    },
+    sorobanImpl: {
+      isContractDepositEligible: (campaign) => Boolean(campaign?.escrow_contract_id),
+    },
+  });
+
+  const response = await request(app)
+    .post('/api/contributions/prepare')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: '11111111-1111-1111-1111-111111111111',
+      amount: '10.0000000',
+      send_asset: 'XLM',
+      sender_public_key: sender.publicKey(),
+    });
+
+  assert.equal(response.status, 422);
+  assert.match(response.body.error, /cross-asset/i);
+});
+
+test('POST /api/contributions/submit-signed records the contribution synchronously for a contract-mode deposit', async () => {
+  const sender = Keypair.random();
+  const recordCalls = [];
+  const unsignedXdr = buildUnsignedPaymentXdr({
+    senderPublicKey: sender.publicKey(),
+    destinationPublicKey: sender.publicKey(),
+    amount: '10.0000000',
+  });
+
+  const app = buildApp({
+    queryImpl: async (text, params) => {
+      if (text.includes('SELECT status, max_contribution, max_per_user, asset_type FROM campaigns')) {
+        return { rows: [{ status: 'active', max_contribution: null, max_per_user: null, asset_type: 'USDC' }] };
+      }
+      if (text.includes('FROM campaigns')) {
+        return {
+          rows: [{
+            id: '11111111-1111-1111-1111-111111111111',
+            status: 'active',
+            asset_type: 'USDC',
+            wallet_public_key: VALID_G,
+            escrow_contract_id: 'CESCROWCONTRACT',
+          }],
+        };
+      }
+      if (text.includes('SELECT id, status, amount, expires_at FROM stellar_transactions')) {
+        return { rows: [{ id: 'reservation-1', status: 'reserved', amount: '10.0000000', expires_at: null }] };
+      }
+      if (text.includes('INSERT INTO stellar_transactions') && text.includes('RETURNING id')) {
+        return { rows: [{ id: 'reservation-1' }] };
+      }
+      if (text.includes('UPDATE stellar_transactions') && text.includes('RETURNING id')) {
+        return { rows: [{ id: 'reservation-1' }] };
+      }
+      if (text.includes('FROM contributions') || text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: '0' }] };
+      }
+      return { rows: [] };
+    },
+    sorobanImpl: {
+      isContractDepositEligible: (campaign) => Boolean(campaign?.escrow_contract_id),
+      buildUnsignedEscrowDeposit: async () => unsignedXdr,
+    },
+    ledgerMonitorImpl: {
+      recordConfirmedContribution: async (args) => {
+        recordCalls.push(args);
+      },
+    },
+    stellarImpl: {
+      submitPreparedTransaction: async () => 'contract-tx-hash',
+    },
+  });
+
+  const prepare = await request(app)
+    .post('/api/contributions/prepare')
+    .set('Authorization', 'Bearer token')
+    .send({
+      campaign_id: '11111111-1111-1111-1111-111111111111',
+      amount: '10.0000000',
+      send_asset: 'USDC',
+      sender_public_key: sender.publicKey(),
+    });
+  assert.equal(prepare.status, 200);
+
+  const tx = TransactionBuilder.fromXDR(prepare.body.unsigned_xdr, TESTNET_PASSPHRASE);
+  tx.sign(sender);
+
+  const response = await request(app)
+    .post('/api/contributions/submit-signed')
+    .set('Authorization', 'Bearer token')
+    .send({ prepare_token: prepare.body.prepare_token, signed_xdr: tx.toXDR() });
+
+  assert.equal(response.status, 202);
+  assert.equal(response.body.tx_hash, 'contract-tx-hash');
+  assert.equal(recordCalls.length, 1);
+  assert.equal(recordCalls[0].campaignId, '11111111-1111-1111-1111-111111111111');
+  assert.equal(recordCalls[0].senderPublicKey, sender.publicKey());
+  assert.equal(recordCalls[0].destinationAsset, 'USDC');
+  assert.equal(recordCalls[0].txHash, 'contract-tx-hash');
 });
 
 test('GET /api/contributions/finalization/:txHash returns finalized when indexed', async () => {
@@ -881,10 +1296,11 @@ test('POST /api/contributions validates cumulative max_per_user cap', async () =
       if (text.includes('FROM users')) {
         return { rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }] };
       }
-      if (text.includes('COALESCE(SUM(amount)')) {
-        return {
-          rows: [{ total: '80.0000000' }],
-        };
+      if (text.includes('FROM contributions')) {
+        return { rows: [{ total: '80.0000000' }] };
+      }
+      if (text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: '0' }] };
       }
       return { rows: [] };
     },
@@ -917,8 +1333,11 @@ test('POST /api/contributions uses an advisory lock around the per-user cap chec
       if (text.includes('FROM users')) {
         return { rows: [{ wallet_secret_encrypted: 'SSECRET', wallet_public_key: 'GSENDER' }] };
       }
-      if (text.includes('COALESCE(SUM(amount)')) {
+      if (text.includes('FROM contributions')) {
         return { rows: [{ total: '20.0000000' }] };
+      }
+      if (text.includes('FROM stellar_transactions')) {
+        return { rows: [{ total: '0' }] };
       }
       if (text.includes('pg_advisory_xact_lock')) {
         lockQueries.push(text);

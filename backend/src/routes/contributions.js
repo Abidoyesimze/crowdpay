@@ -18,11 +18,8 @@ const {
   isBadSequenceError,
   accountExistsOnLedger,
 } = require("../services/stellarService");
-const {
-  insertContributionSubmitted,
-} = require("../services/stellarTransactionService");
 const { sendEmail } = require("../services/emailService");
-const { SLIPPAGE_BPS } = require("../config/constants");
+const { SLIPPAGE_BPS, STELLAR_ASSET_DECIMALS_SCALE } = require("../config/constants");
 const {
   buildContributionIntent,
   buildContributionMemo,
@@ -34,7 +31,12 @@ const {
   getContributorDashboardCsv,
 } = require('../services/userDashboardService');
 const { buildTaxReceiptPdf } = require('../services/taxReceiptPdf');
-const { triggerRefund } = require('../services/sorobanService');
+const {
+  triggerRefund,
+  buildUnsignedEscrowDeposit,
+  isContractDepositEligible,
+} = require('../services/sorobanService');
+const { recordConfirmedContribution } = require('../services/ledgerMonitor');
 const { emitWebhookEventForUser, emitWebhookEventForCampaign, WEBHOOK_EVENTS } = require('../services/webhookDispatcher');
 const { assertUserKycVerified } = require('../services/kycService');
 const asyncHandler = require('../utils/asyncHandler');
@@ -101,6 +103,34 @@ function verifyPreparedContributionToken(token) {
     throw new Error('Invalid contribution prepare token');
   }
   return payload;
+}
+
+const CONTRACT_MODE_CROSS_ASSET_MESSAGE = (assetType) =>
+  `Cross-asset contributions aren't supported for this campaign's contract-backed treasury yet — please contribute in ${assetType} directly.`;
+
+const RESERVATION_TTL = "10 minutes";
+
+/**
+ * Total cap exposure for (campaign, sender): confirmed on-chain contributions
+ * plus any not-yet-expired in-flight reservation ('reserved') or already
+ * broadcast-but-not-indexed ('submitted') self-custody intent. Used to
+ * atomically enforce max_contribution / max_per_user across concurrent
+ * /prepare calls (issue #713) — must be called with the (campaign_id,
+ * sender_public_key) advisory lock already held.
+ */
+async function sumContributionCapExposure(client, { campaignId, senderPublicKey, excludeReservationId = null }) {
+  const { rows: confirmedRows } = await client.query(
+    'SELECT COALESCE(SUM(amount), 0) AS total FROM contributions WHERE campaign_id = $1 AND sender_public_key = $2 AND refunded = FALSE',
+    [campaignId, senderPublicKey]
+  );
+  const { rows: pendingRows } = await client.query(
+    `SELECT COALESCE(SUM(amount), 0) AS total FROM stellar_transactions
+     WHERE campaign_id = $1 AND sender_public_key = $2 AND kind = 'contribution'
+       AND status IN ('reserved', 'submitted') AND (expires_at IS NULL OR expires_at > NOW())
+       AND ($3::uuid IS NULL OR id != $3)`,
+    [campaignId, senderPublicKey, excludeReservationId]
+  );
+  return parseFloat(confirmedRows[0].total) + parseFloat(pendingRows[0].total);
 }
 
 function handleKycGateError(res, err) {
@@ -394,15 +424,67 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
     return res.status(400).json({ error: `Contribution amount is below the minimum limit of ${campaign.min_contribution} ${campaign.asset_type}` });
   }
 
-  if (campaign.max_contribution) {
-    const { rows: sumRows } = await db.query(
-      'SELECT COALESCE(SUM(amount), 0) as total FROM contributions WHERE campaign_id = $1 AND sender_public_key = $2',
-      [campaign_id, sender_public_key]
+  const contractMode = isContractDepositEligible(campaign);
+  if (contractMode && send_asset !== campaign.asset_type) {
+    return res.status(422).json({ error: CONTRACT_MODE_CROSS_ASSET_MESSAGE(campaign.asset_type) });
+  }
+
+  // Atomically reserve this intent's exposure against max_contribution /
+  // max_per_user before handing back an unsigned transaction — this closes
+  // the race where multiple concurrent /prepare calls each see a stale sum
+  // and all pass (issue #713).
+  const reservationClient = await db.connect();
+  let reservation = null;
+  let reservationStarted = false;
+  try {
+    await reservationClient.query('BEGIN');
+    reservationStarted = true;
+    await reservationClient.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+      [String(campaign_id), String(sender_public_key)]
     );
-    const totalExisting = parseFloat(sumRows[0].total);
-    if (totalExisting + parseFloat(amount) > parseFloat(campaign.max_contribution)) {
+
+    const exposure = await sumContributionCapExposure(reservationClient, {
+      campaignId: campaign_id,
+      senderPublicKey: sender_public_key,
+    });
+    const prospectiveTotal = exposure + parseFloat(amount);
+
+    if (campaign.max_contribution && prospectiveTotal > parseFloat(campaign.max_contribution)) {
+      await reservationClient.query('ROLLBACK');
+      reservationStarted = false;
       return res.status(400).json({ error: `Contribution violates the maximum limit of ${campaign.max_contribution} ${campaign.asset_type} per backer` });
     }
+    if (campaign.max_per_user && prospectiveTotal > parseFloat(campaign.max_per_user)) {
+      await reservationClient.query('ROLLBACK');
+      reservationStarted = false;
+      return res.status(400).json({
+        error: `You have already contributed ${exposure} ${campaign.asset_type}. The per-contributor limit is ${campaign.max_per_user}.`,
+      });
+    }
+
+    const { rows: reservedRows } = await reservationClient.query(
+      `INSERT INTO stellar_transactions
+         (kind, status, campaign_id, initiated_by_user_id, sender_public_key, amount, expires_at, metadata)
+       VALUES ('contribution', 'reserved', $1, $2, $3, $4, NOW() + INTERVAL '${RESERVATION_TTL}', '{}'::jsonb)
+       RETURNING id`,
+      [campaign_id, req.user.userId, sender_public_key, amount]
+    );
+    reservation = reservedRows[0];
+
+    await reservationClient.query('COMMIT');
+    reservationStarted = false;
+  } catch (err) {
+    if (reservationStarted) {
+      try {
+        await reservationClient.query('ROLLBACK');
+      } catch (rollbackErr) {
+        logger.warn('Contribution reservation rollback failed', { error: rollbackErr.message });
+      }
+    }
+    throw err;
+  } finally {
+    reservationClient.release();
   }
 
   try {
@@ -414,8 +496,13 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
       displayName: display_name,
     });
 
-    const unsignedXdr =
-      intent.kind === 'payment'
+    const unsignedXdr = contractMode
+      ? await buildUnsignedEscrowDeposit({
+          contractId: campaign.escrow_contract_id,
+          fromAddress: sender_public_key,
+          amount: Math.floor(parseFloat(amount) * STELLAR_ASSET_DECIMALS_SCALE),
+        })
+      : intent.kind === 'payment'
         ? await buildUnsignedContributionPayment({
             senderPublicKey: sender_public_key,
             destinationPublicKey: campaign.wallet_public_key,
@@ -438,8 +525,15 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
       campaign_id,
       sender_public_key,
       unsigned_xdr: unsignedXdr,
-      flow_metadata: { ...withReferralMetadata(intent.flowMetadata, campaign_id, req), ip_address: req.ip, device_fingerprint: hashDeviceFingerprint(req.body.device_fingerprint) },
+      flow_metadata: {
+        ...withReferralMetadata(intent.flowMetadata, campaign_id, req),
+        ip_address: req.ip,
+        device_fingerprint: hashDeviceFingerprint(req.body.device_fingerprint),
+        contract_mode: contractMode,
+      },
       conversion_quote: intent.conversionQuote,
+      reservation_id: reservation.id,
+      amount: String(amount),
     });
 
     res.json({
@@ -451,6 +545,10 @@ router.post('/prepare', requireAuth, contributionValidation, validateRequest, as
       network_name: isTestnet ? 'TESTNET' : 'PUBLIC',
     });
   } catch (err) {
+    await db.query(`UPDATE stellar_transactions SET status = 'failed', updated_at = NOW() WHERE id = $1`, [reservation.id]).catch((updateErr) => {
+      logger.warn('Failed to release contribution reservation after prepare error', { error: updateErr.message });
+    });
+
     if (err.statusCode === 422) {
       return res.status(422).json({ error: err.message });
     }
@@ -496,10 +594,88 @@ router.post('/submit-signed', requireAuth, asyncHandler(async (req, res) => {
     return res.status(422).json({ error: err.message });
   }
 
+  // Re-check campaign status and cap exposure atomically, immediately before
+  // broadcast — this is the last point the app can still say no, since a
+  // stale prepare_token would otherwise let a submit slip past the cap
+  // check that ran back at /prepare time (issue #713).
+  const lockClient = await db.connect();
+  let lockStarted = false;
+  try {
+    await lockClient.query('BEGIN');
+    lockStarted = true;
+    await lockClient.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+      [String(prepared.campaign_id), String(prepared.sender_public_key)]
+    );
+
+    const { rows: reservationRows } = await lockClient.query(
+      `SELECT id, status, amount, expires_at FROM stellar_transactions WHERE id = $1 AND kind = 'contribution'`,
+      [prepared.reservation_id]
+    );
+    const reservationRow = reservationRows[0];
+    if (
+      !reservationRow ||
+      reservationRow.status !== 'reserved' ||
+      (reservationRow.expires_at && new Date(reservationRow.expires_at) < new Date())
+    ) {
+      await lockClient.query('ROLLBACK');
+      lockStarted = false;
+      return res.status(410).json({
+        error: 'This prepared contribution has expired or was already used. Please prepare a new contribution.',
+      });
+    }
+
+    const { rows: campaignRows } = await lockClient.query(
+      'SELECT status, max_contribution, max_per_user, asset_type FROM campaigns WHERE id = $1',
+      [prepared.campaign_id]
+    );
+    if (!campaignRows.length || !['active', 'funded'].includes(campaignRows[0].status)) {
+      await lockClient.query(`UPDATE stellar_transactions SET status = 'failed', updated_at = NOW() WHERE id = $1`, [prepared.reservation_id]);
+      await lockClient.query('COMMIT');
+      lockStarted = false;
+      return res.status(409).json({ error: 'This campaign is no longer accepting contributions.' });
+    }
+    const campaignRow = campaignRows[0];
+
+    const exposure = await sumContributionCapExposure(lockClient, {
+      campaignId: prepared.campaign_id,
+      senderPublicKey: prepared.sender_public_key,
+      excludeReservationId: prepared.reservation_id,
+    });
+    const prospectiveTotal = exposure + parseFloat(reservationRow.amount);
+    const exceedsCap =
+      (campaignRow.max_contribution && prospectiveTotal > parseFloat(campaignRow.max_contribution)) ||
+      (campaignRow.max_per_user && prospectiveTotal > parseFloat(campaignRow.max_per_user));
+    if (exceedsCap) {
+      await lockClient.query(`UPDATE stellar_transactions SET status = 'failed', updated_at = NOW() WHERE id = $1`, [prepared.reservation_id]);
+      await lockClient.query('COMMIT');
+      lockStarted = false;
+      return res.status(400).json({
+        error: 'This contribution would exceed the campaign limit. Please prepare a new, smaller contribution.',
+      });
+    }
+
+    await lockClient.query(`UPDATE stellar_transactions SET status = 'submitted', updated_at = NOW() WHERE id = $1`, [prepared.reservation_id]);
+    await lockClient.query('COMMIT');
+    lockStarted = false;
+  } catch (err) {
+    if (lockStarted) {
+      try {
+        await lockClient.query('ROLLBACK');
+      } catch (rollbackErr) {
+        logger.warn('Contribution submit-signed lock rollback failed', { error: rollbackErr.message });
+      }
+    }
+    throw err;
+  } finally {
+    lockClient.release();
+  }
+
   let txHash;
   try {
     txHash = await submitPreparedTransaction(signed_xdr);
   } catch (err) {
+    await db.query(`UPDATE stellar_transactions SET status = 'failed', updated_at = NOW() WHERE id = $1`, [prepared.reservation_id]).catch(() => {});
     logger.error('Freighter contribution submission failed', {
       campaign_id: prepared.campaign_id,
       error: err.message,
@@ -514,14 +690,41 @@ router.post('/submit-signed', requireAuth, asyncHandler(async (req, res) => {
     });
   }
 
-  const stellarTransactionId = await insertContributionSubmitted(null, {
-    txHash,
-    campaignId: prepared.campaign_id,
-    userId: req.user.userId,
-    unsignedXdr: prepared.unsigned_xdr,
-    signedXdr: signed_xdr,
-    metadata: prepared.flow_metadata,
-  });
+  const { rows: finalizedRows } = await db.query(
+    `UPDATE stellar_transactions
+     SET tx_hash = $1, unsigned_xdr = $2, signed_xdr = $3, metadata = $4::jsonb, updated_at = NOW()
+     WHERE id = $5
+     RETURNING id`,
+    [txHash, prepared.unsigned_xdr, signed_xdr, JSON.stringify(prepared.flow_metadata || {}), prepared.reservation_id]
+  );
+  const stellarTransactionId = finalizedRows[0]?.id;
+
+  if (prepared.flow_metadata?.contract_mode) {
+    // Contract-mode deposits never appear in the classic Horizon payment
+    // stream ledgerMonitor watches — finalize accounting synchronously.
+    try {
+      await recordConfirmedContribution({
+        campaignId: prepared.campaign_id,
+        walletPublicKey: null,
+        senderPublicKey: prepared.sender_public_key,
+        destinationAmount: parseFloat(prepared.amount),
+        destinationAsset: prepared.flow_metadata.send_asset,
+        paymentType: 'contract_deposit',
+        txHash,
+      });
+    } catch (recordErr) {
+      logger.error('Failed to record contract-mode contribution', {
+        campaign_id: prepared.campaign_id,
+        tx_hash: txHash,
+        error: recordErr.message,
+      });
+      sendAlert('Contract-mode contribution recording failed', {
+        campaign_id: prepared.campaign_id,
+        tx_hash: txHash,
+        error: recordErr.message,
+      });
+    }
+  }
 
   res.status(202).json({
     tx_hash: txHash,
@@ -623,11 +826,13 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
     );
 
     if (campaign.max_per_user) {
-      const { rows: userCapRows } = await client.query(
-        'SELECT COALESCE(SUM(amount), 0) AS total FROM contributions WHERE campaign_id = $1 AND sender_public_key = $2 AND refunded = FALSE',
-        [campaign_id, contributorPublicKey]
-      );
-      const alreadyContributed = parseFloat(userCapRows[0].total);
+      // Includes any not-yet-indexed self-custody (Freighter) reservation/
+      // submission for this same (campaign, contributor) so the two flows
+      // can't be combined to exceed the cap (issue #713).
+      const alreadyContributed = await sumContributionCapExposure(client, {
+        campaignId: campaign_id,
+        senderPublicKey: contributorPublicKey,
+      });
       if (alreadyContributed + parseFloat(amount) > parseFloat(campaign.max_per_user)) {
         await client.query('ROLLBACK');
         transactionStarted = false;
@@ -668,6 +873,37 @@ router.post('/', contributionPostLimiter, requireAuth, contributionValidation, v
     });
     await client.query('COMMIT');
     transactionStarted = false;
+
+    if (result.contractMode) {
+      // Contract-mode deposits never appear in the classic Horizon payment
+      // stream ledgerMonitor watches, so finalize accounting here — now that
+      // the stellar_transactions row above is committed and visible. Runs
+      // after commit, not inside the transaction: recordConfirmedContribution
+      // opens its own connection and must never race an open outer transaction.
+      try {
+        await recordConfirmedContribution({
+          campaignId: campaign_id,
+          walletPublicKey: campaign.escrow_contract_id,
+          senderPublicKey: contributorPublicKey,
+          destinationAmount: result.destinationAmount,
+          destinationAsset: result.destinationAsset,
+          paymentType: 'contract_deposit',
+          txHash: result.txHash,
+        });
+      } catch (recordErr) {
+        logger.error('Failed to record contract-mode contribution', {
+          campaign_id,
+          tx_hash: result.txHash,
+          error: recordErr.message,
+        });
+        sendAlert('Contract-mode contribution recording failed', {
+          campaign_id,
+          tx_hash: result.txHash,
+          error: recordErr.message,
+        });
+      }
+    }
+
     res.status(202).json({
       tx_hash: result.txHash,
       stellar_transaction_id: result.stellarTransactionId,

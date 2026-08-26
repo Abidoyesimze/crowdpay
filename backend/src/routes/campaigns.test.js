@@ -128,6 +128,10 @@ function buildApp({
       requireRole: () => (req, _res, next) => {
         next();
       },
+      optionalAuth: (req, _res, next) => {
+        if (authUser) req.user = authUser;
+        next();
+      },
     },
   });
 
@@ -713,4 +717,96 @@ test('Analytics routes enforce requireAuth and requireCampaignMember', async () 
 
   const res4Backers = await request(memberApp).get('/api/campaigns/c-123/analytics/backers');
   assert.equal(res4Backers.status, 200);
+});
+
+function buildShareApp({ campaignExists = true, initialShareCount = 5, authUser } = {}) {
+  let shareCount = initialShareCount;
+  const dedup = new Map(); // `${campaignId}:${actorHash}` -> lastSharedAtMs
+  const WINDOW_MS = 60 * 60 * 1000;
+
+  const queryImpl = async (text, params) => {
+    if (text.includes('SELECT id, share_count FROM campaigns')) {
+      if (!campaignExists) return { rows: [] };
+      return { rows: [{ id: params[0], share_count: shareCount }] };
+    }
+    if (text.includes('INSERT INTO campaign_share_dedup')) {
+      const [campaignId, actorHash] = params;
+      const key = `${campaignId}:${actorHash}`;
+      const last = dedup.get(key);
+      const now = Date.now();
+      if (last !== undefined && now - last < WINDOW_MS) {
+        return { rows: [] }; // duplicate within window
+      }
+      dedup.set(key, now);
+      return { rows: [{ campaign_id: campaignId }] };
+    }
+    if (text.includes('UPDATE campaigns SET share_count')) {
+      shareCount += 1;
+      return { rows: [{ share_count: shareCount }] };
+    }
+    return { rows: [] };
+  };
+
+  const app = buildApp({ queryImpl, authUser });
+  app.set('trust proxy', true); // so X-Forwarded-For actually changes req.ip in these tests
+  return app;
+}
+
+test('POST /api/campaigns/:id/share increments share_count on first share', async () => {
+  const app = buildShareApp({ initialShareCount: 5 });
+
+  const response = await request(app).post('/api/campaigns/c-1/share').set('X-Forwarded-For', '1.2.3.4');
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.share_count, 6);
+});
+
+test('POST /api/campaigns/:id/share does not recount a repeated share from the same actor within the window', async () => {
+  const app = buildShareApp({ initialShareCount: 5 });
+
+  const first = await request(app).post('/api/campaigns/c-1/share').set('X-Forwarded-For', '1.2.3.4');
+  const second = await request(app).post('/api/campaigns/c-1/share').set('X-Forwarded-For', '1.2.3.4');
+
+  assert.equal(first.body.share_count, 6);
+  assert.equal(second.status, 200);
+  assert.equal(second.body.share_count, 6); // unchanged
+});
+
+test('POST /api/campaigns/:id/share counts shares from different actors independently', async () => {
+  const app = buildShareApp({ initialShareCount: 5 });
+
+  const first = await request(app).post('/api/campaigns/c-1/share').set('X-Forwarded-For', '1.2.3.4');
+  const second = await request(app).post('/api/campaigns/c-1/share').set('X-Forwarded-For', '5.6.7.8');
+
+  assert.equal(first.body.share_count, 6);
+  assert.equal(second.body.share_count, 7);
+});
+
+test('POST /api/campaigns/:id/share dedups an authenticated user by user id, not IP', async () => {
+  const app = buildShareApp({ initialShareCount: 5, authUser: { userId: 'user-42' } });
+
+  const first = await request(app).post('/api/campaigns/c-1/share').set('X-Forwarded-For', '1.2.3.4');
+  const second = await request(app).post('/api/campaigns/c-1/share').set('X-Forwarded-For', '9.9.9.9'); // same user, different IP
+
+  assert.equal(first.body.share_count, 6);
+  assert.equal(second.body.share_count, 6); // still deduped by user id
+});
+
+test('POST /api/campaigns/:id/share returns 404 for a nonexistent campaign', async () => {
+  const app = buildShareApp({ campaignExists: false });
+
+  const response = await request(app).post('/api/campaigns/does-not-exist/share');
+
+  assert.equal(response.status, 404);
+});
+
+test('POST /api/campaigns/:id/share only counts one increment out of a concurrent burst from the same actor', async () => {
+  const app = buildShareApp({ initialShareCount: 0 });
+
+  const responses = await Promise.all(
+    Array.from({ length: 5 }, () => request(app).post('/api/campaigns/c-1/share').set('X-Forwarded-For', '1.2.3.4'))
+  );
+
+  const counts = responses.map((r) => r.body.share_count);
+  assert.ok(counts.every((c) => c === 1), `expected all responses to report share_count 1, got ${counts}`);
 });

@@ -31,7 +31,12 @@ async function simulateAndPrepare(tx) {
   return server.prepareTransaction(tx);
 }
 
-async function invokeContract({ contractId, method, args, signerSecret }) {
+/**
+ * Signs and submits a contract invocation, returning both the transaction
+ * hash and the decoded return value. `invokeContract` (below) wraps this for
+ * existing callers that only care about the return value.
+ */
+async function invokeContractRaw({ contractId, method, args, signerSecret }) {
   const signer = Keypair.fromSecret(signerSecret);
   const source = await server.loadAccount(signer.publicKey());
 
@@ -46,19 +51,26 @@ async function invokeContract({ contractId, method, args, signerSecret }) {
 
   const preparedTx = await simulateAndPrepare(tx);
   preparedTx.sign(signer);
+  const hash = preparedTx.hash().toString('hex');
   const result = await server.submitTransaction(preparedTx);
 
   if (result.status === 'SUCCESS') {
+    let returnValue = null;
     if (result.resultMetaXdr) {
       const resultMetaXdrParsed = xdr.TransactionMeta.fromXDR(result.resultMetaXdr, 'base64');
       const sorobanMeta = resultMetaXdrParsed.v3().sorobanMeta();
       if (sorobanMeta && sorobanMeta.returnValue()) {
-        return scValToNative(sorobanMeta.returnValue());
+        returnValue = scValToNative(sorobanMeta.returnValue());
       }
     }
-    return null;
+    return { hash: result.hash || hash, returnValue };
   }
   throw new Error(`Transaction failed: ${result.status}`);
+}
+
+async function invokeContract({ contractId, method, args, signerSecret }) {
+  const { returnValue } = await invokeContractRaw({ contractId, method, args, signerSecret });
+  return returnValue;
 }
 
 async function invokeContractReadOnly({ contractId, method, args }) {
@@ -151,8 +163,16 @@ async function initializeMilestones({
   });
 }
 
+/**
+ * Deposits `amount` (already scaled to the contract's i128 unit) into the
+ * escrow contract, authorized by `fromAddress` — the depositor must sign the
+ * transaction themselves (signerSecret must correspond to fromAddress), since
+ * the contract's `deposit` call expects the source account to satisfy
+ * `from.require_auth()`. Returns the on-chain tx hash alongside the decoded
+ * contract return value so callers can record the contribution immediately.
+ */
 async function depositToEscrow({ contractId, fromAddress, amount, signerSecret }) {
-  return invokeContract({
+  const { hash, returnValue } = await invokeContractRaw({
     contractId,
     method: 'deposit',
     args: [
@@ -161,6 +181,43 @@ async function depositToEscrow({ contractId, fromAddress, amount, signerSecret }
     ],
     signerSecret,
   });
+  return { txHash: hash, returnValue };
+}
+
+/**
+ * Builds an unsigned, simulation-prepared `deposit` invocation for the
+ * self-custody (Freighter) flow, where we don't hold the contributor's key
+ * and must hand back XDR for the client to sign.
+ */
+async function buildUnsignedEscrowDeposit({ contractId, fromAddress, amount }) {
+  const source = await server.loadAccount(fromAddress);
+  const contract = new Contract(contractId);
+  const tx = new TransactionBuilder(source, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(
+      contract.call(
+        'deposit',
+        nativeToScVal(Address.fromString(fromAddress), { type: 'address' }),
+        nativeToScVal(amount, { type: 'i128' }),
+      ),
+    )
+    .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
+    .build();
+
+  const preparedTx = await simulateAndPrepare(tx);
+  return preparedTx.toXDR();
+}
+
+/**
+ * Contract-mode deposits require Soroban to actually be enabled — when it's
+ * off, `deployCampaignContracts` still stamps a mock (non-real) contract id
+ * on every campaign, so gating on `escrow_contract_id` alone would try to
+ * invoke a fake contract. See issue #710.
+ */
+function isContractDepositEligible(campaign) {
+  return process.env.SOROBAN_ENABLED === 'true' && !!campaign?.escrow_contract_id;
 }
 
 async function requestRefund({ contractId, contributorAddress, signerSecret }) {
@@ -609,10 +666,13 @@ async function getContractStatus({
 
 module.exports = {
   invokeContract,
+  invokeContractRaw,
   invokeContractReadOnly,
   initializeEscrow,
   initializeMilestones,
   depositToEscrow,
+  buildUnsignedEscrowDeposit,
+  isContractDepositEligible,
   requestRefund,
   getEscrowTotalRaised,
   getEscrowAsset,

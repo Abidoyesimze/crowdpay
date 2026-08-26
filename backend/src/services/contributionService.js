@@ -7,7 +7,11 @@ const {
   getPathPaymentQuote,
   ensureCustodialAccountFundedAndTrusted,
 } = require('./stellarService');
-const { SLIPPAGE_BPS } = require('../config/constants');
+const { depositToEscrow, isContractDepositEligible } = require('./sorobanService');
+const { SLIPPAGE_BPS, STELLAR_ASSET_DECIMALS_SCALE } = require('../config/constants');
+
+const CONTRACT_MODE_CROSS_ASSET_MESSAGE = (assetType) =>
+  `Cross-asset contributions aren't supported for this campaign's contract-backed treasury yet — please contribute in ${assetType} directly.`;
 
 function buildContributionMemo(campaignId) {
   return `cp-${String(campaignId).replace(/-/g, '').slice(0, 25)}`.slice(0, 28);
@@ -91,6 +95,13 @@ async function submitCustodialContribution({
   client,
   tierId,
 }) {
+  const contractMode = isContractDepositEligible(campaign);
+  if (contractMode && sendAsset !== campaign.asset_type) {
+    const error = new Error(CONTRACT_MODE_CROSS_ASSET_MESSAGE(campaign.asset_type));
+    error.statusCode = 422;
+    throw error;
+  }
+
   const intent =
     intentOverride ||
     (await buildContributionIntent({
@@ -101,55 +112,83 @@ async function submitCustodialContribution({
       displayName,
     }));
 
-  const preparedTransaction = await withDecryptedWalletSecret(
-    walletSecretEncrypted,
-    {
-      userId,
-      walletPublicKey,
-    },
-    async (senderSecret) => {
-      await ensureCustodialAccountFundedAndTrusted({
-        publicKey: walletPublicKey,
-        secret: senderSecret,
-      });
+  let unsignedXdr = null;
+  let signedXdr = null;
+  let txHash;
 
-      if (intent.kind === 'payment') {
-        return prepareSignedContributionPayment({
+  if (contractMode) {
+    // Same-asset only (see issue #710) — deposit directly into the escrow
+    // contract, self-authorized by the custodial account's own key, instead
+    // of paying the classic campaign wallet.
+    const depositResult = await withDecryptedWalletSecret(
+      walletSecretEncrypted,
+      { userId, walletPublicKey },
+      async (senderSecret) => {
+        await ensureCustodialAccountFundedAndTrusted({
+          publicKey: walletPublicKey,
+          secret: senderSecret,
+        });
+        return depositToEscrow({
+          contractId: campaign.escrow_contract_id,
+          fromAddress: walletPublicKey,
+          amount: Math.floor(parseFloat(amount) * STELLAR_ASSET_DECIMALS_SCALE),
+          signerSecret: senderSecret,
+        });
+      }
+    );
+    txHash = depositResult.txHash;
+  } else {
+    const preparedTransaction = await withDecryptedWalletSecret(
+      walletSecretEncrypted,
+      {
+        userId,
+        walletPublicKey,
+      },
+      async (senderSecret) => {
+        await ensureCustodialAccountFundedAndTrusted({
+          publicKey: walletPublicKey,
+          secret: senderSecret,
+        });
+
+        if (intent.kind === 'payment') {
+          return prepareSignedContributionPayment({
+            senderSecret,
+            destinationPublicKey: campaign.wallet_public_key,
+            asset: sendAsset,
+            amount,
+            memo: buildContributionMemo(campaignId),
+          });
+        }
+
+        return prepareSignedContributionPathPayment({
           senderSecret,
           destinationPublicKey: campaign.wallet_public_key,
-          asset: sendAsset,
-          amount,
+          sendAsset,
+          sendMax: intent.sendMax,
+          destAmount: amount,
+          destAssetCode: campaign.asset_type,
           memo: buildContributionMemo(campaignId),
         });
       }
+    );
 
-      return prepareSignedContributionPathPayment({
-        senderSecret,
-        destinationPublicKey: campaign.wallet_public_key,
-        sendAsset,
-        sendMax: intent.sendMax,
-        destAmount: amount,
-        destAssetCode: campaign.asset_type,
-        memo: buildContributionMemo(campaignId),
-      });
+    unsignedXdr = preparedTransaction.unsignedXdr;
+    signedXdr = preparedTransaction.signedXdr;
+    try {
+      txHash = await submitPreparedTransaction(signedXdr);
+    } catch (err) {
+      err.statusCode = err.statusCode || 502;
+      throw err;
     }
-  );
-
-  const unsignedXdr = preparedTransaction.unsignedXdr;
-  const signedXdr = preparedTransaction.signedXdr;
-  let txHash;
-  try {
-    txHash = await submitPreparedTransaction(signedXdr);
-  } catch (err) {
-    err.statusCode = err.statusCode || 502;
-    throw err;
   }
+
   const metadata = {
     ...intent.flowMetadata,
     ip_address: ipAddress || null,
     device_fingerprint: deviceFingerprint || null,
     tier_id: tierId || null,
     nft_reward: Boolean(tierId),
+    contract_mode: contractMode,
     ...(referralCode ? { referral_code: referralCode } : {}),
     ...(anchorMetadata
       ? {
@@ -180,6 +219,9 @@ async function submitCustodialContribution({
     signedXdr,
     conversionQuote: intent.conversionQuote,
     flowMetadata: metadata,
+    contractMode,
+    destinationAmount: parseFloat(amount),
+    destinationAsset: campaign.asset_type,
   };
 }
 
@@ -187,4 +229,5 @@ module.exports = {
   buildContributionIntent,
   buildContributionMemo,
   submitCustodialContribution,
+  CONTRACT_MODE_CROSS_ASSET_MESSAGE,
 };

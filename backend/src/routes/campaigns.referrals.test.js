@@ -85,6 +85,7 @@ function buildApp({ queryImpl, authUser }) {
         next();
       },
       requireRole: () => (_req, _res, next) => next(),
+      optionalAuth: (req, _res, next) => next(),
     },
   });
 

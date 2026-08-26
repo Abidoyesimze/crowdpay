@@ -41,6 +41,13 @@ module.exports = {
   LEDGER_MONITOR_RECONNECT_DELAY_MS: 5_000,
 
   // ---------------------------------------------------------------------------
+  // Soroban contract amounts
+  // ---------------------------------------------------------------------------
+
+  /** Scale factor between a decimal asset amount and the contract's i128 unit (7 decimal places, matching Stellar's native precision). */
+  STELLAR_ASSET_DECIMALS_SCALE: 10_000_000,
+
+  // ---------------------------------------------------------------------------
   // Milestone limits
   // ---------------------------------------------------------------------------
 

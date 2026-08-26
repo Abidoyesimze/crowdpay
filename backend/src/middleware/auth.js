@@ -331,10 +331,23 @@ function requireAuth(req, res, next) {
     });
 }
 
+/**
+ * Identifies the caller if a valid token is present, but never blocks the
+ * request — used by routes that want to prefer a stable per-user identity
+ * for abuse protection (dedup/throttling) while still serving anonymous
+ * visitors normally, e.g. the public campaign share endpoint.
+ */
+function optionalAuth(req, res, next) {
+  authenticate(req)
+    .then(() => next())
+    .catch(() => next());
+}
+
 module.exports = {
   ACCESS_TOKEN_COOKIE_NAME,
   IMPERSONATION_TOKEN_COOKIE_NAME,
   requireAuth,
+  optionalAuth,
   authenticate,
   assertApiKeyScopes,
   isImpersonatedRestrictedAction,
