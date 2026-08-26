@@ -598,6 +598,7 @@ export const api = {
   adminFeatureCampaign: (id, body) => request('PATCH', `/admin/campaigns/${id}/feature`, body),
   adminUnfeatureCampaign: (id) => request('PATCH', `/admin/campaigns/${id}/unfeature`, {}),
   adminUnflagCampaign: (id) => request('PATCH', `/admin/campaigns/${id}/unflag`),
+  adminUpgradeCampaignContract: (id) => request('POST', `/admin/campaigns/${id}/upgrade-contract`, {}),
   getAdminFraudCampaigns: () => request('GET', '/admin/fraud/flagged'),
   getAdminFraudStats: () => request('GET', '/admin/fraud/stats'),
   adminApproveFraudCampaign: (id) => request('PATCH', `/admin/campaigns/${id}/fraud-approve`),

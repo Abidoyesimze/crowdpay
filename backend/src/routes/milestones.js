@@ -325,7 +325,8 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
   }
 
   const { rows: milestones } = await db.query(
-    `SELECT m.*, c.creator_id, c.status AS campaign_status, c.title AS campaign_title
+    `SELECT m.*, c.creator_id, c.status AS campaign_status, c.title AS campaign_title,
+            c.migration_in_progress
      FROM milestones m
      JOIN campaigns c ON c.id = m.campaign_id
      WHERE m.id = $1`,
@@ -333,6 +334,13 @@ router.post('/:id/submit', requireAuth, async (req, res) => {
   );
   if (!milestones.length) return res.status(404).json({ error: 'Milestone not found' });
   const milestone = milestones[0];
+
+  if (milestone.migration_in_progress) {
+    return res.status(503).json({
+      error: 'Milestone submissions are temporarily paused while this campaign\'s contract is being upgraded',
+      code: 'CAMPAIGN_MIGRATION_IN_PROGRESS',
+    });
+  }
 
   try {
     await assertCanSubmitMilestone(milestone, req.user.userId, req.user.role);

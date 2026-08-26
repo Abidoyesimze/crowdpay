@@ -562,6 +562,92 @@ async function triggerRefund({ escrowContractId, contributorAddress, signerSecre
 }
 
 /**
+ * Deploy a milestones V2 contract instance from MILESTONES_V2_WASM_HASH.
+ * Its `initialize` ABI is identical to V1's, so initializeMilestones() above
+ * is reused to initialize it once deployed.
+ */
+async function deployMilestonesV2Contract({ signerSecret }) {
+  const wasmHash = process.env.MILESTONES_V2_WASM_HASH;
+  if (!wasmHash) {
+    throw new Error('MILESTONES_V2_WASM_HASH is not configured');
+  }
+  return createContractFromWasmHash({ wasmHash, signerSecret });
+}
+
+/**
+ * Deploy the standalone migration orchestrator contract from
+ * MIGRATION_WASM_HASH and initialize it with the platform address that will
+ * be authorized to drive migrations.
+ */
+async function deployMigrationContract({ platformAddress, signerSecret }) {
+  const wasmHash = process.env.MIGRATION_WASM_HASH;
+  if (!wasmHash) {
+    throw new Error('MIGRATION_WASM_HASH is not configured');
+  }
+  const deployed = await createContractFromWasmHash({ wasmHash, signerSecret });
+  await invokeContract({
+    contractId: deployed.contractId,
+    method: 'initialize',
+    args: [nativeToScVal(Address.fromString(platformAddress), { type: 'address' })],
+    signerSecret,
+  });
+  return deployed;
+}
+
+/**
+ * Invoke migrate(v1_contract_id, v2_contract_id) on the migration
+ * orchestrator and parse the MigrationCompleted event out of the same
+ * transaction result, so the caller learns the milestone count without a
+ * separate event-polling round trip.
+ */
+async function runMigration({ migrationContractId, v1ContractId, v2ContractId, signerSecret }) {
+  const signer = Keypair.fromSecret(signerSecret);
+  const source = await server.loadAccount(signer.publicKey());
+
+  const contract = new Contract(migrationContractId);
+  const tx = new TransactionBuilder(source, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(contract.call(
+      'migrate',
+      scvAddressFromString(v1ContractId),
+      scvAddressFromString(v2ContractId),
+    ))
+    .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
+    .build();
+
+  const preparedTx = await simulateAndPrepare(tx);
+  preparedTx.sign(signer);
+  const result = await server.submitTransaction(preparedTx);
+
+  if (result.status !== 'SUCCESS') {
+    throw new Error(`Migration transaction failed: ${result.status}`);
+  }
+
+  let milestoneCount = null;
+  if (result.resultMetaXdr) {
+    const meta = xdr.TransactionMeta.fromXDR(result.resultMetaXdr, 'base64');
+    const sorobanMeta = meta.v3().sorobanMeta();
+    const events = sorobanMeta && typeof sorobanMeta.events === 'function' ? sorobanMeta.events() : [];
+    for (const event of events) {
+      try {
+        const topics = event.body().v0().topics().map((t) => scValToNative(t));
+        if (topics[0] === 'MigrationCompleted') {
+          const data = scValToNative(event.body().v0().data());
+          milestoneCount = Array.isArray(data) ? Number(data[2]) : null;
+          break;
+        }
+      } catch (err) {
+        logger.warn('Could not decode a contract event while parsing MigrationCompleted', { error: err.message });
+      }
+    }
+  }
+
+  return { txHash: result.hash || null, milestoneCount };
+}
+
+/**
  * Read on-chain campaign status from deployed Soroban contracts.
  */
 async function getContractStatus({
@@ -634,4 +720,7 @@ module.exports = {
   getContractStatus,
   mapMilestoneOnChainStatus,
   refund,
+  deployMilestonesV2Contract,
+  deployMigrationContract,
+  runMigration,
 };

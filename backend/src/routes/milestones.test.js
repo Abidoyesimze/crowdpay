@@ -166,6 +166,25 @@ test('POST /api/milestones/:id/submit blocks when already pending_review', async
   assert.match(res.body.error, /awaiting platform review/i);
 });
 
+test('POST /api/milestones/:id/submit is blocked while the campaign contract is being migrated', async () => {
+  const { app, cleanup } = buildApp({
+    queryImpl: async (text) => {
+      if (text.includes('FROM milestones m') && text.includes('JOIN campaigns')) {
+        return { rows: [milestoneRow({ migration_in_progress: true })] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  const res = await request(app)
+    .post(`/api/milestones/${MILESTONE_ID}/submit`)
+    .send({ evidence_url: 'https://example.com/demo', destination_key: VALID_DESTINATION });
+
+  cleanup();
+  assert.equal(res.status, 503);
+  assert.equal(res.body.code, 'CAMPAIGN_MIGRATION_IN_PROGRESS');
+});
+
 test('POST /api/milestones/:id/approve requires pending_review status', async () => {
   const { app, cleanup } = buildApp({
     userId: 'platform-1',
