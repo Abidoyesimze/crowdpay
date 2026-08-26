@@ -6,6 +6,9 @@ const logger = require("../config/logger");
 const { sendCampaignUpdatePostedEmail } = require("../services/emailService");
 const { createNotification } = require("../services/notifications");
 const { notifyFollowers } = require("../services/campaignFollowService");
+const {
+  CAMPAIGN_UPDATE_BODY_MAX_LENGTH,
+} = require("../middleware/validation");
 
 function frontendBaseUrl() {
   return (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
@@ -74,6 +77,11 @@ router.post(
 
     if (!title) return res.status(422).json({ error: "Title is required" });
     if (!body) return res.status(422).json({ error: "Body is required" });
+    if (body.length > CAMPAIGN_UPDATE_BODY_MAX_LENGTH) {
+      return res.status(422).json({
+        error: `Update body must be ${CAMPAIGN_UPDATE_BODY_MAX_LENGTH} characters or fewer`,
+      });
+    }
 
     const { rows } = await db.query(
       `INSERT INTO campaign_updates (campaign_id, author_id, title, body)
@@ -160,6 +168,11 @@ router.patch(
 
     if (!title) return res.status(422).json({ error: "Title is required" });
     if (!body) return res.status(422).json({ error: "Body is required" });
+    if (body.length > CAMPAIGN_UPDATE_BODY_MAX_LENGTH) {
+      return res.status(422).json({
+        error: `Update body must be ${CAMPAIGN_UPDATE_BODY_MAX_LENGTH} characters or fewer`,
+      });
+    }
 
     const { rows } = await db.query(
       `UPDATE campaign_updates
