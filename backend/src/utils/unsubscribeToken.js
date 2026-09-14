@@ -1,7 +1,11 @@
 const crypto = require("crypto");
 
 function secret() {
-  return process.env.UNSUBSCRIBE_SECRET || process.env.JWT_SECRET || "dev-unsubscribe-secret";
+  const s = process.env.UNSUBSCRIBE_SECRET || process.env.JWT_SECRET;
+  if (!s) {
+    throw new Error('UNSUBSCRIBE_SECRET (or JWT_SECRET fallback) is not configured');
+  }
+  return s;
 }
 
 function sign(email, category, campaignId) {

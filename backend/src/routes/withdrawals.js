@@ -11,7 +11,7 @@ const {
   signatureCountFromXdr,
   submitSignedWithdrawal,
   isXdrExpired,
-  PLATFORM_PUBLIC_KEY,
+  getPlatformPublicKey,
   validateSubmittedWithdrawalXdr,
   validateWithdrawalForPlatformSigning,
   WithdrawalValidationError,
@@ -216,7 +216,7 @@ router.post('/request', requireAuth, withdrawalValidation, validateRequest, asyn
   if (
     multisig.thresholds.med_threshold < 2 ||
     !hasSigner(multisig.signers, creatorPublicKey) ||
-    !hasSigner(multisig.signers, PLATFORM_PUBLIC_KEY)
+    !hasSigner(multisig.signers, getPlatformPublicKey())
   ) {
     return res.status(422).json({
       error: 'Campaign wallet multisig config invalid: creator + platform signatures are required',

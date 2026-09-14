@@ -265,9 +265,8 @@ function normalizeMilestonesInput(input) {
  * Returns up to 6 active campaigns ranked by contribution count.
  * Cached for 60 s with Cache-Control header so CDNs / proxies can also cache.
  */
-router.get('/featured', async (req, res) => {
-  try {
-    const rows = await campaignsCache.wrap('featured', async () => {
+router.get('/featured', asyncHandler(async (req, res) => {
+  const rows = await campaignsCache.wrap('featured', async () => {
       const { rows: featured } = await db.query(
         `SELECT
            c.id, c.title, c.description, c.target_amount, c.raised_amount,
@@ -296,19 +295,14 @@ router.get('/featured', async (req, res) => {
 
     res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
     res.json(rows);
-  } catch (err) {
-    logger.error('Error fetching featured campaigns', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch featured campaigns' });
-  }
-});
+}));
 
 /**
  * GET /api/campaigns/categories
  * Returns campaigns grouped by asset_type with counts.
  * This data rarely changes — cached for 5 minutes.
  */
-router.get('/categories', async (req, res) => {
-  try {
+router.get('/categories', asyncHandler(async (req, res) => {
     const rows = await campaignsCache.wrap('categories', async () => {
       const { rows: cats } = await db.query(
         `SELECT
@@ -328,11 +322,7 @@ router.get('/categories', async (req, res) => {
 
     res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
     res.json(rows);
-  } catch (err) {
-    logger.error('Error fetching campaign categories', { error: err.message });
-    res.status(500).json({ error: 'Failed to fetch categories' });
-  }
-});
+}));
 
 router.get('/recommended', requireAuth, asyncHandler(async (req, res) => {
   const limit = Math.min(Number(req.query.limit || 6), 12);

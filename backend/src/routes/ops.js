@@ -20,7 +20,16 @@ const { executeRunbook } = require('../services/ops/runbooks');
  * Middleware to require and validate OPS_API_KEY.
  */
 function requireOpsApiKey(req, res, next) {
-  const configuredKey = process.env.OPS_API_KEY || 'ops_secret_dev_key';
+  const configuredKey = process.env.OPS_API_KEY;
+  if (!configuredKey) {
+    logger.error('OPS_API_KEY is not configured — refusing ops access');
+    return res.status(500).json({
+      error: {
+        code: 'OPS_MISCONFIGURED',
+        message: 'Operations API is not configured.',
+      },
+    });
+  }
   const providedKey =
     req.headers['ops_api_key'] ||
     req.headers['ops-api-key'] ||

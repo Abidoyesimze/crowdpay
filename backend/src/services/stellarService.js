@@ -39,8 +39,32 @@ const db = require('../config/database');
 const { withDecryptedWalletSecret } = require('./walletSecrets');
 const { getPlatformFee } = require('./feeRegistry');
 
-const PLATFORM_KEYPAIR = Keypair.fromSecret(process.env.PLATFORM_SECRET_KEY);
-const ARBITRATOR_KEYPAIR = Keypair.fromSecret(process.env.ARBITRATOR_SECRET_KEY);
+function loadKeypair(envVar) {
+  const secret = process.env[envVar];
+  if (!secret) {
+    throw new Error(`${envVar} is not configured`);
+  }
+  return Keypair.fromSecret(secret);
+}
+
+function getPlatformKeypair() {
+  return loadKeypair('PLATFORM_SECRET_KEY');
+}
+
+function getArbitratorKeypair() {
+  return loadKeypair('ARBITRATOR_SECRET_KEY');
+}
+
+function getPlatformPublicKey() {
+  return getPlatformKeypair().publicKey();
+}
+
+function getArbitratorPublicKey() {
+  return getArbitratorKeypair().publicKey();
+}
+
+// Lazily resolved at use-sites via getPlatformKeypair()/getArbitratorKeypair()
+// (previously eager Keypair.fromSecret at import time crashed boot/tests).
 
 async function calcFee(amount) {
   const bps = await getPlatformFee();
@@ -106,7 +130,7 @@ async function fundCustodialAccountFromPlatformIfNeeded(publicKey) {
   if (await accountExistsOnLedger(publicKey)) return false;
   const trustlineCount = listCreditAssetCodes().length;
   const startingBalance = suggestedFundingXlmForCustodialAccount(trustlineCount);
-  const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
+  const platformAccount = await server.loadAccount(getPlatformKeypair().publicKey());
   const tx = new TransactionBuilder(platformAccount, {
     fee: BASE_FEE,
     networkPassphrase,
@@ -120,7 +144,7 @@ async function fundCustodialAccountFromPlatformIfNeeded(publicKey) {
     .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
     .build();
 
-  tx.sign(PLATFORM_KEYPAIR);
+  tx.sign(getPlatformKeypair());
   await server.submitTransaction(tx);
   return true;
 }
@@ -176,7 +200,7 @@ function normalizeAsset(record) {
  */
 async function createCampaignWallet(creatorPublicKey, campaignKeypair) {
   if (!campaignKeypair) campaignKeypair = Keypair.random();
-  const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
+  const platformAccount = await server.loadAccount(getPlatformKeypair().publicKey());
 
   const creditCodes = listCreditAssetCodes();
   const campaignStartingBalance = suggestedFundingXlmForCustodialAccount(creditCodes.length + 1);
@@ -194,7 +218,7 @@ async function createCampaignWallet(creatorPublicKey, campaignKeypair) {
     .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
     .build();
 
-  tx.sign(PLATFORM_KEYPAIR);
+  tx.sign(getPlatformKeypair());
   await server.submitTransaction(tx);
 
   // Now configure the campaign account: trustline + multisig
@@ -216,7 +240,7 @@ async function createCampaignWallet(creatorPublicKey, campaignKeypair) {
     // Add platform as signer (weight 1)
     .addOperation(
       Operation.setOptions({
-        signer: { ed25519PublicKey: PLATFORM_KEYPAIR.publicKey(), weight: 1 },
+        signer: { ed25519PublicKey: getPlatformKeypair().publicKey(), weight: 1 },
       })
     )
     // Set thresholds: medium ops (payments) require weight 2 (both signers)
@@ -280,7 +304,7 @@ async function freezeCampaignEscrow({ campaignWalletPublicKey, creatorId }) {
   })
     .addOperation(
       Operation.setOptions({
-        signer: { ed25519PublicKey: ARBITRATOR_KEYPAIR.publicKey(), weight: 1 },
+        signer: { ed25519PublicKey: getArbitratorKeypair().publicKey(), weight: 1 },
       })
     )
     .addOperation(
@@ -293,7 +317,7 @@ async function freezeCampaignEscrow({ campaignWalletPublicKey, creatorId }) {
     .build();
 
   tx.sign(Keypair.fromSecret(creatorSecret));
-  tx.sign(PLATFORM_KEYPAIR);
+  tx.sign(getPlatformKeypair());
 
   const result = await server.submitTransaction(tx);
   return { hash: result.hash };
@@ -315,7 +339,7 @@ async function releaseEscrowFreeze({ campaignWalletPublicKey, creatorId }) {
   })
     .addOperation(
       Operation.setOptions({
-        signer: { ed25519PublicKey: ARBITRATOR_KEYPAIR.publicKey(), weight: 0 },
+        signer: { ed25519PublicKey: getArbitratorKeypair().publicKey(), weight: 0 },
       })
     )
     .addOperation(
@@ -328,8 +352,8 @@ async function releaseEscrowFreeze({ campaignWalletPublicKey, creatorId }) {
     .build();
 
   tx.sign(Keypair.fromSecret(creatorSecret));
-  tx.sign(PLATFORM_KEYPAIR);
-  tx.sign(ARBITRATOR_KEYPAIR);
+  tx.sign(getPlatformKeypair());
+  tx.sign(getArbitratorKeypair());
 
   const result = await server.submitTransaction(tx);
   return { hash: result.hash };
@@ -345,8 +369,8 @@ async function submitDisputeRefund({ campaignWalletPublicKey, creatorId, refunds
 
   const tx = TransactionBuilder.fromXDR(unsignedXdr, networkPassphrase);
   tx.sign(Keypair.fromSecret(creatorSecret));
-  tx.sign(PLATFORM_KEYPAIR);
-  tx.sign(ARBITRATOR_KEYPAIR);
+  tx.sign(getPlatformKeypair());
+  tx.sign(getArbitratorKeypair());
 
   const result = await server.submitTransaction(tx);
   return { hash: result.hash, xdr: tx.toXDR() };
@@ -378,7 +402,7 @@ async function buildUnsignedContributionPayment({
   if (feeAmount > 0) {
     builder.addOperation(
       Operation.payment({
-        destination: PLATFORM_KEYPAIR.publicKey(),
+        destination: getPlatformKeypair().publicKey(),
         asset: stellarAsset,
         amount: String(feeAmount),
       })
@@ -469,7 +493,7 @@ async function buildUnsignedContributionPathPayment({
       Operation.pathPaymentStrictReceive({
         sendAsset: sourceStellarAsset,
         sendMax: String(feeSendMax),
-        destination: PLATFORM_KEYPAIR.publicKey(),
+        destination: getPlatformKeypair().publicKey(),
         destAsset: destStellarAsset,
         destAmount: String(feeAmount),
         path: [],
@@ -614,7 +638,7 @@ async function buildWithdrawalTransaction({
     if (creatorShare > 0) {
       builder.addOperation(
         Operation.payment({
-          destination: PLATFORM_KEYPAIR.publicKey(),
+          destination: getPlatformKeypair().publicKey(),
           asset: stellarAsset,
           amount: String(creatorShare),
         })
@@ -1030,7 +1054,7 @@ async function createSubscriptionClaimableBalances({
         asset: stellarAsset,
         amount: String(entry.amount),
         claimants: [
-          new Claimant(PLATFORM_KEYPAIR.publicKey(), Claimant.predicateUnconditional()),
+          new Claimant(getPlatformKeypair().publicKey(), Claimant.predicateUnconditional()),
           new Claimant(
             sourceKeypair.publicKey(),
             Claimant.predicateNot(
@@ -1076,7 +1100,7 @@ async function claimSubscriptionBalanceToCampaign({
   destinationPublicKey,
   memo,
 }) {
-  const platformAccount = await server.loadAccount(PLATFORM_KEYPAIR.publicKey());
+  const platformAccount = await server.loadAccount(getPlatformKeypair().publicKey());
   const stellarAsset = toStellarAsset(asset);
 
   const builder = new TransactionBuilder(platformAccount, { fee: BASE_FEE, networkPassphrase })
@@ -1092,7 +1116,7 @@ async function claimSubscriptionBalanceToCampaign({
   if (memo) builder.addMemo(Memo.text(memo));
 
   const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
-  tx.sign(PLATFORM_KEYPAIR);
+  tx.sign(getPlatformKeypair());
   const result = await server.submitTransaction(tx);
   return result.hash;
 }
@@ -1184,7 +1208,7 @@ async function revokeAndCloseCampaignWallet(campaign) {
       if (balanceVal > 0) {
         builder.addOperation(
           Operation.payment({
-            destination: PLATFORM_KEYPAIR.publicKey(),
+            destination: getPlatformKeypair().publicKey(),
             asset,
             amount: b.balance,
           })
@@ -1203,7 +1227,7 @@ async function revokeAndCloseCampaignWallet(campaign) {
   builder.addOperation(
     Operation.setOptions({
       signer: {
-        ed25519PublicKey: PLATFORM_KEYPAIR.publicKey(),
+        ed25519PublicKey: getPlatformKeypair().publicKey(),
         weight: 0,
       },
     })
@@ -1212,13 +1236,13 @@ async function revokeAndCloseCampaignWallet(campaign) {
   // 3. Account Merge (sweeps all native XLM and closes account entry on-chain)
   builder.addOperation(
     Operation.accountMerge({
-      destination: PLATFORM_KEYPAIR.publicKey(),
+      destination: getPlatformKeypair().publicKey(),
     })
   );
 
   const tx = builder.setTimeout(TX_TIMEOUT_CONTRIBUTION_S).build();
 
-  tx.sign(PLATFORM_KEYPAIR);
+  tx.sign(getPlatformKeypair());
 
   if (creatorSecret) {
     try {
@@ -1269,7 +1293,7 @@ async function closeCampaignWalletBySecret(walletPublicKey, walletSecret) {
       .addOperation(
         Operation.setOptions({
           signer: {
-            ed25519PublicKey: PLATFORM_KEYPAIR.publicKey(),
+            ed25519PublicKey: getPlatformKeypair().publicKey(),
             weight: 0,
           },
         })
@@ -1285,14 +1309,14 @@ async function closeCampaignWalletBySecret(walletPublicKey, walletSecret) {
       )
       .addOperation(
         Operation.accountMerge({
-          destination: PLATFORM_KEYPAIR.publicKey(),
+          destination: getPlatformKeypair().publicKey(),
         })
       )
       .setTimeout(TX_TIMEOUT_CONTRIBUTION_S)
       .build();
 
     const campaignKeypair = Keypair.fromSecret(walletSecret);
-    tx.sign(PLATFORM_KEYPAIR);
+    tx.sign(getPlatformKeypair());
     tx.sign(campaignKeypair);
     await server.submitTransaction(tx);
     logger.info('Orphaned campaign wallet closed and merged back to platform', {
@@ -1345,14 +1369,22 @@ module.exports = {
   accountExistsOnLedger,
   getCampaignBalance,
   friendbotFund,
-  PLATFORM_PUBLIC_KEY: PLATFORM_KEYPAIR.publicKey(),
+  getPlatformKeypair,
+  getArbitratorKeypair,
+  getPlatformPublicKey,
+  getArbitratorPublicKey,
 
   freezeCampaignEscrow,
   releaseEscrowFreeze,
   submitDisputeRefund,
   buildBatchRefundTransaction,
-  ARBITRATOR_PUBLIC_KEY: ARBITRATOR_KEYPAIR.publicKey(),
   validateSubmittedWithdrawalXdr,
   validateWithdrawalForPlatformSigning,
   WithdrawalValidationError,
 };
+
+// Backward-compat lazy properties (resolved on access, not at require time).
+Object.defineProperties(module.exports, {
+  PLATFORM_PUBLIC_KEY: { enumerable: true, get: getPlatformPublicKey },
+  ARBITRATOR_PUBLIC_KEY: { enumerable: true, get: getArbitratorPublicKey },
+});

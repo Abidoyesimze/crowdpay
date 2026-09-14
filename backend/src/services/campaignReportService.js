@@ -7,7 +7,11 @@ const SIGNING_ALGO = 'sha256';
 const SIGNED_URL_TTL_SECONDS = 24 * 60 * 60;
 
 function signingSecret() {
-  return process.env.JWT_SECRET || 'campaign-report-signing-secret';
+  const s = process.env.CAMPAIGN_REPORT_SIGNING_SECRET || process.env.JWT_SECRET;
+  if (!s) {
+    throw new Error('CAMPAIGN_REPORT_SIGNING_SECRET (or JWT_SECRET fallback) is not configured');
+  }
+  return s;
 }
 
 function verifySignedToken(token, campaignId) {

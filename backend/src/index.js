@@ -10,31 +10,38 @@ const compression = require('./middleware/compression');
 const Sentry = require('@sentry/node');
 const db = require('./config/database');
 
-const authRoutes = require('./routes/auth');
-const campaignRoutes = require('./routes/campaigns');
-const contributionRoutes = require('./routes/contributions');
-const embedRoutes = require('./routes/embed');
-const adminRoutes = require('./routes/admin');
-const adminAuditLogRoutes = require('./routes/adminAuditLogs');
+const { validateEnv } = require('./config/env');
 
 const app = express();
 
+if (process.env.NODE_ENV !== 'test') {
+  validateEnv();
+}
+
+function buildCorsOrigin() {
+  const raw = [process.env.FRONTEND_URL, process.env.CORS_ALLOWED_ORIGINS]
+    .filter(Boolean)
+    .flatMap((v) => String(v).split(','))
+    .map((v) => v.trim())
+    .filter(Boolean);
+  if (raw.length === 0) {
+    return process.env.NODE_ENV === 'production' ? [] : true;
+  }
+  return raw;
+}
+
 app.use(requestContext);
 app.use(requestLogger);
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(cors({ origin: true, credentials: true }));
+app.use(helmet());
+app.use(cors({ origin: buildCorsOrigin(), credentials: true }));
 app.use(compression);
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
-app.use('/api/auth', authRoutes);
-app.use('/api/campaigns', campaignRoutes);
-app.use('/api/contributions', contributionRoutes);
-app.use('/api/embed', embedRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/admin', adminAuditLogRoutes);
-
 app.use('/api/v1', require('./routes/v1'));
+// NOTE: adminAuditLogs.js is deprecated — audit logs are served via admin.js -> auditLogs.js.
+// Do not mount it here; it would shadow GET /api/admin/audit-logs.
+app.use('/api/admin', require('./routes/admin'));
 app.use('/api/anchor', require('./routes/anchor'));
 app.use('/api/announcements', require('./routes/announcement'));
 app.use('/api/auth', require('./routes/auth'));

@@ -3,7 +3,11 @@
 const jwt = require('jsonwebtoken');
 
 function getJwtSecret() {
-  return process.env.JWT_SECRET || 'testsecret';
+  const s = process.env.JWT_SECRET;
+  if (!s) {
+    throw new Error('JWT_SECRET is not configured');
+  }
+  return s;
 }
 
 /**

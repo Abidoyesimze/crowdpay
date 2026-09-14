@@ -17,10 +17,14 @@ function setupEnv(overrides = {}) {
     JWT_SECRET: VALID_JWT_SECRET,
     API_KEY_PEPPER: 'b'.repeat(64),
     PLATFORM_SECRET_KEY: VALID_PLATFORM_SECRET_KEY,
+    ARBITRATOR_SECRET_KEY: VALID_PLATFORM_SECRET_KEY,
     STELLAR_NETWORK: 'testnet',
     STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
     WALLET_SECRET_LOCAL_KEK: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     WALLET_ENCRYPTION_KEY: 'a'.repeat(64),
+    OPS_API_KEY: 'test-ops-key',
+    UNSUBSCRIBE_SECRET: 'test-unsubscribe-secret',
+    IMPACT_SIGNING_SECRET: 'test-impact-secret',
   };
   const merged = { ...base, ...overrides };
   const removed = Object.keys(merged).filter((k) => merged[k] === undefined);

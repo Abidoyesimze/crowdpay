@@ -1,3 +1,10 @@
+/**
+ * DEPRECATED — do not mount.
+ * Audit logs are served via routes/admin.js -> routes/auditLogs.js
+ * (GET /api/admin/audit-logs). This file is kept for reference and will be
+ * removed once callers migrate. It uses different query-param names
+ * (resource_type vs resourceType) and duplicate export routes.
+ */
 const router = require('express').Router();
 const { requireAuth } = require('../middleware/auth');
 const { requireAdmin } = require('../middleware/auth');
