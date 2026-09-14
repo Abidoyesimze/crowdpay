@@ -6,6 +6,18 @@ const path = require('path');
 
 describe('Database Models & Constraints', async () => {
   let client;
+  let savepointSeq = 0;
+
+  // A failed statement aborts the surrounding transaction (25P02 on the
+  // next command), so expected-constraint-violations must run inside a
+  // SAVEPOINT that is rolled back afterwards.
+  async function expectConstraintViolation(fn, code) {
+    const sp = `sp_${savepointSeq++}`;
+    await client.query(`SAVEPOINT ${sp}`);
+    await assert.rejects(fn(), (err) => err.code === code);
+    await client.query(`ROLLBACK TO SAVEPOINT ${sp}`);
+    await client.query(`RELEASE SAVEPOINT ${sp}`);
+  }
 
   before(async () => {
     client = await pool.connect();
@@ -46,12 +58,13 @@ describe('Database Models & Constraints', async () => {
       VALUES ('duplicate@example.com', 'hash', 'Test User 1', 'G_PUB_2', 'enc_sec')
     `);
     
-    await assert.rejects(
-      client.query(`
+    await expectConstraintViolation(
+      () =>
+        client.query(`
         INSERT INTO users (email, password_hash, name, wallet_public_key, wallet_secret_encrypted)
         VALUES ('duplicate@example.com', 'hash', 'Test User 2', 'G_PUB_3', 'enc_sec')
       `),
-      (err) => err.code === '23505' // unique_violation
+      '23505' // unique_violation
     );
   });
 
@@ -63,12 +76,16 @@ describe('Database Models & Constraints', async () => {
     `);
     const creatorId = userRes.rows[0].id;
 
-    await assert.rejects(
-      client.query(`
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `
         INSERT INTO campaigns (creator_id, title, target_amount, asset_type, wallet_public_key, status)
         VALUES ($1, 'Invalid Asset Campaign', 1000, 'BTC', 'G_CAMPAIGN_PUB_1', 'active')
-      `, [creatorId]),
-      (err) => err.code === '23514' // check_violation
+      `,
+          [creatorId]
+        ),
+      '23514' // check_violation
     );
   });
 
@@ -96,12 +113,16 @@ describe('Database Models & Constraints', async () => {
     `);
     const creatorId = userRes.rows[0].id;
 
-    await assert.rejects(
-      client.query(`
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `
         INSERT INTO campaigns (creator_id, title, target_amount, asset_type, wallet_public_key, status)
         VALUES ($1, 'Invalid Status Campaign', 1000, 'USDC', 'G_CAMPAIGN_PUB_3', 'unknown_status')
-      `, [creatorId]),
-      (err) => err.code === '23514' // check_violation
+      `,
+          [creatorId]
+        ),
+      '23514' // check_violation
     );
   });
   
@@ -120,12 +141,16 @@ describe('Database Models & Constraints', async () => {
     `, [creatorId]);
     const campaignId = campRes.rows[0].id;
 
-    await assert.rejects(
-      client.query(`
+    await expectConstraintViolation(
+      () =>
+        client.query(
+          `
         INSERT INTO contributions (campaign_id, sender_public_key, amount, asset, payment_type, tx_hash)
         VALUES ($1, 'G_SENDER_1', 100, 'USDC', 'invalid_payment_type', 'TX_1')
-      `, [campaignId]),
-      (err) => err.code === '23514' // check_violation
+      `,
+          [campaignId]
+        ),
+      '23514' // check_violation
     );
   });
 

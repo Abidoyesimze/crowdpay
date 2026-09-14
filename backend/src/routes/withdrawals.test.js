@@ -47,6 +47,8 @@ function buildApp({ queryImpl, stellarImpl, referralImpl, userId = 'creator-1', 
       return false;
     },
     PLATFORM_PUBLIC_KEY: 'GPLATFORM',
+    getPlatformPublicKey: () => 'GPLATFORM',
+    getArbitratorPublicKey: () => 'GARBITRATOR',
     validateSubmittedWithdrawalXdr: (params) => {
       return actualStellarService.validateSubmittedWithdrawalXdr(params);
     },
