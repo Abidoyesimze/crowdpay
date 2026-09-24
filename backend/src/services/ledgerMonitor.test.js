@@ -4,6 +4,7 @@ const proxyquire = require('proxyquire').noCallThru();
 
 function buildLedgerMonitor(mockQuery, treasuryStub) {
   const updates = [];
+  const markIndexedCalls = [];
   const wrappedQuery = async (text, params) => {
     if (text.includes('UPDATE campaigns') && text.includes('raised_amount = raised_amount +')) {
       updates.push({ text, params });
@@ -38,13 +39,18 @@ function buildLedgerMonitor(mockQuery, treasuryStub) {
         XLM: { type: 'native' },
         USDC: { type: 'credit_alphanum4', issuer: 'GTRUSTEDUSDCISSUER' },
       },
+    },
     '../config/logger': {
       info: () => {},
       warn: () => {},
       error: () => {},
     },
     './stellarService': { getCampaignBalance: async () => ({}) },
-    './stellarTransactionService': { markContributionIndexed: async () => {} },
+    './stellarTransactionService': {
+      markContributionIndexed: async (client, txHash, contributionId) => {
+        markIndexedCalls.push({ txHash, contributionId });
+      },
+    },
     './rewardTierService': { assignTierToContribution: async () => null },
     './referralService': { attributeContributionToReferrer: async () => {} },
     './reconciliation': { reconcileCampaignBalances: async () => {} },
@@ -73,11 +79,10 @@ function buildLedgerMonitor(mockQuery, treasuryStub) {
     },
   });
 
-  return { ledgerMonitor, updates };
+  return { ledgerMonitor, updates, markIndexedCalls };
 }
 
 test('handlePayment updates stellar_transactions when a contribution row is created', async () => {
-  const stellarUpdates = [];
   const mockQuery = async (text, params) => {
     if (text.includes('SELECT status, asset_type, wallet_mode FROM campaigns')) {
       return { rows: [{ status: 'active', asset_type: 'XLM', wallet_mode: 'standard' }] };
@@ -97,10 +102,6 @@ test('handlePayment updates stellar_transactions when a contribution row is crea
     }
     if (text === 'BEGIN') return { rows: [] };
     if (text.includes('INSERT INTO contributions')) return { rows: [{ id: 'contrib-id' }] };
-    if (text.includes('UPDATE stellar_transactions') && text.includes("kind = 'contribution'")) {
-      stellarUpdates.push({ text, params });
-      return { rows: [] };
-    }
     if (text.includes('SELECT raised_amount FROM campaigns')) {
       return { rows: [{ raised_amount: '100' }] };
     }
@@ -109,7 +110,7 @@ test('handlePayment updates stellar_transactions when a contribution row is crea
     return { rows: [] };
   };
 
-  const { ledgerMonitor, updates } = buildLedgerMonitor(mockQuery);
+  const { ledgerMonitor, updates, markIndexedCalls } = buildLedgerMonitor(mockQuery);
 
   const payment = {
     to: 'GWALLET',
@@ -122,8 +123,8 @@ test('handlePayment updates stellar_transactions when a contribution row is crea
 
   await ledgerMonitor.handlePayment('camp-1', 'GWALLET', payment);
 
-  assert.equal(stellarUpdates.length, 1);
-  assert.deepEqual(stellarUpdates[0].params, ['contrib-id', 'txhash-abc']);
+  assert.equal(markIndexedCalls.length, 1);
+  assert.deepEqual(markIndexedCalls[0], { txHash: 'txhash-abc', contributionId: 'contrib-id' });
   assert.equal(updates.length, 1);
   assert.match(updates[0].text, /raised_amount = raised_amount \+ \$1/);
   assert.match(updates[0].text, /WHEN raised_amount \+ \$1 >= target_amount THEN 'funded'/);
