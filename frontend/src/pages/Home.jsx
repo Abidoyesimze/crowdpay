@@ -49,6 +49,7 @@ export default function Home() {
   const [featured, setFeatured] = useState([]);
   const [recentlyViewed, setRecentlyViewed] = useState([]);
   const [recommended, setRecommended] = useState([]);
+  const [requestVersion, setRequestVersion] = useState(0);
 
   const search = searchParams.get('search') || '';
   const status = searchParams.get('status') || '';
@@ -180,9 +181,9 @@ export default function Home() {
         setHasMore(nextCampaigns.length < nextTotal);
         setPage(1);
       })
-      .catch((err) => setListError(err.message || t('home.loadingCampaigns')))
+      .catch(() => setListError(t('home.loadError')))
       .finally(() => setLoading(false));
-  }, [search, status, asset, category, minProgress, minFunding, maxFunding, deadlineWithin, creatorVerified, country, sort]);
+  }, [search, status, asset, category, minProgress, minFunding, maxFunding, deadlineWithin, creatorVerified, country, sort, requestVersion]);
 
   async function loadMore() {
     if (loadingMore || !hasMore || paginationRequestRef.current) return;
@@ -285,37 +286,19 @@ export default function Home() {
         {user ? (
           <div className="hero-actions">
             {(user.role === 'creator' || user.role === 'admin') && (
-              <Link to="/campaigns/new" style={{ width: '100%' }}>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  style={{ fontSize: '1rem', padding: '0.75rem 1.5rem', width: '100%' }}
-                >
-                  {t('home.startCampaign')}
-                </button>
+              <Link to="/campaigns/new" className="btn-primary" style={{ fontSize: '1rem', padding: '0.75rem 1.5rem', width: '100%', textAlign: 'center' }}>
+                {t('home.startCampaign')}
               </Link>
             )}
             <span style={styles.muted}>{t('home.browseHint')}</span>
           </div>
         ) : (
           <div className="hero-actions hero-actions--row-sm">
-            <Link to="/register" style={{ flex: '1 1 140px', minWidth: '140px' }}>
-              <button
-                type="button"
-                className="btn-primary"
-                style={{ fontSize: '1rem', padding: '0.75rem 1.5rem', width: '100%' }}
-              >
-                {t('home.createAccount')}
-              </button>
+            <Link to="/register" className="btn-primary" style={{ flex: '1 1 140px', minWidth: '140px', fontSize: '1rem', padding: '0.75rem 1.5rem', textAlign: 'center' }}>
+              {t('home.createAccount')}
             </Link>
-            <Link to="/login" style={{ flex: '1 1 140px', minWidth: '140px' }}>
-              <button
-                type="button"
-                className="btn-secondary"
-                style={{ fontSize: '1rem', padding: '0.75rem 1.5rem', width: '100%' }}
-              >
-                {t('login.title')}
-              </button>
+            <Link to="/login" className="btn-secondary" style={{ flex: '1 1 140px', minWidth: '140px', fontSize: '1rem', padding: '0.75rem 1.5rem', textAlign: 'center' }}>
+              {t('login.title')}
             </Link>
           </div>
         )}
@@ -499,7 +482,6 @@ export default function Home() {
           {typeof facets?.verified_creators === 'number' && ` (${facets.verified_creators})`}
         </label>
         <label style={styles.filterItem}>
-          Sort by
           {t('home.sortLabel')}
           <select
             value={sort}
@@ -611,9 +593,16 @@ export default function Home() {
           ))}
         </div>
       ) : listError ? (
-        <p className="alert alert--error" role="alert">
-          {listError}
-        </p>
+        <div className="load-state load-state--error" role="alert">
+          <span className="load-state__icon" aria-hidden="true">!</span>
+          <div>
+            <strong>{t('home.loadErrorTitle')}</strong>
+            <p>{listError}</p>
+          </div>
+          <button type="button" className="btn-secondary" onClick={() => setRequestVersion((value) => value + 1)}>
+            {t('home.tryAgain')}
+          </button>
+        </div>
       ) : campaigns.length === 0 ? (
         <div className="alert alert--info">
           {hasActiveFilters ? (

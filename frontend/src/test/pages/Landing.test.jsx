@@ -23,14 +23,15 @@ describe('Landing page', () => {
   it('renders the landing heading and main call to action', async () => {
     renderWithProviders(<Landing />);
 
-    expect(await screen.findByRole('heading', { name: /Support with Confidence/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Explore Support Spaces/i })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /Fund verified campaigns/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Explore campaigns/i })).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: /Start a campaign/i })[0]).toHaveAttribute('href', '/register?role=creator');
   });
 
   it('calls getFeaturedCampaigns on mount', async () => {
     renderWithProviders(<Landing />);
 
-    await screen.findByRole('heading', { name: /Support with Confidence/i });
+    await screen.findByRole('heading', { name: /Fund verified campaigns/i });
     expect(apiMocks.getFeaturedCampaigns).toHaveBeenCalled();
   });
 });

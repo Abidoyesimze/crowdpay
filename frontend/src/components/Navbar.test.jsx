@@ -61,7 +61,7 @@ describe('Navbar', () => {
       logout: mockLogout,
     });
     renderNavbar();
-    expect(screen.getByRole('button', { name: /create support space/i })).toBeInTheDocument();
+    expect(screen.getByText(/create support space/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /logout/i })).toBeInTheDocument();
     expect(screen.getByText('Bola')).toBeInTheDocument();
   });

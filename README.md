@@ -112,6 +112,8 @@ cd backend && npm install && cp .env.example .env
 npm run migrate
 
 cd ../frontend && npm install
+# Optional: copy frontend defaults before overriding API, Stellar, Firebase, or Sentry settings
+cp .env.example .env
 
 # Two terminals:
 cd backend  && npm run dev   # http://localhost:3001
@@ -140,6 +142,8 @@ cd frontend && npm run dev   # http://localhost:5173
 | `UNLEASH_APP_NAME` | Unleash application name (default: `crowdpay`) |
 | `UNLEASH_ENVIRONMENT` | Unleash environment (default: `development`) |
 | `LAUNCHDARKLY_SDK_KEY` | LaunchDarkly SDK key (required for LaunchDarkly adapter) |
+
+The frontend runs locally without an `.env`: Vite proxies `/api` to `http://localhost:3001` and Stellar explorer links default to testnet. Use `frontend/.env.example` when you need to override those defaults or configure optional integrations.
 
 Generate a 32-byte key:
 ```bash

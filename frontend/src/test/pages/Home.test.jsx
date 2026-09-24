@@ -28,7 +28,7 @@ describe('Home page', () => {
     renderWithProviders(<Home />);
 
     expect(await screen.findByRole('heading', { name: /Explore campaigns/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Create account/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Create account/i })).toBeInTheDocument();
   });
 
   it('shows a skeleton while campaigns are loading', async () => {
@@ -46,7 +46,8 @@ describe('Home page', () => {
 
     renderWithProviders(<Home />);
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Unable to load campaigns');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Campaigns are temporarily unavailable');
+    expect(screen.getByRole('button', { name: /Try again/i })).toBeInTheDocument();
   });
 });
 

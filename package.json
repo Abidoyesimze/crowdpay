@@ -6,9 +6,11 @@
     "lint": "npm run lint --prefix backend && npm run lint --prefix frontend",
     "format": "npm run format --prefix frontend",
     "test:e2e": "npx playwright test",
+    "test:public": "playwright test --config playwright.public.config.js",
     "prepare": "husky"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "husky": "^9.1.7"
   }
 }

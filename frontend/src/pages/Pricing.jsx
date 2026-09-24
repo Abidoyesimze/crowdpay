@@ -9,7 +9,7 @@ export default function Pricing() {
     api
       .getPlatformConfig()
       .then((cfg) => setFeeBps(cfg.platform_fee_bps ?? 0))
-      .catch(() => setFeeBps(0));
+      .catch(() => setFeeBps(null));
   }, []);
 
   return (
@@ -24,7 +24,7 @@ export default function Pricing() {
         <strong style={{ fontSize: '1.1rem' }}>Platform fee</strong>
         <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
           {feeBps === null
-            ? 'Loading current rate…'
+            ? 'The live platform rate is temporarily unavailable. You will always see the exact fee before publishing or contributing.'
             : `${(feeBps / 100).toFixed(2)}% of each contribution, deducted automatically before funds reach the campaign.`}
         </p>
       </div>

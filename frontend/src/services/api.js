@@ -42,6 +42,10 @@ export function retryQueuedRequests() {
 }
 
 export const api = {
+  async getPlatformConfig() {
+    const res = await apiClient.get('/governance/fee');
+    return res.data;
+  },
   async getFeaturedCampaigns() {
     const res = await apiClient.get('/campaigns/featured');
     return res.data;

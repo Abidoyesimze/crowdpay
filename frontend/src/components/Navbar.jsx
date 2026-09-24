@@ -10,7 +10,6 @@ import Logo from './Logo';
 
 const NAV_LINKS = [
   { to: '/discover', labelKey: 'nav.discover', fallback: 'Discover' },
-  { to: '/discover', labelKey: 'nav.supportSpaces', fallback: 'Support Spaces' },
   { to: '/how-it-works', labelKey: 'nav.howItWorks', fallback: 'How It Works' },
   { to: '/pricing', labelKey: 'nav.pricing', fallback: 'Pricing' },
   { to: '/about', labelKey: 'nav.about', fallback: 'About Us' },
@@ -193,10 +192,8 @@ export default function Navbar() {
                     />
                   )}
                 </div>
-                <Link to="/campaigns/new">
-                  <button className="btn-accent" style={styles.ctaBtn}>
-                    + {t('nav.createSupportSpace', 'Create Support Space')}
-                  </button>
+                <Link to="/campaigns/new" className="btn-accent" style={styles.ctaBtn}>
+                  + {t('nav.createSupportSpace', 'Create Support Space')}
                 </Link>
                 <div style={styles.avatarWrap}>
                   <div style={styles.avatar} aria-hidden="true">
@@ -217,10 +214,8 @@ export default function Navbar() {
                 >
                   {t('nav.login')}
                 </Link>
-                <Link to="/register" aria-current={pathname === '/register' ? 'page' : undefined}>
-                  <button className="btn-accent" style={styles.ctaBtn}>
-                    {t('nav.signup', 'Sign up')}
-                  </button>
+                <Link to="/register" className="btn-accent" style={styles.ctaBtn} aria-current={pathname === '/register' ? 'page' : undefined}>
+                  {t('nav.signup', 'Sign up')}
                 </Link>
               </>
             )}
