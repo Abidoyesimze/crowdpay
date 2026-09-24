@@ -47,10 +47,19 @@ function canPerformPlatformSignature(userId) {
   return userId === process.env.PLATFORM_APPROVER_USER_ID;
 }
 
-function requirePlatformApprover(req, res, next) {
+async function requirePlatformApprover(req, res, next) {
   if (!canPerformPlatformSignature(req.user.userId)) {
     return res.status(403).json({ error: 'Only the designated platform approver can perform this action' });
   }
+
+  const { rows } = await db.query(
+    "SELECT role, is_admin FROM users WHERE id = $1",
+    [req.user.userId]
+  );
+  if (!rows.length || (rows[0].role !== 'admin' && !rows[0].is_admin)) {
+    return res.status(403).json({ error: 'Account no longer has platform authorization' });
+  }
+
   next();
 }
 

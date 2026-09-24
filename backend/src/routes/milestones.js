@@ -42,6 +42,23 @@ function canPerformPlatformSignature(userId) {
   return userId === process.env.PLATFORM_APPROVER_USER_ID;
 }
 
+async function requirePlatformApproverAuth(userId) {
+  if (!canPerformPlatformSignature(userId)) {
+    const err = new Error('Only the designated platform approver can perform this action');
+    err.status = 403;
+    throw err;
+  }
+  const { rows } = await db.query(
+    "SELECT role, is_admin FROM users WHERE id = $1",
+    [userId]
+  );
+  if (!rows.length || (rows[0].role !== 'admin' && !rows[0].is_admin)) {
+    const err = new Error('Account no longer has platform authorization');
+    err.status = 403;
+    throw err;
+  }
+}
+
 function validatePublicKey(publicKey) {
   try {
     Keypair.fromPublicKey(publicKey);
@@ -587,8 +604,10 @@ router.post('/:id/votes', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 router.post('/:id/reject', requireAuth, async (req, res) => {
-  if (!canPerformPlatformSignature(req.user.userId)) {
-    return res.status(403).json({ error: 'Only the designated platform approver can reject milestones' });
+  try {
+    await requirePlatformApproverAuth(req.user.userId);
+  } catch (err) {
+    return res.status(err.status || 403).json({ error: err.message });
   }
 
   const reason = String(req.body?.reason || '').trim();
@@ -654,8 +673,10 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
 });
 
 const approveMilestoneReleaseHandler = async (req, res) => {
-  if (!canPerformPlatformSignature(req.user.userId)) {
-    return res.status(403).json({ error: 'Only the designated platform approver can approve milestones' });
+  try {
+    await requirePlatformApproverAuth(req.user.userId);
+  } catch (err) {
+    return res.status(err.status || 403).json({ error: err.message });
   }
 
   const reviewNote = String(req.body?.reason || '').trim() || null;
@@ -699,6 +720,33 @@ const approveMilestoneReleaseHandler = async (req, res) => {
       error: 'Contributor vote threshold has not been met for this milestone release',
       contributor_votes: contributorTally,
     });
+  }
+
+  // Atomically claim the milestone to prevent concurrent approvals.
+  // Uses SELECT FOR UPDATE + UPDATE claimed_at to serialize concurrent requests.
+  const claimClient = await db.connect();
+  try {
+    await claimClient.query('BEGIN');
+    const { rows: claimedRows } = await claimClient.query(
+      `UPDATE milestones
+       SET claimed_at = NOW()
+       WHERE id = $1
+         AND status = 'pending_review'
+         AND claimed_at IS NULL
+       RETURNING id`,
+      [milestone.id]
+    );
+    if (!claimedRows.length) {
+      await claimClient.query('ROLLBACK');
+      return res.status(409).json({ error: 'Milestone is already being processed or has been claimed' });
+    }
+    await claimClient.query('COMMIT');
+  } catch (claimErr) {
+    await claimClient.query('ROLLBACK');
+    logger.error('Milestone claim failed', { milestone_id: milestone.id, error: claimErr.message });
+    return res.status(500).json({ error: 'Could not claim milestone for processing' });
+  } finally {
+    claimClient.release();
   }
 
   const releaseAmount = toReleaseAmount(milestone.raised_amount, milestone.release_percentage);

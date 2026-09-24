@@ -50,6 +50,11 @@ function buildApp({ queryImpl, userId = 'creator-1', role = 'creator', platformA
       }),
       query: queryImpl,
     },
+    '../config/logger': {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    },
     '../services/stellarService': stellarStub,
     '../services/stellarTransactionService': {
       insertWithdrawalPendingSignatures: async () => {},
@@ -79,6 +84,22 @@ function buildApp({ queryImpl, userId = 'creator-1', role = 'creator', platformA
     },
     '../lib/campaignPermissions': {
       canSubmitMilestones: () => false,
+    },
+    '../services/alerting': {
+      sendAlert: () => {},
+    },
+    '../services/webhookDispatcher': {
+      emitWebhookEventForUser: async () => {},
+      WEBHOOK_EVENTS: { MILESTONE_REJECTED: 'milestone.rejected', MILESTONE_APPROVED: 'milestone.approved' },
+    },
+    '../services/campaignFollowService': {
+      notifyFollowers: async () => {},
+    },
+    '../services/fraudService': {
+      evaluateCampaign: async () => {},
+    },
+    '../services/fundReleaseNotifications': {
+      notifyContributorFundRelease: async () => {},
     },
     '../middleware/auth': {
       requireAuth: (req, _res, next) => {
@@ -191,6 +212,9 @@ test('POST /api/milestones/:id/approve requires pending_review status', async ()
     role: 'admin',
     platformApproverUserId: 'platform-1',
     queryImpl: async (text) => {
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
       if (text.includes('FROM milestones m') && text.includes('JOIN users u')) {
         return { rows: [milestoneRow({ status: 'pending', evidence_url: 'https://x.test', destination_key: VALID_DESTINATION })] };
       }
@@ -213,6 +237,9 @@ test('POST /api/milestones/:id/reject sets rejected status with reason', async (
     platformApproverUserId: 'platform-1',
     queryImpl: async (text, params) => {
       calls.push(text);
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
       if (text.includes('UPDATE milestones') && text.includes('rejected')) {
         return {
           rows: [
@@ -240,4 +267,77 @@ test('POST /api/milestones/:id/reject sets rejected status with reason', async (
   assert.equal(res.body.status, 'rejected');
   assert.equal(res.body.review_note, 'Evidence does not match deliverable');
   assert.ok(calls.some((c) => c.includes('rejected')));
+});
+
+test('POST /api/milestones/:id/approve prevents concurrent approval via atomic claim', async () => {
+  let claimCount = 0;
+  const calls = [];
+  const { app, cleanup } = buildApp({
+    userId: 'platform-1',
+    role: 'admin',
+    platformApproverUserId: 'platform-1',
+    queryImpl: async (text, params) => {
+      calls.push(text);
+      if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [] };
+      if (text.includes("SELECT role, is_admin FROM users WHERE id")) {
+        return { rows: [{ role: 'admin', is_admin: true }] };
+      }
+      if (text.includes('FROM milestones m') && text.includes('JOIN users u')) {
+        return {
+          rows: [
+            milestoneRow({
+              status: 'pending_review',
+              evidence_url: 'https://x.test',
+              destination_key: VALID_DESTINATION,
+              wallet_secret_encrypted: 'enc',
+              creator_wallet_public_key: 'GCREATOR',
+              campaign_wallet_public_key: 'GCAMPAIGN',
+              asset_type: 'USDC',
+              raised_amount: '1000',
+              target_amount: '1000',
+            }),
+          ],
+        };
+      }
+      if (text.includes('COUNT(*) FILTER') && text.includes('milestone_votes')) {
+        return { rows: [{ approve_count: 0, reject_count: 0, total_votes: 0 }] };
+      }
+      if (text.includes('UPDATE milestones') && text.includes('claimed_at')) {
+        claimCount++;
+        if (claimCount > 1) {
+          // Second claim attempt fails — already claimed
+          return { rows: [] };
+        }
+        return { rows: [{ id: MILESTONE_ID }] };
+      }
+      if (text.includes('UPDATE milestones') && text.includes("status = 'released'")) {
+        return { rows: [milestoneRow({ status: 'released' })] };
+      }
+      if (text.includes('INSERT INTO withdrawal_requests')) {
+        return { rows: [{ id: 'w-rel-1', status: 'submitted' }] };
+      }
+      if (text.includes('INSERT INTO withdrawal_approval_events')) return { rows: [] };
+      if (text.includes('INSERT INTO stellar_transactions')) return { rows: [] };
+      if (text.includes('INSERT INTO milestone_events')) return { rows: [] };
+      if (text.includes('SELECT id FROM withdrawal_requests WHERE milestone_id')) {
+        return { rows: [] };
+      }
+      if (text.includes('milestones_contract_id')) return { rows: [{ milestones_contract_id: null }] };
+      if (text.includes('COUNT(*)::int AS total')) {
+        return { rows: [{ total: 1, released_count: 1 }] };
+      }
+      return { rows: [] };
+    },
+  });
+
+  // First request should succeed
+  const res1 = await request(app).post(`/api/milestones/${MILESTONE_ID}/approve`).send({});
+
+  // Second request should be blocked because milestone is already claimed
+  const res2 = await request(app).post(`/api/milestones/${MILESTONE_ID}/approve`).send({});
+
+  cleanup();
+  assert.equal(res1.status, 200, 'first approval should succeed');
+  assert.equal(res2.status, 409, 'second concurrent approval should be blocked');
+  assert.match(res2.body.error, /already being processed|already claimed/i);
 });

@@ -9,7 +9,7 @@ const OWNER = 'owner-1';
 // { match: (sql) => bool, rows: [...] } consulted in order; the first match
 // wins. Unmatched queries return { rows: [] }. Every executed query is pushed
 // to `queryLog` for assertions.
-function buildService(handlers = []) {
+function buildService(handlers = [], horizonStub) {
   const queryLog = [];
   const notifications = [];
 
@@ -31,6 +31,12 @@ function buildService(handlers = []) {
     './notifications': {
       createNotification: async (userId, msg) => {
         notifications.push({ userId, msg });
+      },
+    },
+    '../config/stellar': {
+      server: horizonStub || {
+        transactions: () => ({ transaction: () => ({ call: async () => ({}) }) }),
+        operations: () => ({ forTransaction: () => ({ call: async () => ({ records: [] }) }) }),
       },
     },
   });
@@ -156,12 +162,30 @@ test('contribution.confirmed requires tx_hash', async () => {
 // --- withdrawal.completed ---------------------------------------------------
 
 test('withdrawal.completed transitions a pending request to submitted', async () => {
-  const { svc, notifications } = buildService([
-    {
-      match: (s) => s.includes('UPDATE withdrawal_requests'),
-      rows: [{ id: 'w-1', campaign_id: 'cam-1', amount: '100', status: 'submitted', tx_hash: 'h1' }],
-    },
-  ]);
+  const horizonStub = {
+    transactions: () => ({
+      transaction: () => ({
+        call: async () => ({ successful: true, status: 'SUCCESS' }),
+      }),
+    }),
+    operations: () => ({
+      forTransaction: () => ({
+        call: async () => ({
+          records: [{ type: 'payment', to: 'GDEST123', amount: '100', asset_type: 'credit_alphanum4', asset_code: 'USDC' }],
+        }),
+      }),
+    }),
+  };
+  const { svc, notifications } = buildService(
+    [
+      withdrawalDetailLookup,
+      {
+        match: (s) => s.includes('UPDATE withdrawal_requests'),
+        rows: [{ id: 'w-1', campaign_id: 'cam-1', amount: '100', status: 'submitted', tx_hash: 'h1' }],
+      },
+    ],
+    horizonStub
+  );
   const res = await svc.processIncomingWebhook(
     'wh-1',
     { type: 'withdrawal.completed', withdrawal_id: 'w-1', tx_hash: 'h1' },
@@ -174,8 +198,8 @@ test('withdrawal.completed transitions a pending request to submitted', async ()
 
 test('withdrawal.completed returns 404 for a withdrawal the owner does not own', async () => {
   const { svc } = buildService([
+    { match: (s) => s.includes('SELECT wr.id, wr.amount, wr.destination_key'), rows: [] },
     { match: (s) => s.includes('UPDATE withdrawal_requests'), rows: [] },
-    { match: (s) => s.includes('SELECT wr.id FROM withdrawal_requests'), rows: [] },
   ]);
   await assert.rejects(
     () =>
@@ -190,6 +214,7 @@ test('withdrawal.completed returns 404 for a withdrawal the owner does not own',
 
 test('withdrawal.completed returns 409 when the request is in a non-completable state', async () => {
   const { svc } = buildService([
+    withdrawalDetailLookup,
     { match: (s) => s.includes('UPDATE withdrawal_requests'), rows: [] },
     { match: (s) => s.includes('SELECT wr.id FROM withdrawal_requests'), rows: [{ id: 'w-1' }] },
   ]);
@@ -202,6 +227,136 @@ test('withdrawal.completed returns 409 when the request is in a non-completable 
       ),
     (e) => e.status === 409
   );
+});
+
+const withdrawalDetailLookup = {
+  match: (s) => s.includes('SELECT wr.id, wr.amount, wr.destination_key'),
+  rows: [{ id: 'w-1', amount: '100', destination_key: 'GDEST123', asset_type: 'USDC' }],
+};
+
+test('withdrawal.completed rejects a forged tx_hash not found on Stellar', async () => {
+  const horizonStub = {
+    transactions: () => ({
+      transaction: () => ({
+        call: async () => { throw Object.assign(new Error('not found'), { name: 'NotFoundError', status: 404 }); },
+      }),
+    }),
+    operations: () => ({ forTransaction: () => ({ call: async () => ({ records: [] }) }) }),
+  };
+  const { svc } = buildService([withdrawalDetailLookup], horizonStub);
+  await assert.rejects(
+    () =>
+      svc.processIncomingWebhook(
+        'wh-1',
+        { type: 'withdrawal.completed', withdrawal_id: 'w-1', tx_hash: 'forged-tx-hash' },
+        { ownerUserId: OWNER }
+      ),
+    (e) => e.status === 400 && /not found on Stellar/i.test(e.message)
+  );
+});
+
+test('withdrawal.completed rejects a failed Stellar transaction', async () => {
+  const horizonStub = {
+    transactions: () => ({
+      transaction: () => ({
+        call: async () => ({ successful: false, status: 'FAILED' }),
+      }),
+    }),
+    operations: () => ({ forTransaction: () => ({ call: async () => ({ records: [] }) }) }),
+  };
+  const { svc } = buildService([withdrawalDetailLookup], horizonStub);
+  await assert.rejects(
+    () =>
+      svc.processIncomingWebhook(
+        'wh-1',
+        { type: 'withdrawal.completed', withdrawal_id: 'w-1', tx_hash: 'failed-tx' },
+        { ownerUserId: OWNER }
+      ),
+    (e) => e.status === 400 && /failed on Stellar/i.test(e.message)
+  );
+});
+
+test('withdrawal.completed rejects a pending Stellar transaction', async () => {
+  const horizonStub = {
+    transactions: () => ({
+      transaction: () => ({
+        call: async () => ({ successful: true, status: 'PENDING' }),
+      }),
+    }),
+    operations: () => ({ forTransaction: () => ({ call: async () => ({ records: [] }) }) }),
+  };
+  const { svc } = buildService([withdrawalDetailLookup], horizonStub);
+  await assert.rejects(
+    () =>
+      svc.processIncomingWebhook(
+        'wh-1',
+        { type: 'withdrawal.completed', withdrawal_id: 'w-1', tx_hash: 'pending-tx' },
+        { ownerUserId: OWNER }
+      ),
+    (e) => e.status === 400 && /still pending/i.test(e.message)
+  );
+});
+
+test('withdrawal.completed rejects when transaction fields mismatch withdrawal', async () => {
+  const horizonStub = {
+    transactions: () => ({
+      transaction: () => ({
+        call: async () => ({ successful: true, status: 'SUCCESS' }),
+      }),
+    }),
+    operations: () => ({
+      forTransaction: () => ({
+        call: async () => ({
+          records: [{ type: 'payment', to: 'GWRONG', amount: '50', asset_type: 'credit_alphanum4', asset_code: 'USDC' }],
+        }),
+      }),
+    }),
+  };
+  const { svc } = buildService([withdrawalDetailLookup], horizonStub);
+  await assert.rejects(
+    () =>
+      svc.processIncomingWebhook(
+        'wh-1',
+        { type: 'withdrawal.completed', withdrawal_id: 'w-1', tx_hash: 'mismatch-tx' },
+        { ownerUserId: OWNER }
+      ),
+    (e) => e.status === 400 && /does not match/i.test(e.message)
+  );
+});
+
+test('withdrawal.completed verifies and accepts a valid Stellar transaction', async () => {
+  const horizonStub = {
+    transactions: () => ({
+      transaction: () => ({
+        call: async () => ({ successful: true, status: 'SUCCESS' }),
+      }),
+    }),
+    operations: () => ({
+      forTransaction: () => ({
+        call: async () => ({
+          records: [{ type: 'payment', to: 'GDEST123', amount: '100', asset_type: 'credit_alphanum4', asset_code: 'USDC' }],
+        }),
+      }),
+    }),
+  };
+  const { svc, notifications } = buildService(
+    [
+      withdrawalDetailLookup,
+      {
+        match: (s) => s.includes('UPDATE withdrawal_requests'),
+        rows: [{ id: 'w-1', campaign_id: 'cam-1', amount: '100', status: 'submitted', tx_hash: 'valid-tx' }],
+      },
+    ],
+    horizonStub
+  );
+  const res = await svc.processIncomingWebhook(
+    'wh-1',
+    { type: 'withdrawal.completed', withdrawal_id: 'w-1', tx_hash: 'valid-tx' },
+    { ownerUserId: OWNER }
+  );
+  assert.equal(res.status, 200);
+  assert.equal(res.body.status, 'submitted');
+  assert.equal(notifications.length, 1);
 });
 
 // --- anchor.deposit.updated -------------------------------------------------
